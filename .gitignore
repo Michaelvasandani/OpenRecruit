@@ -20,9 +20,7 @@ app/spike/
 .opentrade-dev/
 
 # Local-only working docs (not part of the public release)
-docs/ARCHITECTURE.md
-docs/TODO.md
-docs/PACKAGING.md
+docs/
 
 # Local agent guidance (not part of the public release)
 CLAUDE.md

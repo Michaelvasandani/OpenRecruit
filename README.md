@@ -1,7 +1,7 @@
 <div align="center">
-  <img src="docs/assets/logo.svg" width="360" alt="OpenTrade" />
+  <img src="assets/logo.svg" width="360" alt="OpenTrade" />
   <p><strong>The open-source trading harness for Claude Code agents.</strong></p>
-  <img src="docs/assets/demo.png" width="820" alt="OpenTrade app — agent sidebar, live terminal, and portfolio panel" />
+  <img src="assets/demo.png" width="820" alt="OpenTrade app — agent sidebar, live terminal, and portfolio panel" />
 </div>
 
 OpenTrade is a macOS app that enables agents to trade and react to the market autonomously. **Claude Code** agents execute trades in your [Robinhood Agentic Trading](https://robinhood.com/us/en/agentic-trading/) account through the official MCP. Set guardrails, monitors, and strategies so agents can trade 24/7 on *your machine*.
