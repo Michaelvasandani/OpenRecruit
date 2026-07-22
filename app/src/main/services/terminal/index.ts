@@ -3,6 +3,7 @@ import type { Agent, ExecutionState } from "@shared/agent";
 import { TerminalWsServer } from "../../pty-daemon/ws-server";
 import { buildTerminalWsUrl } from "../../pty-daemon/ws-url";
 import type { AgentRegistry } from "../agents/registry";
+import { analytics } from "../analytics";
 import { bus } from "../event-bus";
 import type { LocalApiServer } from "../local-api";
 import type { WakeTransport } from "../scheduler/wake/types";
@@ -153,6 +154,7 @@ export class TerminalService {
     // `executionState = interactive`). Synchronous, so it's set before the agent's MCP
     // could poll `/wake-stream`.
     this.wake.onInteractiveUp(agent.id);
+    analytics.track("terminal_session_started", { intent });
   }
 
   /** Mint and persist a fresh session id OpenTrade owns for this agent (I3). */
@@ -178,6 +180,7 @@ export class TerminalService {
     try {
       this.spawn(agent, "fresh", DEFAULT_COLS, DEFAULT_ROWS);
       bus.emitEvent("terminal:respawned", { agentId });
+      analytics.track("terminal_respawned");
       return true;
     } catch (err) {
       console.error("[terminal] auto-respawn failed", err);
@@ -199,6 +202,7 @@ export class TerminalService {
     // coordinator (and resets its resume-fail streak for the fresh session).
     this.spawn(agent, "fresh", DEFAULT_COLS, DEFAULT_ROWS);
     bus.emitEvent("terminal:respawned", { agentId });
+    analytics.track("agent_restarted");
     return { alive: true };
   }
 

@@ -11,6 +11,9 @@ name: Release desktop (macOS)
 #   APPLE_ID                     Apple ID email used for notarization
 #   APPLE_APP_SPECIFIC_PASSWORD  app-specific password for that Apple ID
 #   APPLE_TEAM_ID                10-char Apple Developer Team ID
+# Optional (telemetry):
+#   MAIN_VITE_POSTHOG_API_KEY    PostHog project key baked into host.js at build time;
+#                                absent → analytics no-op (PostHog is tree-shaken out).
 # GITHUB_TOKEN (provided automatically) is used by electron-builder to upload.
 
 on:
@@ -52,6 +55,8 @@ jobs:
           APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # Baked into host.js by electron-vite; absent → analytics no-op.
+          MAIN_VITE_POSTHOG_API_KEY: ${{ secrets.MAIN_VITE_POSTHOG_API_KEY }}
         # `package` runs the prepackage native-module materialization + electron-vite
         # build + electron-builder. `--publish always` uploads the DMG, the zip, and
         # latest-mac.yml (the electron-updater feed) to the GitHub Release.

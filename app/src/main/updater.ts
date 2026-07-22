@@ -31,7 +31,10 @@ function retireHost(): void {
   }
 }
 
-export function initAutoUpdate(_win: BrowserWindow): void {
+export function initAutoUpdate(
+  _win: BrowserWindow,
+  onDownloaded?: (version: string) => void,
+): void {
   // electron-updater requires a packaged app with a baked app-update.yml.
   if (!app.isPackaged) return;
 
@@ -43,6 +46,7 @@ export function initAutoUpdate(_win: BrowserWindow): void {
   autoUpdater.on("update-downloaded", (info) => {
     // Stage is complete; autoInstallOnAppQuit will apply it on the next quit.
     retireHost();
+    onDownloaded?.(info.version);
     if (Notification.isSupported()) {
       new Notification({
         title: "OpenTrade update ready",

@@ -1,6 +1,7 @@
 import type { ExecutionState } from "@shared/agent";
 import { hostLog } from "../../../host/log";
 import type { AgentRegistry } from "../../agents/registry";
+import { analytics } from "../../analytics";
 import type { HeadlessExitReason, HeadlessWakeStrategy, WakeTransport } from "./types";
 
 /** Hard ceiling on a single headless run, INCLUDING time parked at the approval gate.
@@ -228,8 +229,10 @@ class AgentWriter {
 
   /** Set the state and publish it as the agent's `executionState` (1:1, no projection). */
   private transition(next: WriterState): void {
+    const prev = this.state;
     this.state = next;
     this.registry.setExecutionState(this.id, TO_EXECUTION_STATE[next]);
+    if (next === "BROKEN" && prev !== "BROKEN") analytics.track("agent_marked_broken");
   }
 }
 

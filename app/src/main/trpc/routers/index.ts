@@ -1,6 +1,7 @@
 import { router } from "../trpc";
 import { activityRouter } from "./activity";
 import { agentsRouter } from "./agents";
+import { analyticsRouter } from "./analytics";
 import { approvalsRouter } from "./approvals";
 import { brokerRouter } from "./broker";
 import { onboardingRouter } from "./onboarding";
@@ -19,6 +20,7 @@ export const appRouter = router({
   activity: activityRouter,
   settings: settingsRouter,
   schedule: scheduleRouter,
+  analytics: analyticsRouter,
 });
 
 export type AppRouter = typeof appRouter;

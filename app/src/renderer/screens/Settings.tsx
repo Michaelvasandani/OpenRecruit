@@ -10,6 +10,7 @@ import {
 import { type CSSProperties, useState } from "react";
 import { SegmentedControl } from "../components/settings/SegmentedControl";
 import { SettingNumber } from "../components/settings/SettingNumber";
+import { SettingToggle } from "../components/settings/SettingToggle";
 import { SettingsRow } from "../components/settings/SettingsRow";
 import { SettingsSection } from "../components/settings/SettingsSection";
 import { Tooltip, TooltipContent, TooltipTrigger } from "../components/ui/tooltip";
@@ -97,27 +98,45 @@ export function SettingsScreen() {
 }
 
 function GeneralPanel() {
+  const settings = useSettings();
   const update = useUpdateSettings();
   const setView = useUIStore((s) => s.setView);
+  const s = settings.data;
 
   return (
-    <SettingsSection title="Setup" description="First-run onboarding.">
-      <SettingsRow
-        label="Re-run setup"
-        hint="Reopen the onboarding wizard — Claude CLI check, Robinhood, first agent."
-      >
-        <button
-          type="button"
-          onClick={() => {
-            update.mutate({ onboardingComplete: false });
-            setView("agents");
-          }}
-          className="rounded-md border border-border px-3 py-1.5 text-sm hover:bg-accent"
+    <div className="space-y-8">
+      <SettingsSection title="Setup" description="First-run onboarding.">
+        <SettingsRow
+          label="Re-run setup"
+          hint="Reopen the onboarding wizard — Claude CLI check, Robinhood, first agent."
         >
-          Re-run setup
-        </button>
-      </SettingsRow>
-    </SettingsSection>
+          <button
+            type="button"
+            onClick={() => {
+              update.mutate({ onboardingComplete: false });
+              setView("agents");
+            }}
+            className="rounded-md border border-border px-3 py-1.5 text-sm hover:bg-accent"
+          >
+            Re-run setup
+          </button>
+        </SettingsRow>
+      </SettingsSection>
+
+      <SettingsSection title="Privacy" description="Anonymous product analytics.">
+        <SettingsRow
+          label="Share anonymous usage data"
+          hint="Sends anonymous feature-usage and error events — a random ID, event names, categories, and timings — to help improve OpenTrade. Never includes your conversations, tickers, quantities, prices, or account details. On by default; turn it off any time."
+        >
+          {s && (
+            <SettingToggle
+              checked={s.telemetryEnabled}
+              onChange={(telemetryEnabled) => update.mutate({ telemetryEnabled })}
+            />
+          )}
+        </SettingsRow>
+      </SettingsSection>
+    </div>
   );
 }
 

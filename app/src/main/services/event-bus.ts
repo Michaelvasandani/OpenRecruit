@@ -25,6 +25,8 @@ export interface AppEvents {
   /** The last renderer (GUI) disconnected (≥1→0, after a short grace). The host
    *  blanket-kills every interactive PTY so none are maintained outside the GUI. */
   "gui:gone": undefined;
+  /** A GUI (re)appeared (0→1 renderer connection). Drives the analytics `app_opened`. */
+  "gui:present": undefined;
 }
 
 class TypedEmitter extends EventEmitter {

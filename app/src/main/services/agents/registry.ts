@@ -11,8 +11,10 @@ import { dirname, join } from "node:path";
 import type { Agent, AgentStatus, CreateAgentInput, ExecutionState } from "@shared/agent";
 import { eq } from "drizzle-orm";
 import { nanoid } from "nanoid";
+import { templateOf } from "@shared/analytics";
 import { type Db, OPENTRADE_HOME } from "../../db/client";
 import { agents as agentsTable } from "../../db/schema";
+import { analytics } from "../analytics";
 import { bus } from "../event-bus";
 
 const AGENTS_DIR = join(OPENTRADE_HOME, "agents");
@@ -180,6 +182,10 @@ export class AgentRegistry {
       })
       .run();
     this.broadcast();
+    analytics.track("agent_created", {
+      template: templateOf(input.template),
+      approval_mode: input.approvalMode,
+    });
     return this.get(id)!;
   }
 
@@ -277,6 +283,7 @@ export class AgentRegistry {
   archive(id: string): void {
     this.db.update(agentsTable).set({ archivedAt: Date.now() }).where(eq(agentsTable.id, id)).run();
     this.broadcast();
+    analytics.track("agent_archived");
   }
 
   setStatus(id: string, status: AgentStatus): void {

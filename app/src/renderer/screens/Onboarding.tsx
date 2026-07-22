@@ -1,10 +1,11 @@
 import { AlertTriangle, ArrowRight, Check, Loader2, Terminal } from "lucide-react";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { FeatureShowcase } from "../components/onboarding/FeatureShowcase";
 import { Button } from "../components/ui/button";
 import { Card } from "../components/ui/card";
 import { Input } from "../components/ui/input";
 import { Label } from "../components/ui/label";
+import { useTrackEvent } from "../hooks/useAnalytics";
 import { useUpdateSettings } from "../hooks/useSettings";
 import { trpc } from "../lib/trpc";
 import { cn } from "../lib/utils";
@@ -28,9 +29,19 @@ const STEP_LABELS: Record<Step, string> = {
 export function Onboarding() {
   const [step, setStep] = useState<Step>("claude");
   const finishSettings = useUpdateSettings();
+  const track = useTrackEvent();
 
-  const finish = () => finishSettings.mutate({ onboardingComplete: true });
+  // The funnel starts when the wizard first mounts.
+  useEffect(() => {
+    track({ event: "onboarding_started" });
+  }, [track]);
+
+  const finish = () => {
+    track({ event: "onboarding_completed" });
+    finishSettings.mutate({ onboardingComplete: true });
+  };
   const next = () => {
+    track({ event: "onboarding_step_completed", props: { step } });
     const i = STEPS.indexOf(step);
     if (i < STEPS.length - 1) setStep(STEPS[i + 1]);
     else finish();

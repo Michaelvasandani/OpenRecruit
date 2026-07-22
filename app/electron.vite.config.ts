@@ -5,11 +5,12 @@ import { defineConfig, externalizeDepsPlugin } from "electron-vite";
 
 export default defineConfig({
   main: {
-    // Bundle `ws` into the daemon bundle (pure JS, no native code) rather than
-    // externalizing it: a detached ELECTRON_RUN_AS_NODE child resolving a
-    // bundled dep avoids the asar/runtime-require fragility that bites native
-    // modules. node-pty stays externalized (native, ABI-rebuilt).
-    plugins: [externalizeDepsPlugin({ exclude: ["ws"] })],
+    // Bundle `ws` and `posthog-node` into the daemon bundle (both pure JS, no
+    // native code) rather than externalizing them: a detached
+    // ELECTRON_RUN_AS_NODE child resolving a bundled dep avoids the asar/runtime-
+    // require fragility that bites native modules. node-pty stays externalized
+    // (native, ABI-rebuilt).
+    plugins: [externalizeDepsPlugin({ exclude: ["ws", "posthog-node"] })],
     resolve: {
       alias: {
         "@main": resolve("src/main"),
@@ -53,6 +54,9 @@ export default defineConfig({
       },
     },
     build: {
+      // Emit sourcemaps so sanitized renderer stack fingerprints (bundle
+      // file:line — see shared/analytics.ts) resolve back to source locally.
+      sourcemap: true,
       rollupOptions: {
         input: { index: resolve("src/renderer/index.html") },
       },

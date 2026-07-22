@@ -36,6 +36,7 @@ export class GuiPresence {
     if (!this.present) {
       this.present = true;
       hostLog.info("gui present");
+      bus.emitEvent("gui:present", undefined);
     }
   }
 

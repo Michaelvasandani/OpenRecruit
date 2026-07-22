@@ -18,6 +18,9 @@ export const AppSettings = z.object({
   defaultApprovalMode: ApprovalMode,
   /** Set once the first-run onboarding wizard has been completed or skipped. */
   onboardingComplete: z.boolean(),
+  /** Anonymous product-telemetry opt-out. On by default; the capture-time gate in
+   *  AnalyticsService reads this live via `settings:changed`. */
+  telemetryEnabled: z.boolean(),
 });
 export type AppSettings = z.infer<typeof AppSettings>;
 
@@ -27,6 +30,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
   pollIntervalBlurredSec: 10,
   defaultApprovalMode: "approve",
   onboardingComplete: false,
+  telemetryEnabled: true,
 };
 
 /** A partial update of the editable settings. */

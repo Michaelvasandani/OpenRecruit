@@ -58,8 +58,13 @@ async function main() {
   if (host.trpcPort) wireApprovalAlerts(win, host);
 
   // Auto-update against GitHub Releases (no-op in dev / unpackaged). Retires the
-  // running backend host on install so the new build's code takes effect.
-  initAutoUpdate(win);
+  // running backend host on install so the new build's code takes effect. The
+  // download-staged event rides the relay client to the host's telemetry funnel.
+  initAutoUpdate(win, (toVersion) =>
+    relayTrpc?.analytics.track
+      .mutate({ event: "update_downloaded", props: { to_version: toVersion } })
+      .catch(() => {}),
+  );
 
   app.on("activate", () => {
     if (BrowserWindow.getAllWindows().length === 0) {

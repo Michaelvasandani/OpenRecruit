@@ -15,6 +15,7 @@ import {
 } from "../../db/schema";
 import { hostLog } from "../../host/log";
 import type { AgentRegistry } from "../agents/registry";
+import { analytics } from "../analytics";
 import { bus } from "../event-bus";
 import type { LocalApiServer } from "../local-api";
 import { buildAgentEnv } from "../terminal/env";
@@ -159,6 +160,7 @@ export class Scheduler {
       .run();
     this.armCron(id, agentId, input.cron, input.prompt, input.recurring);
     bus.emitEvent("scheduler:changed", { agentId });
+    analytics.track("schedule_created", { kind: "cron", recurring: input.recurring });
     return this.getCron(id)!;
   }
 
@@ -199,6 +201,7 @@ export class Scheduler {
       .run();
     this.startMonitor(id, agentId, input.command);
     bus.emitEvent("scheduler:changed", { agentId });
+    analytics.track("schedule_created", { kind: "monitor" });
     return this.getMonitor(id)!;
   }
 
@@ -327,6 +330,10 @@ export class Scheduler {
       .insert(wakesTable)
       .values({ id: nanoid(), agentId, sourceKind, prompt, background, firedAt: Date.now() })
       .run();
+    analytics.track("schedule_fired", {
+      source: sourceKind,
+      path: background ? "headless" : "warm",
+    });
     this.wake.enqueue(agentId, prompt);
     // Surface the new wake + updated last/next-fire times in the Monitor tab live.
     bus.emitEvent("scheduler:changed", { agentId });

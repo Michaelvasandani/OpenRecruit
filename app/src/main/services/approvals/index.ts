@@ -6,12 +6,19 @@ import type {
   ParsedOrder,
   PreToolUseDecision,
 } from "@shared/approval";
+import {
+  assetTypeOf,
+  orderKindOf,
+  orderTypeOf,
+  sideOf,
+} from "@shared/analytics";
 import { DEFAULT_SETTINGS } from "@shared/settings";
 import { and, asc, desc, eq, isNull } from "drizzle-orm";
 import { nanoid } from "nanoid";
 import type { Db } from "../../db/client";
 import { approvals as approvalsTable, settings as settingsTable } from "../../db/schema";
 import type { AgentRegistry } from "../agents/registry";
+import { analytics } from "../analytics";
 import type { AuditLog } from "../audit";
 import { bus } from "../event-bus";
 import type { StatusArbiter } from "../status/arbiter";
@@ -93,6 +100,12 @@ export class ApprovalService {
       args.agentId,
     );
 
+    const mode = agent?.approvalMode ?? "approve";
+    analytics.track("order_gate_prompted", {
+      ...orderCategoricals(args.toolName, parsed),
+      mode,
+    });
+
     // Full-auto agents (or an unknown agent — fail safe by gating) decide instantly.
     if (agent?.approvalMode === "auto") {
       this.finalize(id, "approved", "auto", null);
@@ -161,6 +174,9 @@ export class ApprovalService {
     result: unknown;
   }): void {
     const outcome = parseOrderResult(args.result, args.toolName);
+    analytics.track("order_submit_resolved", {
+      result: outcome.ok === true ? "ok" : outcome.ok === false ? "rejected" : "unknown",
+    });
     const rawInput = JSON.stringify(args.rawInput ?? null);
 
     // Primary: exact input match. Fallback: any approved-but-unrecorded order for
@@ -244,6 +260,16 @@ export class ApprovalService {
     );
     this.syncPending(row.agentId);
     bus.emitEvent("approvals:changed", { agentId: row.agentId });
+
+    // `finalize` is the single funnel for every decision (user / auto / timeout /
+    // abandon / boot-expiry), so one capture here covers them all. `pending` never
+    // reaches this point.
+    analytics.track("order_gate_decided", {
+      decision: status as "approved" | "rejected" | "expired",
+      decided_by: decidedBy,
+      decision_ms: Math.max(0, Date.now() - row.requestedAt),
+      ...orderCategoricals(row.toolName, safeJson<ParsedOrder>(row.parsed)),
+    });
   }
 
   /** Resolve the long-poll waiting on this approval, if any. */
@@ -310,6 +336,16 @@ export class ApprovalService {
       decidedAt: row.decidedAt,
     };
   }
+}
+
+/** The categorical (never quantitative/identifying) shape of an order, for telemetry. */
+function orderCategoricals(toolName: string, parsed: ParsedOrder | null) {
+  return {
+    kind: orderKindOf(parsed?.kind),
+    asset_type: assetTypeOf(toolName),
+    side: sideOf(parsed?.side),
+    order_type: orderTypeOf(parsed?.orderType),
+  };
 }
 
 function safeJson<T>(text: string | null): T | null {

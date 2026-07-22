@@ -2,6 +2,7 @@ import { type ChildProcess, spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { hostLog } from "../../../host/log";
 import type { AgentRegistry } from "../../agents/registry";
+import { analytics } from "../../analytics";
 import type { LocalApiServer } from "../../local-api";
 import { buildAgentEnv } from "../../terminal/env";
 import { clearSpawnMarker, writeSpawnMarker } from "./spawn-marker";
@@ -127,6 +128,10 @@ export class HeadlessRunStrategy implements HeadlessWakeStrategy {
       settled = true;
       this.children.delete(agentId);
       clearSpawnMarker(agentId);
+      analytics.track("headless_run_finished", {
+        result: reason === "ok" ? "ok" : reason === "resumeFail" ? "resume_fail" : "spawn_fail",
+        duration_ms: Math.max(0, Date.now() - startedAt),
+      });
       onExit(reason);
     };
 

@@ -14,6 +14,7 @@ import { execFile } from "node:child_process";
 import { randomBytes } from "node:crypto";
 import { createDb, OPENTRADE_HOME } from "../db/client";
 import { AgentRegistry } from "../services/agents/registry";
+import { analytics } from "../services/analytics";
 import { ApprovalService } from "../services/approvals";
 import { AuditLog } from "../services/audit";
 import { BrokerService } from "../services/broker";
@@ -24,7 +25,7 @@ import { derivePort } from "../services/local-api/endpoint";
 import { Scheduler } from "../services/scheduler";
 import { WakeCoordinator } from "../services/scheduler/wake/coordinator";
 import { HeadlessRunStrategy } from "../services/scheduler/wake/headless-strategy";
-import { reconcileSpawnMarkers } from "../services/scheduler/wake/spawn-marker";
+import { reconcileSpawnMarkers, readSpawnMarkers } from "../services/scheduler/wake/spawn-marker";
 import { SettingsService } from "../services/settings";
 import { StatusArbiter } from "../services/status/arbiter";
 import { TerminalService } from "../services/terminal";
@@ -53,12 +54,19 @@ async function main() {
   registry.resetStatusesOnBoot();
 
   const settings = new SettingsService(db);
+  // Single telemetry funnel — wired early so the gui:present / settings:changed
+  // listeners are live before the GUI connects. Inert without a build-time key
+  // and in dev (unless OPENTRADE_ANALYTICS_DEV=1).
+  analytics.init({ settings });
   const arbiter = new StatusArbiter(registry);
   const audit = new AuditLog(db, registry);
   const approvals = new ApprovalService(db, registry, audit, arbiter);
   // Fresh host process → no agent hook is still long-polling, so pending rows
   // really are orphans.
   approvals.expireOrphansOnBoot();
+  // A surviving wake marker is positive evidence the previous host exited uncleanly
+  // (a clean shutdown clears them) — capture it before reconcile clears the markers.
+  const afterCrash = readSpawnMarkers().length > 0;
   // Recover from a crash that orphaned a headless wake mid-run: kill any survivor and
   // mark the agent broken so we never spawn a second writer on its session (E1).
   reconcileSpawnMarkers(registry);
@@ -130,6 +138,17 @@ async function main() {
   });
   hostLog.info(`host ready: faucet=${localApi.port} trpc=${trpc.port}`);
 
+  // Telemetry lifecycle: the host is up. `app_updated` fires once per version
+  // transition (the reliable "an update actually landed" signal for the detached
+  // host), tracked via the persisted `last_run_version`.
+  analytics.track("host_started", afterCrash ? { after_crash: true } : undefined);
+  const runVersion = process.env.OPENTRADE_VERSION ?? "0.0.0";
+  const prevVersion = settings.getOrCreate("last_run_version", () => runVersion);
+  if (prevVersion !== runVersion) {
+    analytics.track("app_updated", { from_version: prevVersion, to_version: runVersion });
+    settings.setRaw("last_run_version", runVersion);
+  }
+
   // Heartbeat driving the `system.tick` subscription.
   const tick = setInterval(() => bus.emitEvent("system:tick", { at: Date.now() }), 1000);
 
@@ -143,13 +162,28 @@ async function main() {
     terminal.stop();
     localApi.stop();
     trpc.close();
-    clearManifest();
-    process.exit(0);
+    // Flush any queued telemetry before exiting (bounded so we can't hang on quit).
+    void analytics.shutdown(1500).finally(() => {
+      clearManifest();
+      process.exit(0);
+    });
   };
   // Survive the launching app going away; quit only on explicit signals/reboot.
   process.on("SIGHUP", () => {});
   process.on("SIGINT", () => shutdown("SIGINT"));
   process.on("SIGTERM", () => shutdown("SIGTERM"));
+
+  // Last-resort crash telemetry (sanitized: class name + bundle frames only), then
+  // flush + exit non-zero on a fatal error; an unhandled rejection is logged only.
+  process.on("uncaughtException", (err) => {
+    hostLog.error("uncaughtException", String(err));
+    analytics.trackError("host", err);
+    void analytics.shutdown(1000).finally(() => process.exit(1));
+  });
+  process.on("unhandledRejection", (reason) => {
+    hostLog.error("unhandledRejection", String(reason));
+    analytics.trackError("host", reason);
+  });
 }
 
 main().catch((err) => {

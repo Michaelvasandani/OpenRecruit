@@ -47,6 +47,13 @@ describe("SettingsService", () => {
     expect(v.defaultApprovalMode).toBe("auto");
   });
 
+  test("telemetryEnabled defaults on and round-trips off", () => {
+    const s = new SettingsService(memDb());
+    expect(s.get().telemetryEnabled).toBe(true);
+    expect(s.update({ telemetryEnabled: false }).telemetryEnabled).toBe(false);
+    expect(s.get().telemetryEnabled).toBe(false);
+  });
+
   test("ms convenience getters convert seconds", () => {
     const s = new SettingsService(memDb());
     s.update({ pollIntervalFocusedSec: 7, pollIntervalBlurredSec: 12 });

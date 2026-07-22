@@ -13,6 +13,7 @@ const KEYS: Record<keyof AppSettings, string> = {
   pollIntervalBlurredSec: "poll_interval_blurred_sec",
   defaultApprovalMode: "default_approval_mode",
   onboardingComplete: "onboarding_complete",
+  telemetryEnabled: "telemetry_enabled",
 };
 
 /**
@@ -46,6 +47,10 @@ export class SettingsService {
         KEYS.onboardingComplete,
         DEFAULT_SETTINGS.onboardingComplete,
       ),
+      telemetryEnabled: this.readBool(
+        KEYS.telemetryEnabled,
+        DEFAULT_SETTINGS.telemetryEnabled,
+      ),
     };
   }
 
@@ -72,6 +77,15 @@ export class SettingsService {
     const value = factory();
     this.write(key, value);
     return value;
+  }
+
+  /**
+   * Write a raw opaque kv value (not part of the typed `AppSettings`). Companion to
+   * `getOrCreate` for values the app updates over time — e.g. `last_run_version`,
+   * which the host rewrites after detecting an update transition.
+   */
+  setRaw(key: string, value: string): void {
+    this.write(key, value);
   }
 
   // ---- convenience for services (ms where the consumer wants ms) ----

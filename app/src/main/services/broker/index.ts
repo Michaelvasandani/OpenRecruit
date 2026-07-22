@@ -6,9 +6,11 @@ import type {
   Position,
   Quote,
 } from "@shared/broker";
+import { errorNameOf } from "@shared/analytics";
 import { eq } from "drizzle-orm";
 import type { Db } from "../../db/client";
 import { brokerCache } from "../../db/schema";
+import { analytics } from "../analytics";
 import { bus } from "../event-bus";
 import type { SettingsService } from "../settings";
 import type { BrokerAdapter } from "./adapter";
@@ -105,10 +107,12 @@ export class BrokerService {
       const accounts = await this.adapter.listAccounts();
       this.account = pickAccount(accounts);
       this.setStatus("connected");
+      analytics.track("broker_connected");
       await this.pollOnce();
       this.startPolling();
     } catch (err) {
       this.setStatus("error");
+      analytics.track("broker_connect_failed", { error_name: errorNameOf(err) });
       throw err;
     }
   }
