@@ -5,31 +5,20 @@
 // OpenTrade-specific wrinkle: the backend host is a DETACHED process that survives
 // the GUI quitting. After an update swaps the .app and the app relaunches, the new
 // launcher's `ensureHost` already refuses to adopt a version-mismatched host and
-// respawns a fresh one (see host/manifest.ts). As belt-and-suspenders we also
-// SIGTERM the running host the moment an update is staged, so nothing old lingers
-// across the quit/install.
+// SIGTERMs + respawns a fresh one (see host/manifest.ts). That version-aware
+// adoption is the ONLY thing that retires the old host, and it runs at the right
+// moment: on relaunch, not while the GUI is still live. We deliberately do NOT
+// SIGTERM the host when the update merely finishes downloading — that killed the
+// backend out from under a running session (nothing respawns it until relaunch, so
+// the renderer hung on "OpenTrade connecting…"), and it was redundant with the
+// relaunch-time version check anyway.
 
-import { readFileSync } from "node:fs";
-import { join } from "node:path";
 import { app, type BrowserWindow, Notification } from "electron";
 import electronUpdater from "electron-updater";
-import { OPENTRADE_HOME } from "./db/client";
 
 const { autoUpdater } = electronUpdater;
 
 const CHECK_INTERVAL_MS = 4 * 60 * 60 * 1000; // every 4h
-
-/** SIGTERM the running backend host so the post-install relaunch spawns fresh. */
-function retireHost(): void {
-  try {
-    const m = JSON.parse(readFileSync(join(OPENTRADE_HOME, "host.json"), "utf8")) as {
-      pid?: number;
-    };
-    if (m.pid) process.kill(m.pid, "SIGTERM");
-  } catch {
-    // no manifest / already gone
-  }
-}
 
 export function initAutoUpdate(
   _win: BrowserWindow,
@@ -44,8 +33,8 @@ export function initAutoUpdate(
   autoUpdater.disableDifferentialDownload = true;
 
   autoUpdater.on("update-downloaded", (info) => {
-    // Stage is complete; autoInstallOnAppQuit will apply it on the next quit.
-    retireHost();
+    // Stage is complete; autoInstallOnAppQuit will apply it on the next quit, and
+    // the relaunched launcher's version-aware `ensureHost` retires the old host.
     onDownloaded?.(info.version);
     if (Notification.isSupported()) {
       new Notification({
