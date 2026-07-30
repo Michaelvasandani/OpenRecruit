@@ -87,6 +87,10 @@ export class TerminalService {
     rows = DEFAULT_ROWS,
     intent: "auto" | "resume" = "auto",
   ): Promise<{ alive: boolean; state: ExecutionState }> {
+    // The user is viewing this agent — its headless turn budget counts unattended
+    // runs only, so every view zeroes it (§12.2). Runs before the state guards: a
+    // view during an in-flight headless run still counts as the user checking in.
+    this.registry.resetHeadlessTurns(agent.id);
     const state = this.registry.executionStateOf(agent.id);
     // I1 single-writer: never spawn an interactive PTY alongside a headless run
     // (EC1) or for an unresumable session (EC13) — the renderer shows an overlay
@@ -196,6 +200,8 @@ export class TerminalService {
   restart(agentId: string): { alive: boolean } {
     const agent = this.registry.get(agentId);
     if (!agent) return { alive: false };
+    // A manual Restart is the user attending to the agent — zero its turn budget.
+    this.registry.resetHeadlessTurns(agentId);
     this.manager.close(agentId, "SIGTERM");
     this.launches.delete(agentId);
     // `spawn` reports `onInteractiveUp`, which clears BROKEN → interactive on the

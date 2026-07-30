@@ -43,6 +43,8 @@ export function createDb() {
       approval_mode TEXT NOT NULL DEFAULT 'approve',
       last_session_id TEXT,
       status TEXT NOT NULL DEFAULT 'idle',
+      headless_turns_used INTEGER NOT NULL DEFAULT 0,
+      turn_limit_enabled INTEGER NOT NULL DEFAULT 1,
       created_at INTEGER NOT NULL,
       archived_at INTEGER
     );

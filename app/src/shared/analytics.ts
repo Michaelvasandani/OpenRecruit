@@ -64,6 +64,7 @@ const settingKey = z.enum([
   "defaultApprovalMode",
   "onboardingComplete",
   "telemetryEnabled",
+  "maxHeadlessTurns",
 ]);
 
 /** Onboarding step ids (mirrors renderer/screens/Onboarding.tsx). */
@@ -135,6 +136,7 @@ export const TELEMETRY_EVENTS = {
     duration_ms: z.number().int().nonnegative(),
   }),
   agent_marked_broken: z.strictObject({}),
+  turn_limit_reached: z.strictObject({}),
 
   // settings + telemetry lifecycle
   setting_changed: z.strictObject({
@@ -165,7 +167,10 @@ export type TelemetryProps<E extends TelemetryEvent> = z.infer<(typeof TELEMETRY
  */
 export const RendererTrackInput = z.discriminatedUnion("event", [
   z.object({ event: z.literal("onboarding_started") }),
-  z.object({ event: z.literal("onboarding_step_completed"), props: TELEMETRY_EVENTS.onboarding_step_completed }),
+  z.object({
+    event: z.literal("onboarding_step_completed"),
+    props: TELEMETRY_EVENTS.onboarding_step_completed,
+  }),
   z.object({ event: z.literal("onboarding_completed") }),
   z.object({ event: z.literal("update_downloaded"), props: TELEMETRY_EVENTS.update_downloaded }),
   z.object({

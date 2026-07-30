@@ -7,16 +7,29 @@ import type { HeadlessExitReason, HeadlessWakeStrategy } from "./types";
 const tick = () => new Promise((r) => setTimeout(r, 0));
 const wait = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
-/** Minimal AgentRegistry stand-in: just the execution-state surface the coordinator
- *  reads (seed) and writes (publish). It IS the actor's state, 1:1. */
+/** Minimal AgentRegistry stand-in: the execution-state surface the coordinator
+ *  reads (seed) and writes (publish) — it IS the actor's state, 1:1 — plus the
+ *  headless turn budget (`get` + `incrementHeadlessTurns`). An agent with no
+ *  seeded budget record reads as un-gated (like the real registry's default row
+ *  with the limit toggled off). */
 class FakeRegistry {
   states = new Map<string, ExecutionState>();
+  budgets = new Map<string, { turnLimitEnabled: boolean; headlessTurnsUsed: number }>();
   executionStateOf(id: string): ExecutionState {
     return this.states.get(id) ?? "offline";
   }
   setExecutionState(id: string, s: ExecutionState): void {
     if (s === "offline") this.states.delete(id);
     else this.states.set(id, s);
+  }
+  get(id: string) {
+    return this.budgets.get(id);
+  }
+  incrementHeadlessTurns(id: string): number {
+    const b = this.budgets.get(id);
+    if (!b) return 0;
+    b.headlessTurnsUsed += 1;
+    return b.headlessTurnsUsed;
   }
 }
 
@@ -40,10 +53,13 @@ class FakeHeadless implements HeadlessWakeStrategy {
   stopAll(): void {}
 }
 
-function make(maxHeadlessRunMs = 10_000) {
+function make(maxHeadlessRunMs = 10_000, maxHeadlessTurns = 20) {
   const reg = new FakeRegistry();
   const headless = new FakeHeadless();
-  const coord = new WakeCoordinator(reg as unknown as AgentRegistry, headless, maxHeadlessRunMs);
+  const coord = new WakeCoordinator(reg as unknown as AgentRegistry, headless, {
+    maxHeadlessRunMs,
+    maxHeadlessTurns: () => maxHeadlessTurns,
+  });
   return { reg, headless, coord };
 }
 
@@ -201,6 +217,62 @@ describe("WakeCoordinator — broken / resume-fail", () => {
     expect(reg.executionStateOf("w")).toBe("broken");
     coord.onInteractiveUp("w"); // manual Restart spawns a fresh PTY
     expect(reg.executionStateOf("w")).toBe("interactive");
+  });
+});
+
+describe("WakeCoordinator — headless turn limit", () => {
+  test("each headless run consumes one turn; the run past the budget is dropped", () => {
+    const { reg, headless, coord } = make(10_000, 2);
+    reg.budgets.set("a", { turnLimitEnabled: true, headlessTurnsUsed: 0 });
+    coord.enqueue("a", "p1");
+    headless.finishNext("ok");
+    coord.enqueue("a", "p2");
+    headless.finishNext("ok");
+    expect(reg.budgets.get("a")!.headlessTurnsUsed).toBe(2);
+    coord.enqueue("a", "p3"); // budget spent → dropped, never spawned
+    expect(headless.calls).toEqual(["a:p1", "a:p2"]);
+    expect(reg.executionStateOf("a")).toBe("offline"); // stays OFFLINE, not headless
+  });
+
+  test("an exhausted budget also gates queued wakes draining after the active run", () => {
+    const { reg, headless, coord } = make(10_000, 1);
+    reg.budgets.set("q", { turnLimitEnabled: true, headlessTurnsUsed: 0 });
+    coord.enqueue("q", "p1"); // consumes the only turn
+    coord.enqueue("q", "p2"); // queued behind the active run
+    headless.finishNext("ok"); // drain → gate trips → p2 dropped
+    expect(headless.calls).toEqual(["q:p1"]);
+    expect(reg.executionStateOf("q")).toBe("offline");
+  });
+
+  test("a reset (the user viewed the agent) re-opens the budget", () => {
+    const { reg, headless, coord } = make(10_000, 1);
+    reg.budgets.set("v", { turnLimitEnabled: true, headlessTurnsUsed: 1 }); // spent
+    coord.enqueue("v", "p1");
+    expect(headless.calls).toEqual([]); // gated
+    reg.budgets.get("v")!.headlessTurnsUsed = 0; // = registry.resetHeadlessTurns on view
+    coord.enqueue("v", "p2");
+    expect(headless.calls).toEqual(["v:p2"]);
+    headless.finishNext("ok");
+  });
+
+  test("a disabled per-agent toggle bypasses the limit", () => {
+    const { reg, headless, coord } = make(10_000, 1);
+    reg.budgets.set("d", { turnLimitEnabled: false, headlessTurnsUsed: 99 });
+    coord.enqueue("d", "p1");
+    expect(headless.calls).toEqual(["d:p1"]);
+    headless.finishNext("ok");
+    expect(reg.budgets.get("d")!.headlessTurnsUsed).toBe(100); // still counted, never gated
+  });
+
+  test("interactive (channel) delivery is never gated or counted", async () => {
+    const { reg, headless, coord } = make(10_000, 1);
+    reg.budgets.set("i", { turnLimitEnabled: true, headlessTurnsUsed: 5 }); // way past the limit
+    coord.onInteractiveUp("i");
+    coord.enqueue("i", "p1");
+    const { p } = poll(coord, "i");
+    expect(await p).toBe("p1"); // delivered via the channel regardless of the budget
+    expect(headless.calls).toEqual([]);
+    expect(reg.budgets.get("i")!.headlessTurnsUsed).toBe(5); // untouched
   });
 });
 

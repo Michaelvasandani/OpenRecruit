@@ -21,6 +21,10 @@ export const AppSettings = z.object({
   /** Anonymous product-telemetry opt-out. On by default; the capture-time gate in
    *  AnalyticsService reads this live via `settings:changed`. */
   telemetryEnabled: z.boolean(),
+  /** Max headless (scheduled background) turns an agent may run since the user last
+   *  viewed it in the GUI. One global value for all agents; per-agent there is only
+   *  an on/off toggle (`Agent.turnLimitEnabled`). Viewing the agent resets its count. */
+  maxHeadlessTurns: z.number().int().min(1).max(1000),
 });
 export type AppSettings = z.infer<typeof AppSettings>;
 
@@ -31,6 +35,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
   defaultApprovalMode: "approve",
   onboardingComplete: false,
   telemetryEnabled: true,
+  maxHeadlessTurns: 20,
 };
 
 /** A partial update of the editable settings. */

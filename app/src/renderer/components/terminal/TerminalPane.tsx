@@ -1,6 +1,7 @@
 import type { Agent } from "@shared/agent";
-import { Bot, RotateCw, ShieldCheck, Zap } from "lucide-react";
+import { Bot, Hourglass, RotateCw, ShieldCheck, Zap } from "lucide-react";
 import { type CSSProperties, useEffect, useRef } from "react";
+import { useSettings } from "../../hooks/useSettings";
 import { comboKeys, SHORTCUTS } from "../../lib/shortcuts";
 import { terminalController } from "../../lib/terminal/session-controller";
 import { trpc } from "../../lib/trpc";
@@ -9,6 +10,7 @@ import { useConnectionStore } from "../../stores/connection";
 import { useTerminalStore } from "../../stores/terminal";
 import { useUIStore } from "../../stores/ui";
 import { Button } from "../ui/button";
+import { Popover, PopoverContent, PopoverTrigger } from "../ui/popover";
 import { Tooltip, TooltipContent, TooltipTrigger } from "../ui/tooltip";
 import { BrokenAgentOverlay } from "./BrokenAgentOverlay";
 import { HeadlessRunOverlay } from "./HeadlessRunOverlay";
@@ -61,6 +63,7 @@ export function TerminalPane({ agent }: { agent: Agent | null }) {
           className={cn("flex items-center gap-2", !backendConnected && "pointer-events-none")}
           style={{ WebkitAppRegion: "no-drag" } as CSSProperties}
         >
+          {agent && <TurnLimitChip agent={agent} />}
           {agent && <ApprovalModeToggle agent={agent} />}
           {agent && attachable && liveness === "dead" && (
             <Button
@@ -110,6 +113,84 @@ export function TerminalPane({ agent }: { agent: Agent | null }) {
         )}
       </div>
     </div>
+  );
+}
+
+/**
+ * The agent's headless turn budget: how many scheduled background turns remain
+ * before automatic restrictions kick in (unattended wakes are dropped). Viewing the
+ * agent resets the count, so this normally reads full — its job is to disclose the
+ * budget and host the per-agent Reset / on-off controls. The limit VALUE is global
+ * (Settings → Agents); per-agent there is only the toggle.
+ */
+function TurnLimitChip({ agent }: { agent: Agent }) {
+  const settings = useSettings();
+  const update = trpc.agents.update.useMutation();
+  const reset = trpc.agents.resetTurnLimit.useMutation();
+  const limit = settings.data?.maxHeadlessTurns ?? 20;
+  const remaining = Math.max(0, limit - agent.headlessTurnsUsed);
+  const exhausted = agent.turnLimitEnabled && remaining === 0;
+
+  return (
+    <Popover>
+      <PopoverTrigger asChild>
+        <button
+          type="button"
+          className={cn(
+            "flex items-center gap-1.5 rounded-md px-2 py-1 text-xs",
+            exhausted
+              ? "bg-destructive/15 text-destructive hover:bg-destructive/25"
+              : "bg-secondary text-muted-foreground hover:bg-accent",
+          )}
+        >
+          <Hourglass className="size-3" />
+          {agent.turnLimitEnabled ? `${remaining} turns` : "No limit"}
+        </button>
+      </PopoverTrigger>
+      <PopoverContent align="end" className="w-80 space-y-3 text-sm">
+        <div>
+          <p className="font-medium">Background turn limit</p>
+          <p className="mt-1 text-xs text-muted-foreground">
+            While you're away, scheduled wakes may run at most {limit} background turns; further
+            wakes are skipped until you check back in. Viewing this agent resets the count.
+            {agent.turnLimitEnabled && (
+              <>
+                {" "}
+                <span className="text-foreground">
+                  {remaining} of {limit}
+                </span>{" "}
+                turns left.
+              </>
+            )}
+          </p>
+        </div>
+        <div className="flex items-center gap-2">
+          <Button
+            type="button"
+            variant="secondary"
+            size="sm"
+            disabled={reset.isPending || agent.headlessTurnsUsed === 0}
+            onClick={() => reset.mutate({ id: agent.id })}
+          >
+            Reset count
+          </Button>
+          <Button
+            type="button"
+            variant="secondary"
+            size="sm"
+            disabled={update.isPending}
+            onClick={() =>
+              update.mutate({ id: agent.id, turnLimitEnabled: !agent.turnLimitEnabled })
+            }
+          >
+            {agent.turnLimitEnabled ? "Turn off for this agent" : "Turn limit back on"}
+          </Button>
+        </div>
+        <p className="text-xs text-muted-foreground/70">
+          The limit itself is global — change it in Settings → Agents.
+        </p>
+      </PopoverContent>
+    </Popover>
   );
 }
 

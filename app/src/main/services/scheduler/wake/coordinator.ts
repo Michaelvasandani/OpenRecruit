@@ -1,4 +1,5 @@
 import type { ExecutionState } from "@shared/agent";
+import { DEFAULT_SETTINGS } from "@shared/settings";
 import { hostLog } from "../../../host/log";
 import type { AgentRegistry } from "../../agents/registry";
 import { analytics } from "../../analytics";
@@ -64,6 +65,7 @@ class AgentWriter {
     private registry: AgentRegistry,
     private headless: HeadlessWakeStrategy,
     private maxHeadlessRunMs: number,
+    private maxHeadlessTurns: () => number,
   ) {
     // Seed BROKEN from a boot-time spawn-marker reconcile: single-writer crash recovery
     // sets `executionState = broken` directly, before this coordinator exists.
@@ -172,10 +174,37 @@ class AgentWriter {
   }
 
   private startHeadless(): void {
+    // The headless turn budget: at most `maxHeadlessTurns` unattended `-p` runs since
+    // the user last viewed the agent in the GUI (viewing resets the count, §12.2). An
+    // exhausted budget drops the queued wakes and stays OFFLINE — a runaway scheduler
+    // can't keep spending while nobody is watching. Recurring crons keep firing (and
+    // keep being dropped here) so the agent resumes on its own after the next view.
+    if (this.turnBudgetExhausted()) {
+      hostLog.warn("headless turn limit reached; dropping queued wake(s)", this.id);
+      this.pending = [];
+      return;
+    }
     this.transition("HEADLESS_RUNNING");
     this.armKillTimer();
+    const used = this.registry.incrementHeadlessTurns(this.id);
+    const agent = this.registry.get(this.id);
+    if (agent?.turnLimitEnabled && used >= this.maxHeadlessTurns()) {
+      // This run consumed the last budgeted turn — the next unattended wake is dropped.
+      // TODO(notifications): surface this as a macOS notification once the
+      // notification subsystem lands on main.
+      analytics.track("turn_limit_reached");
+    }
     const head = this.pending[0]; // kept at the head until exit (no lost wake on crash)
     this.headless.run(this.id, head, (reason) => this.headlessExited(reason));
+  }
+
+  /** True when the agent's turn limit is on and its unattended-turn budget is spent.
+   *  An unknown agent (e.g. archived mid-queue) is not gated here — the headless
+   *  strategy has its own archived/missing guards. */
+  private turnBudgetExhausted(): boolean {
+    const agent = this.registry.get(this.id);
+    if (!agent?.turnLimitEnabled) return false;
+    return agent.headlessTurnsUsed >= this.maxHeadlessTurns();
   }
 
   private headlessExited(reason: HeadlessExitReason): void {
@@ -247,17 +276,29 @@ class AgentWriter {
  */
 export class WakeCoordinator implements WakeTransport {
   private writers = new Map<string, AgentWriter>();
+  private maxHeadlessRunMs: number;
+  /** Live read of the global headless turn limit (a Settings tunable). */
+  private maxHeadlessTurns: () => number;
 
   constructor(
     private registry: AgentRegistry,
     private headless: HeadlessWakeStrategy,
-    private maxHeadlessRunMs = MAX_HEADLESS_RUN_MS,
-  ) {}
+    opts: { maxHeadlessRunMs?: number; maxHeadlessTurns?: () => number } = {},
+  ) {
+    this.maxHeadlessRunMs = opts.maxHeadlessRunMs ?? MAX_HEADLESS_RUN_MS;
+    this.maxHeadlessTurns = opts.maxHeadlessTurns ?? (() => DEFAULT_SETTINGS.maxHeadlessTurns);
+  }
 
   private writer(id: string): AgentWriter {
     let w = this.writers.get(id);
     if (!w) {
-      w = new AgentWriter(id, this.registry, this.headless, this.maxHeadlessRunMs);
+      w = new AgentWriter(
+        id,
+        this.registry,
+        this.headless,
+        this.maxHeadlessRunMs,
+        this.maxHeadlessTurns,
+      );
       this.writers.set(id, w);
     }
     return w;

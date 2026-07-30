@@ -9,6 +9,10 @@ export const agents = sqliteTable("agents", {
   approvalMode: text("approval_mode").notNull().default("approve"),
   lastSessionId: text("last_session_id"),
   status: text("status").notNull().default("idle"),
+  /** Headless wake runs since the user last viewed this agent (reset on view). */
+  headlessTurnsUsed: integer("headless_turns_used").notNull().default(0),
+  /** Whether the global headless turn limit applies to this agent. */
+  turnLimitEnabled: integer("turn_limit_enabled", { mode: "boolean" }).notNull().default(true),
   createdAt: integer("created_at").notNull(),
   archivedAt: integer("archived_at"),
 });

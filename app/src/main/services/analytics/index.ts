@@ -34,6 +34,7 @@ const REPORTABLE_SETTING_KEYS = [
   "pollIntervalBlurredSec",
   "defaultApprovalMode",
   "onboardingComplete",
+  "maxHeadlessTurns",
 ] as const;
 
 /**

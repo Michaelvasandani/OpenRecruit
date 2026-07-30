@@ -265,19 +265,49 @@ export class AgentRegistry {
     writeFileSync(mcpPath, `${JSON.stringify(config, null, 2)}\n`);
   }
 
-  /** Mutate editable fields (name, approval mode). Returns the updated agent. */
+  /** Mutate editable fields (name, approval mode, turn-limit toggle). Returns the updated agent. */
   update(
     id: string,
-    patch: { name?: string; approvalMode?: Agent["approvalMode"] },
+    patch: { name?: string; approvalMode?: Agent["approvalMode"]; turnLimitEnabled?: boolean },
   ): Agent | undefined {
     const set: Partial<typeof agentsTable.$inferInsert> = {};
     if (patch.name !== undefined) set.name = patch.name;
     if (patch.approvalMode !== undefined) set.approvalMode = patch.approvalMode;
+    if (patch.turnLimitEnabled !== undefined) set.turnLimitEnabled = patch.turnLimitEnabled;
     if (Object.keys(set).length > 0) {
       this.db.update(agentsTable).set(set).where(eq(agentsTable.id, id)).run();
       this.broadcast();
     }
     return this.get(id);
+  }
+
+  /**
+   * Count one headless wake run against the agent's turn budget. Returns the new
+   * count (0 for an unknown agent). Broadcast so the GUI's turns-left chip is live.
+   */
+  incrementHeadlessTurns(id: string): number {
+    const row = this.db.select().from(agentsTable).where(eq(agentsTable.id, id)).get();
+    if (!row) return 0;
+    const next = row.headlessTurnsUsed + 1;
+    this.db
+      .update(agentsTable)
+      .set({ headlessTurnsUsed: next })
+      .where(eq(agentsTable.id, id))
+      .run();
+    this.broadcast();
+    return next;
+  }
+
+  /**
+   * Zero the agent's headless turn budget. Called whenever the user views the agent
+   * in the GUI (the budget counts unattended turns only) and by the explicit Reset
+   * control on the agent view.
+   */
+  resetHeadlessTurns(id: string): void {
+    const row = this.db.select().from(agentsTable).where(eq(agentsTable.id, id)).get();
+    if (!row || row.headlessTurnsUsed === 0) return;
+    this.db.update(agentsTable).set({ headlessTurnsUsed: 0 }).where(eq(agentsTable.id, id)).run();
+    this.broadcast();
   }
 
   archive(id: string): void {
@@ -345,6 +375,8 @@ function rowToAgent(row: typeof agentsTable.$inferSelect, executionState: Execut
     lastSessionId: row.lastSessionId,
     status: row.status as Agent["status"],
     executionState,
+    headlessTurnsUsed: row.headlessTurnsUsed,
+    turnLimitEnabled: row.turnLimitEnabled,
     createdAt: row.createdAt,
     archivedAt: row.archivedAt,
   };

@@ -14,6 +14,7 @@ const KEYS: Record<keyof AppSettings, string> = {
   defaultApprovalMode: "default_approval_mode",
   onboardingComplete: "onboarding_complete",
   telemetryEnabled: "telemetry_enabled",
+  maxHeadlessTurns: "max_headless_turns",
 };
 
 /**
@@ -47,10 +48,8 @@ export class SettingsService {
         KEYS.onboardingComplete,
         DEFAULT_SETTINGS.onboardingComplete,
       ),
-      telemetryEnabled: this.readBool(
-        KEYS.telemetryEnabled,
-        DEFAULT_SETTINGS.telemetryEnabled,
-      ),
+      telemetryEnabled: this.readBool(KEYS.telemetryEnabled, DEFAULT_SETTINGS.telemetryEnabled),
+      maxHeadlessTurns: this.readNumber(KEYS.maxHeadlessTurns, DEFAULT_SETTINGS.maxHeadlessTurns),
     };
   }
 

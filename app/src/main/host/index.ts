@@ -91,7 +91,11 @@ async function main() {
   // wake through one of two transports — a `claude/channel` inject into a live PTY
   // (interactive) or a headless `claude --resume -p` (headless). Built before the
   // TerminalService so the latter can report PTY up/down to it.
-  const wake = new WakeCoordinator(registry, new HeadlessRunStrategy(registry, localApi));
+  const wake = new WakeCoordinator(registry, new HeadlessRunStrategy(registry, localApi), {
+    // The headless turn budget reads the global limit live, so a Settings change
+    // applies to the next wake without a restart.
+    maxHeadlessTurns: () => settings.get().maxHeadlessTurns,
+  });
 
   const terminal = new TerminalService(registry, localApi, arbiter, wake);
   await terminal.start();

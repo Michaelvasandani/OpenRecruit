@@ -28,9 +28,17 @@ export const agentsRouter = router({
         id: z.string(),
         name: z.string().min(1).max(80).optional(),
         approvalMode: ApprovalMode.optional(),
+        turnLimitEnabled: z.boolean().optional(),
       }),
     )
     .mutation(({ ctx, input }) => ctx.registry.update(input.id, input) ?? null),
+
+  /** Zero the agent's headless turn budget (the Reset control on the agent view;
+   *  viewing the agent also resets it automatically). */
+  resetTurnLimit: publicProcedure.input(z.object({ id: z.string() })).mutation(({ ctx, input }) => {
+    ctx.registry.resetHeadlessTurns(input.id);
+    return { ok: true };
+  }),
 
   archive: publicProcedure.input(z.object({ id: z.string() })).mutation(({ ctx, input }) => {
     // Tear down the live PTY before dropping the agent from the list, so the

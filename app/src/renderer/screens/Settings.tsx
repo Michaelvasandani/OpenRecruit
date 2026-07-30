@@ -161,6 +161,18 @@ function AgentsPanel() {
           onChange={(defaultApprovalMode) => update.mutate({ defaultApprovalMode })}
         />
       </SettingsRow>
+      <SettingsRow
+        label="Background turn limit"
+        hint="Max scheduled background turns an agent may run while you're away — further wakes are skipped until you view the agent, which resets its count. One limit for all agents; each agent's view has an on/off toggle."
+      >
+        <SettingNumber
+          value={s.maxHeadlessTurns}
+          min={1}
+          max={1000}
+          suffix="turns"
+          onCommit={(maxHeadlessTurns) => update.mutate({ maxHeadlessTurns })}
+        />
+      </SettingsRow>
     </SettingsSection>
   );
 }

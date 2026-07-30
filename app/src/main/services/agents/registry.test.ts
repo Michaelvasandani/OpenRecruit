@@ -23,6 +23,8 @@ function memRegistry() {
   sqlite.exec(`CREATE TABLE agents (
     id TEXT PRIMARY KEY, slug TEXT NOT NULL, name TEXT NOT NULL, template TEXT NOT NULL,
     approval_mode TEXT NOT NULL, last_session_id TEXT, status TEXT NOT NULL,
+    headless_turns_used INTEGER NOT NULL DEFAULT 0,
+    turn_limit_enabled INTEGER NOT NULL DEFAULT 1,
     created_at INTEGER NOT NULL, archived_at INTEGER);`);
   return new AgentRegistry(drizzle(sqlite, { schema }) as unknown as Db);
 }
