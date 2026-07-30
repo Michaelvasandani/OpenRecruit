@@ -105,12 +105,23 @@ export class BrokerService {
     bus.emitEvent("broker:status", { status });
   }
 
-  /** Connect (running OAuth consent if needed) and start polling. */
-  async connect(): Promise<void> {
+  /**
+   * Connect and start polling. `interactive` (the explicit Connect button) allows a
+   * browser re-consent when the stored session is dead; the silent boot auto-connect
+   * omits it and just stays disconnected on a dead grant (§6.6).
+   */
+  async connect(opts: { interactive?: boolean } = {}): Promise<void> {
     if (this.status === "connected") return;
     this.setStatus("connecting");
     try {
-      await this.adapter.connect();
+      await this.adapter.connect(opts);
+      // A silent connect can end without a session — the stored grant was dead and the
+      // adapter dropped it rather than pop a browser. That's not an error: reflect it as
+      // disconnected so the UI shows the Connect CTA (which re-consents).
+      if (!this.adapter.isConnected()) {
+        this.setStatus("disconnected");
+        return;
+      }
       const accounts = await this.adapter.listAccounts();
       this.account = pickAccount(accounts);
       this.setStatus("connected");

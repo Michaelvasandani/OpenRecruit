@@ -29,9 +29,10 @@ export const onboardingRouter = router({
 
   checkClaudeCli: publicProcedure.query(() => probeClaude()),
 
-  /** Runs the Robinhood OAuth consent flow (opens browser) and starts polling. */
+  /** The explicit Connect action: runs the Robinhood OAuth consent flow (opens a
+   *  browser, including re-consent after a dead grant) and starts polling. */
   connectBroker: publicProcedure.mutation(async ({ ctx }) => {
-    await ctx.broker.connect();
+    await ctx.broker.connect({ interactive: true });
     return { status: ctx.broker.getStatus(), account: ctx.broker.getAccount() };
   }),
 });

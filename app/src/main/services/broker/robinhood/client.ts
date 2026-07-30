@@ -69,7 +69,7 @@ export class RobinhoodAdapter implements BrokerAdapter {
     this.client = null;
   }
 
-  async connect(): Promise<void> {
+  async connect(opts: { interactive?: boolean } = {}): Promise<void> {
     if (this.client) return;
     // Cached tokens (or a refreshable session) connect with no browser.
     if (this.provider.hasTokens()) {
@@ -79,13 +79,19 @@ export class RobinhoodAdapter implements BrokerAdapter {
       } catch (err) {
         if (!isReauthRequired(err)) throw err;
         // The stored session is unusable (401, or the refresh token expired/was
-        // revoked → invalid_grant). Drop it so the fall-through starts a clean
-        // authorization — otherwise interactiveConnect's own doConnect would retry
-        // the same dead refresh and throw invalid_grant again.
+        // revoked → invalid_grant). Drop it so a later interactive connect starts
+        // clean — otherwise interactiveConnect's own doConnect would retry the same
+        // dead refresh and throw invalid_grant again.
         this.provider.reset();
+        // Silent path (boot auto-connect): stay disconnected rather than pop a browser
+        // unprompted. The user re-consents explicitly via the Connect button.
+        if (!opts.interactive) return;
       }
     }
-    await this.interactiveConnect();
+    // Only the explicit Connect action opens a browser (fresh consent, or the
+    // re-consent after a dead grant above). A silent request with no usable session
+    // simply stays disconnected.
+    if (opts.interactive) await this.interactiveConnect();
   }
 
   private async doConnect(): Promise<void> {

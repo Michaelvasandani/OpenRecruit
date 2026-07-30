@@ -13,8 +13,14 @@ export interface McpServerConfig {
  */
 export interface BrokerAdapter {
   readonly id: string;
-  /** Run the OAuth handshake (no-op if already authorized). */
-  connect(): Promise<void>;
+  /**
+   * Connect. A cached, still-valid session always connects silently. `interactive`
+   * governs only the recovery path when the stored session is dead (expired/revoked
+   * grant): `true` (the explicit Connect action) opens a browser for re-consent;
+   * `false`/omitted (the silent boot auto-connect) just drops the dead tokens and
+   * stays disconnected — never pops a browser unprompted.
+   */
+  connect(opts?: { interactive?: boolean }): Promise<void>;
   isConnected(): boolean;
   listAccounts(): Promise<Account[]>;
   getPortfolio(accountNumber: string): Promise<Portfolio>;
