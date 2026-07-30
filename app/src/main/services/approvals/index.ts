@@ -1,3 +1,4 @@
+import { assetTypeOf, orderKindOf, orderTypeOf, sideOf } from "@shared/analytics";
 import type {
   Approval,
   ApprovalStatus,
@@ -6,14 +7,8 @@ import type {
   ParsedOrder,
   PreToolUseDecision,
 } from "@shared/approval";
-import {
-  assetTypeOf,
-  orderKindOf,
-  orderTypeOf,
-  sideOf,
-} from "@shared/analytics";
 import { DEFAULT_SETTINGS } from "@shared/settings";
-import { and, asc, desc, eq, isNull } from "drizzle-orm";
+import { and, asc, desc, eq, isNull, like } from "drizzle-orm";
 import { nanoid } from "nanoid";
 import type { Db } from "../../db/client";
 import { approvals as approvalsTable, settings as settingsTable } from "../../db/schema";
@@ -115,7 +110,14 @@ export class ApprovalService {
     // Approve mode: surface a card and block until decided.
     this.syncPending(args.agentId);
     bus.emitEvent("approvals:changed", { agentId: args.agentId });
-    bus.emitEvent("approval:pending", this.toApproval(id)!);
+    const approval = this.toApproval(id)!;
+    bus.emitEvent("approval:pending", approval);
+    bus.emitEvent("notify", {
+      kind: "approval",
+      title: `Approval needed — ${approval.agentName ?? "agent"}`,
+      body: approval.parsed?.summary ?? approval.toolName,
+      agentId: args.agentId,
+    });
 
     return new Promise<PreToolUseDecision>((resolve) => {
       const timer = setTimeout(() => {
@@ -229,6 +231,28 @@ export class ApprovalService {
 
   pendingCount(): number {
     return this.listPending().length;
+  }
+
+  /**
+   * Which agent placed a given broker order, via the approval row's `outcome.orderId`
+   * link (recorded by the PostToolUse hook in `recordOutcome`). Returns null for an
+   * order OpenTrade didn't place (e.g. one entered manually in the Robinhood app), so
+   * order notifications fire only for agent-placed orders (§12.4). Called only on
+   * terminal ledger transitions — a handful of times a day — so the unindexed
+   * `outcome` LIKE scan is fine.
+   */
+  agentForOrder(orderId: string): { agentId: string; agentName: string | null } | null {
+    const rows = this.db
+      .select()
+      .from(approvalsTable)
+      .where(like(approvalsTable.outcome, `%${orderId}%`))
+      .all();
+    for (const row of rows) {
+      if (safeJson<OrderOutcome>(row.outcome)?.orderId === orderId) {
+        return { agentId: row.agentId, agentName: this.registry.get(row.agentId)?.name ?? null };
+      }
+    }
+    return null;
   }
 
   /** On boot, no hook is still long-polling — expire orphaned pending rows. */

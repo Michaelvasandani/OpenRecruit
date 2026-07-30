@@ -1,5 +1,6 @@
 import { join } from "node:path";
-import type { Approval } from "@shared/approval";
+import type { HostNotification, NotificationKind } from "@shared/notify";
+import { type AppSettings, DEFAULT_SETTINGS } from "@shared/settings";
 import { createTRPCClient, createWSClient, wsLink } from "@trpc/client";
 import { app, BrowserWindow, Notification } from "electron";
 import superjson from "superjson";
@@ -13,6 +14,54 @@ import { createMainWindow } from "./window";
 let mainWindow: BrowserWindow | null = null;
 let relayClient: ReturnType<typeof createWSClient> | null = null;
 let relayTrpc: ReturnType<typeof createTRPCClient<AppRouter>> | null = null;
+/** The adopted host, kept so a notification click can recreate a closed window. */
+let currentHost: HostManifest | null = null;
+/** Live AppSettings mirror driven by `settings.onChanged`; gates notification display.
+ *  Seeded with defaults (all on) so display works before the first push arrives. */
+let liveSettings: AppSettings = DEFAULT_SETTINGS;
+
+/** AppSettings toggle backing each notification kind. */
+const NOTIFY_TOGGLE: Record<NotificationKind, keyof AppSettings> = {
+  wake: "notifyWakes",
+  order: "notifyOrders",
+  approval: "notifyApprovals",
+  restricted: "notifyRestricted",
+  update: "notifyUpdates",
+};
+
+/** True only when a live (non-destroyed) window exists and is focused. */
+function windowFocused(): boolean {
+  return mainWindow !== null && !mainWindow.isDestroyed() && mainWindow.isFocused();
+}
+
+/** Restore/show/focus the window, recreating it if it was closed — on macOS the app
+ *  outlives its window, so a click on a wake notification must be able to reopen it. */
+function focusMainWindow(): void {
+  if (!mainWindow || mainWindow.isDestroyed()) {
+    if (!currentHost) return;
+    mainWindow = createMainWindow({ trpcPort: currentHost.trpcPort, token: currentHost.token });
+    return;
+  }
+  if (mainWindow.isMinimized()) mainWindow.restore();
+  mainWindow.show();
+  mainWindow.focus();
+}
+
+/** The single display path for every notification kind: gate on the per-kind toggle,
+ *  show the banner, and on click focus the window + fire `notification_clicked`. Safe
+ *  to call even when the relay never connected (the updater calls it regardless). */
+function showAppNotification(kind: NotificationKind, title: string, body: string): void {
+  if (!liveSettings[NOTIFY_TOGGLE[kind]]) return;
+  if (!Notification.isSupported()) return;
+  const n = new Notification({ title, body });
+  n.on("click", () => {
+    focusMainWindow();
+    relayTrpc?.analytics.track
+      .mutate({ event: "notification_clicked", props: { kind } })
+      .catch(() => {});
+  });
+  n.show();
+}
 
 // Key Electron's per-instance state (including the single-instance lock) to this
 // home so parallel dev instances with distinct OPENTRADE_HOME don't collide.
@@ -48,6 +97,7 @@ async function main() {
     // instead of hanging on a blank screen.
     host = { pid: 0, faucetPort: 0, trpcPort: 0, token: "", startedAt: 0 };
   }
+  currentHost = host;
 
   const win = createMainWindow({ trpcPort: host.trpcPort, token: host.token });
   mainWindow = win;
@@ -55,16 +105,19 @@ async function main() {
     if (mainWindow === win) mainWindow = null;
   });
 
-  if (host.trpcPort) wireApprovalAlerts(win, host);
+  if (host.trpcPort) wireNotifications(win, host);
 
   // Auto-update against GitHub Releases (no-op in dev / unpackaged). Retires the
   // running backend host on install so the new build's code takes effect. The
-  // download-staged event rides the relay client to the host's telemetry funnel.
-  initAutoUpdate(win, (toVersion) =>
-    relayTrpc?.analytics.track
-      .mutate({ event: "update_downloaded", props: { to_version: toVersion } })
-      .catch(() => {}),
-  );
+  // download-staged event rides the relay client to the host's telemetry funnel;
+  // the banner goes through the gated helper so the "App updates" toggle applies.
+  initAutoUpdate(win, {
+    onDownloaded: (toVersion) =>
+      relayTrpc?.analytics.track
+        .mutate({ event: "update_downloaded", props: { to_version: toVersion } })
+        .catch(() => {}),
+    showNotification: (title, body) => showAppNotification("update", title, body),
+  });
 
   app.on("activate", () => {
     if (BrowserWindow.getAllWindows().length === 0) {
@@ -90,11 +143,14 @@ app.on("before-quit", () => {
 });
 
 /**
- * Notification relay. The approval state lives in the backend now, so the macOS
- * Notification + dock badge are driven by a small tRPC-over-WS client subscribing
- * to the host's `approvals.onPending`/`onChanged` — out of the data path.
+ * Notification relay. All app state lives in the backend host, so macOS
+ * notifications, the dock badge, and the focus relay are driven by a small
+ * tRPC-over-WS client — out of the data path. The host formats notifications
+ * (`notifications.onNotify`); this launcher gates them (per-kind toggle, per-agent
+ * mute, window focus for wakes) and displays them. The approval badge/flash stay
+ * unconditional — only the approval *banner* is gated (§12.4).
  */
-function wireApprovalAlerts(win: BrowserWindow, host: HostManifest) {
+function wireNotifications(win: BrowserWindow, host: HostManifest) {
   const wsClient = createWSClient({
     // Tag this connection `&client=relay` so the host's gui-presence detector
     // excludes it — only true renderer connections count as "GUI present" (§12.2).
@@ -117,6 +173,15 @@ function wireApprovalAlerts(win: BrowserWindow, host: HostManifest) {
   win.on("focus", () => setFocused(true));
   win.on("blur", () => setFocused(false));
 
+  // Keep the notification gate live. `settings.onChanged` pushes the current
+  // settings immediately on (re)connect, so this both seeds and refreshes the cache
+  // and self-heals across a relay reconnect — no separate `get` query needed.
+  client.settings.onChanged.subscribe(undefined, {
+    onData: (s: AppSettings) => {
+      liveSettings = s;
+    },
+  });
+
   const updateBadge = async () => {
     try {
       const n = await client.approvals.pendingCount.query();
@@ -126,21 +191,12 @@ function wireApprovalAlerts(win: BrowserWindow, host: HostManifest) {
     }
   };
 
+  // Approval alerts: the dock badge + frame flash + window focus are unconditional
+  // (the user asked for an approval; they need to see it). Only the banner is gated,
+  // and that happens on the `notify` stream below.
   client.approvals.onPending.subscribe(undefined, {
-    onData: (a: Approval) => {
-      if (Notification.isSupported()) {
-        const n = new Notification({
-          title: `Approval needed — ${a.agentName ?? "agent"}`,
-          body: a.parsed?.summary ?? a.toolName,
-        });
-        n.on("click", () => {
-          if (win.isMinimized()) win.restore();
-          win.show();
-          win.focus();
-        });
-        n.show();
-      }
-      if (!win.isFocused()) win.flashFrame(true);
+    onData: () => {
+      if (!windowFocused()) win.flashFrame(true);
       win.focus();
       void updateBadge();
     },
@@ -148,5 +204,17 @@ function wireApprovalAlerts(win: BrowserWindow, host: HostManifest) {
 
   client.approvals.onChanged.subscribe(undefined, {
     onData: () => void updateBadge(),
+  });
+
+  // Host-formatted notification banners. The host owns the copy; the launcher gates
+  // per-agent mute + (for wakes) window focus, then displays via the shared helper
+  // (which applies the per-kind toggle).
+  client.notifications.onNotify.subscribe(undefined, {
+    onData: (n: HostNotification) => {
+      if (n.agentId && liveSettings.notifyMutedAgents.includes(n.agentId)) return;
+      // Wakes only interrupt when you're away — you'd see the terminal light up otherwise.
+      if (n.kind === "wake" && windowFocused()) return;
+      showAppNotification(n.kind, n.title, n.body);
+    },
   });
 }

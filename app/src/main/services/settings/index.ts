@@ -15,6 +15,12 @@ const KEYS: Record<keyof AppSettings, string> = {
   onboardingComplete: "onboarding_complete",
   telemetryEnabled: "telemetry_enabled",
   maxHeadlessTurns: "max_headless_turns",
+  notifyWakes: "notify_wakes",
+  notifyOrders: "notify_orders",
+  notifyApprovals: "notify_approvals",
+  notifyRestricted: "notify_restricted",
+  notifyUpdates: "notify_updates",
+  notifyMutedAgents: "notify_muted_agents",
 };
 
 /**
@@ -50,6 +56,15 @@ export class SettingsService {
       ),
       telemetryEnabled: this.readBool(KEYS.telemetryEnabled, DEFAULT_SETTINGS.telemetryEnabled),
       maxHeadlessTurns: this.readNumber(KEYS.maxHeadlessTurns, DEFAULT_SETTINGS.maxHeadlessTurns),
+      notifyWakes: this.readBool(KEYS.notifyWakes, DEFAULT_SETTINGS.notifyWakes),
+      notifyOrders: this.readBool(KEYS.notifyOrders, DEFAULT_SETTINGS.notifyOrders),
+      notifyApprovals: this.readBool(KEYS.notifyApprovals, DEFAULT_SETTINGS.notifyApprovals),
+      notifyRestricted: this.readBool(KEYS.notifyRestricted, DEFAULT_SETTINGS.notifyRestricted),
+      notifyUpdates: this.readBool(KEYS.notifyUpdates, DEFAULT_SETTINGS.notifyUpdates),
+      notifyMutedAgents: this.readStringArray(
+        KEYS.notifyMutedAgents,
+        DEFAULT_SETTINGS.notifyMutedAgents,
+      ),
     };
   }
 
@@ -124,9 +139,23 @@ export class SettingsService {
     const parsed = ApprovalMode.safeParse(this.readRaw(key));
     return parsed.success ? parsed.data : fallback;
   }
+
+  private readStringArray(key: string, fallback: string[]): string[] {
+    const raw = this.readRaw(key);
+    if (raw === undefined) return fallback;
+    try {
+      const parsed = JSON.parse(raw);
+      return Array.isArray(parsed) && parsed.every((x) => typeof x === "string")
+        ? (parsed as string[])
+        : fallback;
+    } catch {
+      return fallback;
+    }
+  }
 }
 
 function serialize(value: unknown): string {
   if (typeof value === "boolean") return value ? "1" : "0";
+  if (Array.isArray(value)) return JSON.stringify(value);
   return String(value);
 }

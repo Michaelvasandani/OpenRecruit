@@ -1,3 +1,4 @@
+import { firstLine } from "@shared/notify";
 import type {
   CronCreateInput,
   Monitor,
@@ -337,6 +338,14 @@ export class Scheduler {
     this.wake.enqueue(agentId, prompt);
     // Surface the new wake + updated last/next-fire times in the Monitor tab live.
     bus.emitEvent("scheduler:changed", { agentId });
+    // Notify the user their agent just started working (the launcher shows it only
+    // while OpenTrade is unfocused — see §12.4).
+    bus.emitEvent("notify", {
+      kind: "wake",
+      title: `${agent.name} — ${sourceKind === "cron" ? "scheduled run" : "monitor triggered"}`,
+      body: firstLine(prompt),
+      agentId,
+    });
   }
 
   private getCron(id: string): Schedule | undefined {

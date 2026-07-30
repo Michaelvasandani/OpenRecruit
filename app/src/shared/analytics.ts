@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { ApprovalMode } from "./agent";
+import { NotificationKind } from "./notify";
 
 /**
  * The telemetry allowlist — the single source of truth for what OpenTrade may ever
@@ -65,6 +66,11 @@ const settingKey = z.enum([
   "onboardingComplete",
   "telemetryEnabled",
   "maxHeadlessTurns",
+  "notifyWakes",
+  "notifyOrders",
+  "notifyApprovals",
+  "notifyRestricted",
+  "notifyUpdates",
 ]);
 
 /** Onboarding step ids (mirrors renderer/screens/Onboarding.tsx). */
@@ -146,6 +152,9 @@ export const TELEMETRY_EVENTS = {
   telemetry_enabled: z.strictObject({}),
   telemetry_disabled: z.strictObject({}),
 
+  // notifications
+  notification_clicked: z.strictObject({ kind: NotificationKind }),
+
   // errors (sanitized)
   app_error: z.strictObject({
     subsystem: ErrorSubsystem,
@@ -173,6 +182,10 @@ export const RendererTrackInput = z.discriminatedUnion("event", [
   }),
   z.object({ event: z.literal("onboarding_completed") }),
   z.object({ event: z.literal("update_downloaded"), props: TELEMETRY_EVENTS.update_downloaded }),
+  z.object({
+    event: z.literal("notification_clicked"),
+    props: TELEMETRY_EVENTS.notification_clicked,
+  }),
   z.object({
     event: z.literal("app_error"),
     props: z.strictObject({

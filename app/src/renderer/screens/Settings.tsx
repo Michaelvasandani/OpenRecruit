@@ -1,32 +1,38 @@
 import {
+  Bell,
   Bot,
+  Check,
+  Copy,
   Info,
   LineChart,
   Loader2,
   type LucideIcon,
   ShieldCheck,
   SlidersHorizontal,
+  TriangleAlert,
 } from "lucide-react";
 import { type CSSProperties, useState } from "react";
 import { SegmentedControl } from "../components/settings/SegmentedControl";
 import { SettingNumber } from "../components/settings/SettingNumber";
-import { SettingToggle } from "../components/settings/SettingToggle";
 import { SettingsRow } from "../components/settings/SettingsRow";
 import { SettingsSection } from "../components/settings/SettingsSection";
+import { SettingToggle } from "../components/settings/SettingToggle";
 import { Tooltip, TooltipContent, TooltipTrigger } from "../components/ui/tooltip";
+import { useAgents } from "../hooks/useAgents";
 import { useBrokerStatus } from "../hooks/useBroker";
 import { useSettings, useUpdateSettings } from "../hooks/useSettings";
 import { trpc } from "../lib/trpc";
 import { cn } from "../lib/utils";
 import { useUIStore } from "../stores/ui";
 
-type CategoryId = "general" | "agents" | "approvals" | "market-data" | "about";
+type CategoryId = "general" | "agents" | "approvals" | "market-data" | "notifications" | "about";
 
 const CATEGORIES: { id: CategoryId; label: string; icon: LucideIcon }[] = [
   { id: "general", label: "General", icon: SlidersHorizontal },
   { id: "agents", label: "Agents", icon: Bot },
   { id: "approvals", label: "Approvals", icon: ShieldCheck },
   { id: "market-data", label: "Market data", icon: LineChart },
+  { id: "notifications", label: "Notifications", icon: Bell },
   { id: "about", label: "About", icon: Info },
 ];
 
@@ -89,6 +95,7 @@ export function SettingsScreen() {
             {category === "agents" && <AgentsPanel />}
             {category === "approvals" && <ApprovalsPanel />}
             {category === "market-data" && <MarketDataPanel />}
+            {category === "notifications" && <NotificationsPanel />}
             {category === "about" && <AboutPanel />}
           </div>
         </div>
@@ -136,6 +143,70 @@ function GeneralPanel() {
           )}
         </SettingsRow>
       </SettingsSection>
+
+      {/* Not a titled section: this is an informational heads-up about the underlying
+          agent runtime, not an OpenTrade-controlled setting. Sits at the bottom. */}
+      <RetentionNotice />
+    </div>
+  );
+}
+
+const RETENTION_SNIPPET = '{ "cleanupPeriodDays": 365 }';
+
+/**
+ * Informational heads-up (not an OpenTrade-controlled setting): the current agent
+ * runtime (Claude Code) caps how long an idle agent keeps its conversation memory via
+ * `cleanupPeriodDays`. Shown only when that window is at/below the default 30 days;
+ * offers a copyable snippet to extend it. N days + settings path read live via
+ * `system.claudeRetention`.
+ */
+function RetentionNotice() {
+  const retention = trpc.system.claudeRetention.useQuery();
+  const [copied, setCopied] = useState(false);
+  const r = retention.data;
+
+  // Only nudge when retention is at/below the default 30 days — a longer window is fine.
+  if (!r || r.days > 30) return null;
+
+  const copy = () => {
+    navigator.clipboard.writeText(RETENTION_SNIPPET).then(() => {
+      setCopied(true);
+      setTimeout(() => setCopied(false), 1500);
+    });
+  };
+
+  return (
+    <div className="rounded-md border border-warning/30 bg-warning/10 p-3">
+      <div className="flex items-start gap-2.5">
+        <TriangleAlert className="mt-0.5 size-4 shrink-0 text-warning" />
+        <div className="min-w-0 space-y-2 text-sm text-foreground">
+          <p>
+            Claude Code is configured to delete conversation history after{" "}
+            <span className="font-medium">{r.days} days</span> of inactivity. To keep it longer,
+            change Claude Code's settings at{" "}
+            <code className="rounded bg-background/60 px-1 py-0.5 text-xs">{r.settingsPath}</code>:
+          </p>
+          <div className="flex items-center justify-between gap-2 rounded border border-border bg-background/60 px-2.5 py-1.5 font-mono text-xs">
+            <code className="truncate">{RETENTION_SNIPPET}</code>
+            <button
+              type="button"
+              onClick={copy}
+              className="flex shrink-0 items-center gap-1 rounded px-1.5 py-0.5 text-muted-foreground hover:bg-accent hover:text-foreground"
+              aria-label="Copy snippet"
+            >
+              {copied ? (
+                <>
+                  <Check className="size-3.5 text-success" /> Copied
+                </>
+              ) : (
+                <>
+                  <Copy className="size-3.5" /> Copy
+                </>
+              )}
+            </button>
+          </div>
+        </div>
+      </div>
     </div>
   );
 }
@@ -287,6 +358,89 @@ function BrokerConnectionRow() {
         )}
       </div>
     </SettingsRow>
+  );
+}
+
+function NotificationsPanel() {
+  const settings = useSettings();
+  const update = useUpdateSettings();
+  const agents = useAgents();
+  const s = settings.data;
+  if (!s) return null;
+
+  const setMuted = (agentId: string, muted: boolean) => {
+    const set = new Set(s.notifyMutedAgents);
+    if (muted) set.add(agentId);
+    else set.delete(agentId);
+    update.mutate({ notifyMutedAgents: [...set] });
+  };
+
+  return (
+    <div className="space-y-8">
+      <SettingsSection title="Notifications" description="macOS notifications from OpenTrade.">
+        <SettingsRow
+          label="Agent wake-ups"
+          hint="A timer or monitor fired and the agent started working. Shown only while OpenTrade is in the background."
+        >
+          <SettingToggle
+            checked={s.notifyWakes}
+            onChange={(notifyWakes) => update.mutate({ notifyWakes })}
+          />
+        </SettingsRow>
+        <SettingsRow
+          label="Order executions"
+          hint="An agent-placed order filled, was rejected, or was cancelled."
+        >
+          <SettingToggle
+            checked={s.notifyOrders}
+            onChange={(notifyOrders) => update.mutate({ notifyOrders })}
+          />
+        </SettingsRow>
+        <SettingsRow
+          label="Approval requests"
+          hint="An agent is waiting on your approval to place an order. The dock badge always shows regardless."
+        >
+          <SettingToggle
+            checked={s.notifyApprovals}
+            onChange={(notifyApprovals) => update.mutate({ notifyApprovals })}
+          />
+        </SettingsRow>
+        <SettingsRow
+          label="Agent paused"
+          hint="An agent hit its unattended turn limit and stopped running in the background until you check on it."
+        >
+          <SettingToggle
+            checked={s.notifyRestricted}
+            onChange={(notifyRestricted) => update.mutate({ notifyRestricted })}
+          />
+        </SettingsRow>
+        <SettingsRow
+          label="App updates"
+          hint="A new version has been downloaded and is ready to install."
+        >
+          <SettingToggle
+            checked={s.notifyUpdates}
+            onChange={(notifyUpdates) => update.mutate({ notifyUpdates })}
+          />
+        </SettingsRow>
+      </SettingsSection>
+
+      {agents.length > 0 && (
+        <SettingsSection
+          title="Per agent"
+          description="Mute every notification from a specific agent."
+        >
+          {agents.map((a) => (
+            <SettingsRow key={a.id} label={a.name}>
+              <SettingToggle
+                checked={!s.notifyMutedAgents.includes(a.id)}
+                onChange={(enabled) => setMuted(a.id, !enabled)}
+              />
+            </SettingsRow>
+          ))}
+        </SettingsSection>
+      )}
+    </div>
   );
 }
 

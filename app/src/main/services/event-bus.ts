@@ -2,6 +2,7 @@ import { EventEmitter } from "node:events";
 import type { Agent } from "@shared/agent";
 import type { Approval } from "@shared/approval";
 import type { BrokerConnectionStatus } from "@shared/broker";
+import type { HostNotification } from "@shared/notify";
 import type { AppSettings } from "@shared/settings";
 
 /** Typed app-wide event bus bridged into tRPC observables. */
@@ -22,6 +23,9 @@ export interface AppEvents {
   "audit:changed": { agentId: string | null };
   /** A schedule/monitor was created, deleted, or fired; renderer re-queries the Scheduled view. */
   "scheduler:changed": { agentId: string | null };
+  /** A host-formatted macOS notification; the launcher relay gates it (per-kind
+   *  toggle, per-agent mute, window focus for wakes) and displays it (§12.4). */
+  notify: HostNotification;
   /** The last renderer (GUI) disconnected (≥1→0, after a short grace). The host
    *  blanket-kills every interactive PTY so none are maintained outside the GUI. */
   "gui:gone": undefined;

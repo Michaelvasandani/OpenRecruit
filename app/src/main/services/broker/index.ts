@@ -1,3 +1,4 @@
+import { errorNameOf } from "@shared/analytics";
 import type {
   Account,
   BrokerConnectionStatus,
@@ -6,7 +7,6 @@ import type {
   Position,
   Quote,
 } from "@shared/broker";
-import { errorNameOf } from "@shared/analytics";
 import { eq } from "drizzle-orm";
 import type { Db } from "../../db/client";
 import { brokerCache } from "../../db/schema";
@@ -14,6 +14,7 @@ import { analytics } from "../analytics";
 import { bus } from "../event-bus";
 import type { SettingsService } from "../settings";
 import type { BrokerAdapter } from "./adapter";
+import { orderNotification, terminalTransition } from "./order-notify";
 
 /**
  * The order ledger is kept *complete* via two tiers: a full history sweep that
@@ -69,6 +70,12 @@ export class BrokerService {
     private db: Db,
     private adapter: BrokerAdapter,
     private settings: SettingsService,
+    /** Links a broker order back to the agent that placed it (via the approval
+     *  `outcome.orderId`), so order notifications fire only for agent-placed
+     *  orders. A narrow slice of ApprovalService (§12.4). */
+    private orderLinks: {
+      agentForOrder(orderId: string): { agentId: string; agentName: string | null } | null;
+    },
   ) {
     // Re-apply the poll cadence live when the user changes it in Settings.
     bus.onEvent("settings:changed", () => {
@@ -250,7 +257,18 @@ export class BrokerService {
     }
     const since = new Date(Date.now() - LEDGER_RECENT_WINDOW_MS).toISOString();
     for (const o of await this.fetchHistory(account, { createdAtGte: since })) {
+      const prev = this.ledger.get(o.id);
       this.ledger.set(o.id, o); // recent wins: freshest state for in-flight orders
+      // An order just reached a terminal state (filled/rejected/cancelled/…) → notify,
+      // but only for orders an agent placed (linked via the approval outcome). On the
+      // first poll the full sweep above has already seeded pre-existing terminal orders
+      // with a terminal `prev`, so a host restart never re-notifies. Terminal states are
+      // absorbing, so the prev-check dedupes without a separate notified-set. Gap: a
+      // transition landing exactly in the daily full-sweep rebuild is silently absorbed.
+      if (terminalTransition(prev, o)) {
+        const link = this.orderLinks.agentForOrder(o.id); // only on transitions — rare
+        if (link) bus.emitEvent("notify", orderNotification(o, link.agentName, link.agentId));
+      }
     }
   }
 

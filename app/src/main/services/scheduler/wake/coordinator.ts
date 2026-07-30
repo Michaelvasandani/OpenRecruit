@@ -3,6 +3,7 @@ import { DEFAULT_SETTINGS } from "@shared/settings";
 import { hostLog } from "../../../host/log";
 import type { AgentRegistry } from "../../agents/registry";
 import { analytics } from "../../analytics";
+import { bus } from "../../event-bus";
 import type { HeadlessExitReason, HeadlessWakeStrategy, WakeTransport } from "./types";
 
 /** Hard ceiling on a single headless run, INCLUDING time parked at the approval gate.
@@ -189,10 +190,16 @@ class AgentWriter {
     const used = this.registry.incrementHeadlessTurns(this.id);
     const agent = this.registry.get(this.id);
     if (agent?.turnLimitEnabled && used >= this.maxHeadlessTurns()) {
-      // This run consumed the last budgeted turn — the next unattended wake is dropped.
-      // TODO(notifications): surface this as a macOS notification once the
-      // notification subsystem lands on main.
+      // This run consumed the last budgeted turn — the next unattended wake is dropped
+      // until the user views the agent (which resets the count). Surface it so the user
+      // knows the agent has paused and needs a look (§12.4).
       analytics.track("turn_limit_reached");
+      bus.emitEvent("notify", {
+        kind: "restricted",
+        title: `${agent.name} — paused`,
+        body: "Reached its unattended turn limit. Open OpenTrade to let it keep working.",
+        agentId: this.id,
+      });
     }
     const head = this.pending[0]; // kept at the head until exit (no lost wake on crash)
     this.headless.run(this.id, head, (reason) => this.headlessExited(reason));

@@ -13,7 +13,7 @@
 // the renderer hung on "OpenTrade connecting…"), and it was redundant with the
 // relaunch-time version check anyway.
 
-import { app, type BrowserWindow, Notification } from "electron";
+import { app, type BrowserWindow } from "electron";
 import electronUpdater from "electron-updater";
 
 const { autoUpdater } = electronUpdater;
@@ -22,7 +22,13 @@ const CHECK_INTERVAL_MS = 4 * 60 * 60 * 1000; // every 4h
 
 export function initAutoUpdate(
   _win: BrowserWindow,
-  onDownloaded?: (version: string) => void,
+  hooks: {
+    /** Telemetry hook — the staged version. */
+    onDownloaded?: (version: string) => void;
+    /** Display hook — routed through the launcher's gated notification helper so the
+     *  "App updates" toggle applies (§12.4). */
+    showNotification?: (title: string, body: string) => void;
+  } = {},
 ): void {
   // electron-updater requires a packaged app with a baked app-update.yml.
   if (!app.isPackaged) return;
@@ -34,14 +40,14 @@ export function initAutoUpdate(
 
   autoUpdater.on("update-downloaded", (info) => {
     // Stage is complete; autoInstallOnAppQuit will apply it on the next quit, and
-    // the relaunched launcher's version-aware `ensureHost` retires the old host.
-    onDownloaded?.(info.version);
-    if (Notification.isSupported()) {
-      new Notification({
-        title: "OpenTrade update ready",
-        body: `Version ${info.version} will install when you quit OpenTrade.`,
-      }).show();
-    }
+    // the relaunched launcher's version-aware `ensureHost` retires the old host (we
+    // deliberately do NOT SIGTERM the host on download — see the header comment).
+    // The banner goes through the gated helper so the "App updates" toggle applies.
+    hooks.onDownloaded?.(info.version);
+    hooks.showNotification?.(
+      "OpenTrade update ready",
+      `Version ${info.version} will install when you quit OpenTrade.`,
+    );
   });
 
   autoUpdater.on("error", (err) => {

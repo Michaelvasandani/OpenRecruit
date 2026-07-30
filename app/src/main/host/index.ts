@@ -25,7 +25,7 @@ import { derivePort } from "../services/local-api/endpoint";
 import { Scheduler } from "../services/scheduler";
 import { WakeCoordinator } from "../services/scheduler/wake/coordinator";
 import { HeadlessRunStrategy } from "../services/scheduler/wake/headless-strategy";
-import { reconcileSpawnMarkers, readSpawnMarkers } from "../services/scheduler/wake/spawn-marker";
+import { readSpawnMarkers, reconcileSpawnMarkers } from "../services/scheduler/wake/spawn-marker";
 import { SettingsService } from "../services/settings";
 import { StatusArbiter } from "../services/status/arbiter";
 import { TerminalService } from "../services/terminal";
@@ -72,7 +72,9 @@ async function main() {
   reconcileSpawnMarkers(registry);
 
   const adapter = new RobinhoodAdapter({ db, openBrowser: openExternal });
-  const broker = new BrokerService(db, adapter, settings);
+  // `approvals` supplies the order→agent link so order notifications fire only for
+  // agent-placed orders (§12.4).
+  const broker = new BrokerService(db, adapter, settings, approvals);
 
   // Stable endpoint: home-derived faucet port + persisted token, shared by the
   // faucet/gate, the terminal WS, and the tRPC server.

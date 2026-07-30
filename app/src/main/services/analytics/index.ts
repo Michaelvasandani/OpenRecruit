@@ -9,7 +9,7 @@ import {
 } from "@shared/analytics";
 import type { AppSettings } from "@shared/settings";
 import { PostHog } from "posthog-node";
-import { z } from "zod";
+import type { z } from "zod";
 import { hostLog } from "../../host/log";
 import { bus } from "../event-bus";
 import type { SettingsService } from "../settings";
@@ -35,7 +35,14 @@ const REPORTABLE_SETTING_KEYS = [
   "defaultApprovalMode",
   "onboardingComplete",
   "maxHeadlessTurns",
+  "notifyWakes",
+  "notifyOrders",
+  "notifyApprovals",
+  "notifyRestricted",
+  "notifyUpdates",
 ] as const;
+// `notifyMutedAgents` is intentionally excluded — it carries agent ids, not a
+// categorical/boolean value, so it isn't in the `settingKey` telemetry enum.
 
 /**
  * The single telemetry funnel. Everything OpenTrade sends to PostHog goes through

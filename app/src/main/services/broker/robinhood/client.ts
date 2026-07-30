@@ -2,6 +2,7 @@ import { createServer, type Server } from "node:http";
 import { UnauthorizedError } from "@modelcontextprotocol/sdk/client/auth.js";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
+import { InvalidGrantError } from "@modelcontextprotocol/sdk/server/auth/errors.js";
 import type { Account, OrderStatus, Portfolio, Position, Quote } from "@shared/broker";
 import type { Db } from "../../../db/client";
 import type { BrokerAdapter, McpServerConfig } from "../adapter";
@@ -21,6 +22,21 @@ import { BrokerOAuthProvider } from "./oauth";
 const SERVER_URL = "https://agent.robinhood.com/mcp/trading";
 const CALLBACK_PORT = 8771;
 const REDIRECT_URL = `http://127.0.0.1:${CALLBACK_PORT}/callback`;
+
+/**
+ * Whether a failed token-authenticated connect means we should drop the stored
+ * session and re-run interactive consent (open the browser), rather than surface a
+ * hard error. Two cases qualify:
+ *  - `UnauthorizedError` — a 401 from the resource (no/invalid access token).
+ *  - `InvalidGrantError` — the refresh token expired or was revoked. The MCP SDK's
+ *    `auth()` re-throws this instead of auto-restarting the flow, so without handling
+ *    it here an expired grant leaves the user permanently unable to reconnect.
+ * A transient `ServerError` (or any other error) is NOT re-auth — we must not nuke a
+ * still-valid session on a blip — so it propagates.
+ */
+export function isReauthRequired(err: unknown): boolean {
+  return err instanceof UnauthorizedError || err instanceof InvalidGrantError;
+}
 
 export interface RobinhoodAdapterOptions {
   db: Db;
@@ -61,8 +77,12 @@ export class RobinhoodAdapter implements BrokerAdapter {
         await this.doConnect();
         return;
       } catch (err) {
-        if (!(err instanceof UnauthorizedError)) throw err;
-        // refresh failed → fall through to interactive consent
+        if (!isReauthRequired(err)) throw err;
+        // The stored session is unusable (401, or the refresh token expired/was
+        // revoked → invalid_grant). Drop it so the fall-through starts a clean
+        // authorization — otherwise interactiveConnect's own doConnect would retry
+        // the same dead refresh and throw invalid_grant again.
+        this.provider.reset();
       }
     }
     await this.interactiveConnect();
@@ -85,7 +105,7 @@ export class RobinhoodAdapter implements BrokerAdapter {
         await this.doConnect();
         return;
       } catch (err) {
-        if (!(err instanceof UnauthorizedError)) throw err;
+        if (!isReauthRequired(err)) throw err;
       }
       const code = await codePromise;
       const transport = new StreamableHTTPClientTransport(new URL(SERVER_URL), {

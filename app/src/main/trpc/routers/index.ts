@@ -4,6 +4,7 @@ import { agentsRouter } from "./agents";
 import { analyticsRouter } from "./analytics";
 import { approvalsRouter } from "./approvals";
 import { brokerRouter } from "./broker";
+import { notificationsRouter } from "./notifications";
 import { onboardingRouter } from "./onboarding";
 import { scheduleRouter } from "./schedule";
 import { settingsRouter } from "./settings";
@@ -21,6 +22,7 @@ export const appRouter = router({
   settings: settingsRouter,
   schedule: scheduleRouter,
   analytics: analyticsRouter,
+  notifications: notificationsRouter,
 });
 
 export type AppRouter = typeof appRouter;
