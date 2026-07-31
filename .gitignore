@@ -24,3 +24,7 @@ docs/
 
 # Local agent guidance (not part of the public release)
 CLAUDE.md
+
+# Local dev tooling and example env (not part of the public release)
+dev.sh
+.env.example
