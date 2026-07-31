@@ -55,6 +55,6 @@ dmg:
       path: /Applications
 publish:
   provider: github
-  owner: exla-ai
+  owner: OpenTradeOSS
   repo: OpenTrade
 npmRebuild: true

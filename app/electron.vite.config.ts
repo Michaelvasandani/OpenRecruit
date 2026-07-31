@@ -38,6 +38,11 @@ export default defineConfig({
   },
   preload: {
     plugins: [externalizeDepsPlugin()],
+    resolve: {
+      alias: {
+        "@shared": resolve("src/shared"),
+      },
+    },
     build: {
       rollupOptions: {
         input: { index: resolve("src/preload/index.ts") },

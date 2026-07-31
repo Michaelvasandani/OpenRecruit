@@ -49,10 +49,12 @@ function focusMainWindow(): void {
 
 /** The single display path for every notification kind: gate on the per-kind toggle,
  *  show the banner, and on click focus the window + fire `notification_clicked`. Safe
- *  to call even when the relay never connected (the updater calls it regardless). */
-function showAppNotification(kind: NotificationKind, title: string, body: string): void {
-  if (!liveSettings[NOTIFY_TOGGLE[kind]]) return;
-  if (!Notification.isSupported()) return;
+ *  to call even when the relay never connected (the updater calls it regardless).
+ *  Returns whether a banner was actually shown (false if the toggle is off or the OS
+ *  can't display one) — callers that dedupe rely on this. */
+function showAppNotification(kind: NotificationKind, title: string, body: string): boolean {
+  if (!liveSettings[NOTIFY_TOGGLE[kind]]) return false;
+  if (!Notification.isSupported()) return false;
   const n = new Notification({ title, body });
   n.on("click", () => {
     focusMainWindow();
@@ -61,6 +63,7 @@ function showAppNotification(kind: NotificationKind, title: string, body: string
       .catch(() => {});
   });
   n.show();
+  return true;
 }
 
 // Key Electron's per-instance state (including the single-instance lock) to this
@@ -107,16 +110,23 @@ async function main() {
 
   if (host.trpcPort) wireNotifications(win, host);
 
-  // Auto-update against GitHub Releases (no-op in dev / unpackaged). Retires the
-  // running backend host on install so the new build's code takes effect. The
-  // download-staged event rides the relay client to the host's telemetry funnel;
-  // the banner goes through the gated helper so the "App updates" toggle applies.
+  // App updates against GitHub Releases (no-op in dev / unpackaged). User-in-charge:
+  // we check on boot + every 4h but never auto-download or install-on-quit — the
+  // renderer prompts and the user accepts, which downloads + relaunches (the new
+  // launcher's version-aware ensureHost then retires the stale host). The
+  // download-complete event rides the relay client to the host's telemetry funnel;
+  // the "available" banner goes through the gated helper so the "App updates" toggle applies.
   initAutoUpdate(win, {
     onDownloaded: (toVersion) =>
       relayTrpc?.analytics.track
         .mutate({ event: "update_downloaded", props: { to_version: toVersion } })
         .catch(() => {}),
-    showNotification: (title, body) => showAppNotification("update", title, body),
+    // The in-app "Update Available" button is the indicator when the window is open;
+    // only fall back to an OS notification when the user is away, so we don't
+    // double-notify on boot. Returns whether it displayed so the updater dedupes on a
+    // real show (a focus-suppressed one leaves the next background re-check free to fire).
+    showNotification: (title, body) =>
+      windowFocused() ? false : showAppNotification("update", title, body),
   });
 
   app.on("activate", () => {

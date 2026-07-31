@@ -8,7 +8,7 @@ we take security reports seriously.
 **Please do not open a public issue for security vulnerabilities.**
 
 Instead, report privately through GitHub's
-[private vulnerability reporting](https://github.com/exla-ai/OpenTrade/security/advisories/new)
+[private vulnerability reporting](https://github.com/OpenTradeOSS/OpenTrade/security/advisories/new)
 ("Report a vulnerability" under the repository's **Security** tab). This keeps the
 details confidential until a fix is available.
 

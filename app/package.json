@@ -4,7 +4,7 @@
   "version": "0.1.4",
   "description": "OpenTrade — a transparent control panel for local Claude Code trading agents.",
   "author": "OpenTrade contributors",
-  "homepage": "https://github.com/exla-ai/OpenTrade",
+  "homepage": "https://github.com/OpenTradeOSS/OpenTrade",
   "license": "Elastic-2.0",
   "private": true,
   "main": "./out/main/index.js",

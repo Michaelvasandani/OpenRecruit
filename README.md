@@ -9,7 +9,7 @@ OpenTrade is a macOS app that enables agents to trade and react to the market au
 ## Install
 
 Download the latest `OpenTrade-<version>-arm64.dmg` from
-[Releases](https://github.com/exla-ai/OpenTrade/releases), open it, and drag OpenTrade to
+[Releases](https://github.com/OpenTradeOSS/OpenTrade/releases), open it, and drag OpenTrade to
 Applications. Requires an Apple Silicon Mac and the [`claude`](https://docs.claude.com/en/docs/claude-code)
 CLI. The app auto-updates from GitHub Releases.
 

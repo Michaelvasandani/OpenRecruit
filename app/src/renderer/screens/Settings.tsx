@@ -23,6 +23,7 @@ import { useAgents } from "../hooks/useAgents";
 import { useBrokerStatus } from "../hooks/useBroker";
 import { useSettings, useUpdateSettings } from "../hooks/useSettings";
 import { trpc } from "../lib/trpc";
+import { useUpdater } from "../lib/updater";
 import { cn } from "../lib/utils";
 import { useUIStore } from "../stores/ui";
 
@@ -495,6 +496,7 @@ function AboutPanel() {
           {info.data?.version ?? "—"}
         </span>
       </SettingsRow>
+      <SoftwareUpdateRow />
       <SettingsRow label="Platform">
         <span className="text-sm text-muted-foreground">{info.data?.platform ?? "—"}</span>
       </SettingsRow>
@@ -514,5 +516,55 @@ function AboutPanel() {
         </Tooltip>
       </SettingsRow>
     </SettingsSection>
+  );
+}
+
+/**
+ * Manual "Check for updates" with live status from the main-process updater
+ * (window.__opentradeUpdater, see lib/updater.ts). Updates are user-in-charge: the
+ * app checks on boot + every 4h but never auto-downloads or installs on quit. This
+ * row makes the result visible — and surfaces otherwise-silent check failures (e.g.
+ * a release missing its latest-mac.yml feed) — and, when an update is available,
+ * offers an "Update & restart" that downloads (if needed) and relaunches immediately.
+ */
+function SoftwareUpdateRow() {
+  const { state, check, install } = useUpdater();
+  const status = state?.status ?? "idle";
+
+  let hint: string | undefined;
+  if (status === "checking") hint = "Checking for updates…";
+  else if (status === "available") hint = `Version ${state?.version ?? ""} is available`;
+  else if (status === "downloading")
+    hint = `Downloading v${state?.version ?? ""}${
+      state?.progressPercent != null ? ` — ${state.progressPercent}%` : "…"
+    }`;
+  else if (status === "downloaded") hint = "Restarting to install…";
+  else if (status === "up-to-date") hint = "You're on the latest version";
+  else if (status === "error") hint = state?.error ?? "Update check failed";
+  else if (status === "unsupported") hint = "Updates apply to the installed app only";
+
+  return (
+    <SettingsRow label="Software update" hint={hint}>
+      <div className="flex items-center gap-2.5">
+        {status === "up-to-date" && <Check className="size-4 text-success" />}
+        {status === "error" && <TriangleAlert className="size-4 text-warning" />}
+        {status === "available" || status === "downloading" || status === "downloaded" ? (
+          <Button type="button" disabled={status !== "available"} onClick={install}>
+            {status !== "available" && <Loader2 className="size-4 animate-spin" />}
+            Update &amp; restart
+          </Button>
+        ) : (
+          <Button
+            type="button"
+            variant="outline"
+            disabled={status === "checking" || status === "unsupported"}
+            onClick={check}
+          >
+            {status === "checking" && <Loader2 className="size-4 animate-spin" />}
+            {status === "error" ? "Retry" : "Check for updates"}
+          </Button>
+        )}
+      </div>
+    </SettingsRow>
   );
 }

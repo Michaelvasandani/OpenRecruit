@@ -9,6 +9,7 @@ import { useUIStore } from "../../stores/ui";
 import { ConfirmDialog } from "../ui/ConfirmDialog";
 import { Separator } from "../ui/separator";
 import { StatusDot } from "./StatusDot";
+import { UpdateButton } from "./UpdateButton";
 
 export function AgentSidebar() {
   const agents = useAgents();
@@ -141,6 +142,7 @@ export function AgentSidebar() {
             OpenTrade connecting…
           </div>
         )}
+        <UpdateButton />
         <button
           type="button"
           onClick={() => setView("settings")}

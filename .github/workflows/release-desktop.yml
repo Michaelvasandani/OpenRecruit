@@ -46,6 +46,48 @@ jobs:
       - name: Rebuild native modules for the Electron ABI
         run: bun run --cwd app rebuild
 
+      # electron-builder uploads assets into a DRAFT release. If a *published*
+      # (non-draft) release for this tag already exists — e.g. the tag was created
+      # via GitHub's "Publish release" UI or `gh release create` instead of a plain
+      # `git push` of the tag — electron-builder refuses to write into it and
+      # SILENTLY SKIPS every asset (dmg, zip, latest-mac.yml). The release then
+      # shows up as "Latest" with no binaries and auto-update 404s for all users.
+      #
+      # This preflight converts such a release back to a draft so the upload below
+      # succeeds; the maintainer re-publishes after CI. To avoid UN-publishing a
+      # healthy live release on an accidental re-run, it acts ONLY when the release is
+      # both published AND missing its `latest-mac.yml` feed (i.e. actually broken).
+      # A published release that already has the feed is left alone and the step fails
+      # loudly, so a real re-run doesn't silently regress the update feed.
+      - name: Ensure release is a draft (so asset upload isn't skipped)
+        if: startsWith(github.ref, 'refs/tags/')
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          # `gh release view` exits non-zero if the release doesn't exist yet (the
+          # normal path). Capture it explicitly so a gh/network failure isn't confused
+          # with "no release".
+          if ! meta=$(gh release view "$TAG" --json isDraft,assets 2>err.txt); then
+            if grep -qi "release not found" err.txt; then
+              echo "No release for $TAG yet — electron-builder will create the draft."
+              exit 0
+            fi
+            echo "::error::gh release view failed for $TAG"; cat err.txt; exit 1
+          fi
+          is_draft=$(jq -r '.isDraft' <<<"$meta")
+          has_feed=$(jq -r '[.assets[].name] | any(. == "latest-mac.yml")' <<<"$meta")
+          if [ "$is_draft" = "true" ]; then
+            echo "Release $TAG is already a draft — nothing to do."
+          elif [ "$has_feed" = "false" ]; then
+            echo "::warning::Published release $TAG is missing latest-mac.yml — converting to draft so electron-builder can upload assets. Re-publish it after this run."
+            gh release edit "$TAG" --draft
+          else
+            echo "::error::Published release $TAG already has latest-mac.yml. Refusing to draft a healthy release. If you intend to re-release, delete or draft it manually first."
+            exit 1
+          fi
+
       - name: Build, sign & publish
         env:
           ADHOC: ${{ inputs.adhoc }}
