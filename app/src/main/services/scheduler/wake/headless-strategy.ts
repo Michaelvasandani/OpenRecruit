@@ -12,6 +12,10 @@ import type { HeadlessExitReason, HeadlessWakeStrategy } from "./types";
  *  non-zero exit within this window is reported as a resume failure (→ the
  *  coordinator's resume-fail streak). */
 const RESUME_FAIL_MS = 10_000;
+/** How many trailing chars of a failed child's stderr to keep for the host log. Enough
+ *  to carry claude's error line (e.g. "Credit balance is too low", an auth/network
+ *  failure) without unbounded buffering. */
+const STDERR_TAIL_CHARS = 2000;
 /** Prepended to a cold (headless) wake prompt so the agent can tell a system wake from a
  *  real user turn. The agent templates' CLAUDE.md document what it means. The wake's
  *  fire time (ISO 8601) is appended so the agent knows *when* it was woken — relevant for
@@ -42,6 +46,11 @@ export class HeadlessRunStrategy implements HeadlessWakeStrategy {
   constructor(
     private registry: AgentRegistry,
     private localApi: LocalApiServer,
+    /** Whether a background run should use the Claude subscription (strip
+     *  `ANTHROPIC_API_KEY` from its env) rather than bill the API. Read live from
+     *  settings so a toggle applies to the next run without a restart. Defaults to
+     *  subscription (the safe, no-surprise-bill default). */
+    private useSubscriptionAuth: () => boolean = () => true,
   ) {}
 
   /** EC1 "Stop task" / max-runtime kill: SIGTERM the running headless child; its exit
@@ -106,15 +115,27 @@ export class HeadlessRunStrategy implements HeadlessWakeStrategy {
     const startedAt = Date.now();
     const wakePrompt = `[${WAKE_PREFIX} ${new Date(startedAt).toISOString()}] ${prompt}`;
     const args = [...sessionArgs, "--dangerously-skip-permissions", "-p", wakePrompt];
-    const env = buildAgentEnv(agentId, {
-      OPENTRADE_PORT: String(this.localApi.port),
-      OPENTRADE_TOKEN: this.localApi.token,
-    });
+    const env = buildAgentEnv(
+      agentId,
+      {
+        OPENTRADE_PORT: String(this.localApi.port),
+        OPENTRADE_TOKEN: this.localApi.token,
+      },
+      { useSubscriptionAuth: this.useSubscriptionAuth() },
+    );
 
+    // stdout is ignored (the transcript on disk is the run's record), but stderr is
+    // piped and tail-buffered: it's the ONLY place claude reports why a run failed
+    // (billing, auth, network, a genuinely-unresumable session), and without it a
+    // failure is an opaque `code=1` (the "Credit balance is too low" incident).
     const child = spawn("claude", args, {
       cwd: this.registry.agentDir(agent),
       env,
-      stdio: "ignore",
+      stdio: ["ignore", "ignore", "pipe"],
+    });
+    let stderrTail = "";
+    child.stderr?.on("data", (chunk) => {
+      stderrTail = (stderrTail + chunk.toString()).slice(-STDERR_TAIL_CHARS);
     });
     this.children.set(agentId, child);
     // Durable single-writer marker (crash recovery, E1): exists while this child is
@@ -140,10 +161,23 @@ export class HeadlessRunStrategy implements HeadlessWakeStrategy {
       settle("spawnFail");
     });
     child.on("exit", (code) => {
+      // Log the stderr tail on any non-zero exit so failures are diagnosable (a fast
+      // resume-fail from a real billing/auth error otherwise reads as a bare `code=1`).
+      if (code !== 0) {
+        const tail = stderrTail.trim();
+        hostLog.warn(
+          "headless run exited non-zero",
+          agentId,
+          `code=${code}`,
+          tail ? `stderr: ${tail}` : "(no stderr)",
+        );
+      }
       if (resuming && code !== 0 && Date.now() - startedAt < RESUME_FAIL_MS) {
-        // EC13: the session was unresumable. Reported as a resume-fail — the coordinator
-        // drops the wake and, after 3 in a row, flips the agent to `broken`.
-        hostLog.warn("headless resume failed", agentId, `code=${code}`);
+        // EC13: a `--resume` that dies this fast is treated as an unresumable session —
+        // reported as a resume-fail, so the coordinator drops the wake and, after 3 in a
+        // row, flips the agent to `broken` (which pauses its scheduling). This is also the
+        // heuristic that fires on a valid transient error like an exhausted credit balance:
+        // that legitimately stops the agent until the user intervenes (top up + Restart).
         settle("resumeFail");
       } else {
         settle("ok");

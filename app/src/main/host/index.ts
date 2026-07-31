@@ -93,11 +93,19 @@ async function main() {
   // wake through one of two transports — a `claude/channel` inject into a live PTY
   // (interactive) or a headless `claude --resume -p` (headless). Built before the
   // TerminalService so the latter can report PTY up/down to it.
-  const wake = new WakeCoordinator(registry, new HeadlessRunStrategy(registry, localApi), {
-    // The headless turn budget reads the global limit live, so a Settings change
-    // applies to the next wake without a restart.
-    maxHeadlessTurns: () => settings.get().maxHeadlessTurns,
-  });
+  const wake = new WakeCoordinator(
+    registry,
+    // Background runs default to the Claude subscription (strip ANTHROPIC_API_KEY) so
+    // unattended agents don't silently bill the API; "Allow API key usage" opts out live.
+    new HeadlessRunStrategy(registry, localApi, () => !settings.get().backgroundAllowApiKey),
+    {
+      // The turn-limit gate + run-duration cap read live, so a Settings change applies
+      // to the next wake without a restart.
+      turnLimitFeatureEnabled: () => settings.get().headlessTurnLimitEnabled,
+      maxHeadlessTurns: () => settings.get().maxHeadlessTurns,
+      maxHeadlessRunMs: () => settings.get().maxHeadlessRunMinutes * 60_000,
+    },
+  );
 
   const terminal = new TerminalService(registry, localApi, arbiter, wake);
   await terminal.start();
@@ -108,6 +116,8 @@ async function main() {
   const scheduler = new Scheduler(db, wake, registry, localApi);
   localApi.setScheduler(scheduler);
   localApi.setWake(wake);
+  // Let the coordinator pause/resume an agent's crons + monitors as it breaks/recovers.
+  wake.setScheduler(scheduler);
 
   // Reconnect the broker silently if we already have cached tokens.
   if (broker.isAuthorized()) {

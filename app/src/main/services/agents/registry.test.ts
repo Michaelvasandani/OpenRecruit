@@ -46,6 +46,30 @@ describe("AgentRegistry — executionState", () => {
   });
 });
 
+describe("AgentRegistry — turn budgets", () => {
+  test("resetAllTurnBudgets zeros every count and re-enables the per-agent limit", () => {
+    const r = memRegistry();
+    const a = r.create({ name: "alpha", template: "default", approvalMode: "approve" });
+    const b = r.create({ name: "beta", template: "default", approvalMode: "approve" });
+    // alpha: spent + per-agent limit turned OFF; beta: some usage, limit on.
+    r.incrementHeadlessTurns(a.id);
+    r.incrementHeadlessTurns(a.id);
+    r.update(a.id, { turnLimitEnabled: false });
+    r.incrementHeadlessTurns(b.id);
+    expect(r.get(a.id)!.turnLimitEnabled).toBe(false);
+    expect(r.get(a.id)!.headlessTurnsUsed).toBe(2);
+    expect(r.get(b.id)!.headlessTurnsUsed).toBe(1);
+
+    r.resetAllTurnBudgets();
+
+    // Every agent: count zeroed AND per-agent limit forced back on (overrides opt-out).
+    for (const id of [a.id, b.id]) {
+      expect(r.get(id)!.headlessTurnsUsed).toBe(0);
+      expect(r.get(id)!.turnLimitEnabled).toBe(true);
+    }
+  });
+});
+
 describe("AgentRegistry — CLAUDE.md composition", () => {
   // Markers unique to each half of the composed file.
   const PREFIX_MARKER = "## Self-scheduling — staying awake on the user's behalf";

@@ -53,12 +53,13 @@ class FakeHeadless implements HeadlessWakeStrategy {
   stopAll(): void {}
 }
 
-function make(maxHeadlessRunMs = 10_000, maxHeadlessTurns = 20) {
+function make(maxHeadlessRunMs = 10_000, maxHeadlessTurns = 20, featureEnabled = true) {
   const reg = new FakeRegistry();
   const headless = new FakeHeadless();
   const coord = new WakeCoordinator(reg as unknown as AgentRegistry, headless, {
-    maxHeadlessRunMs,
+    maxHeadlessRunMs: () => maxHeadlessRunMs,
     maxHeadlessTurns: () => maxHeadlessTurns,
+    turnLimitFeatureEnabled: () => featureEnabled,
   });
   return { reg, headless, coord };
 }
@@ -218,6 +219,40 @@ describe("WakeCoordinator — broken / resume-fail", () => {
     coord.onInteractiveUp("w"); // manual Restart spawns a fresh PTY
     expect(reg.executionStateOf("w")).toBe("interactive");
   });
+
+  test("going broken disarms the agent's scheduling; recovering re-arms it", () => {
+    const { headless, coord } = make();
+    const sched = {
+      disarmed: [] as string[],
+      rearmed: [] as string[],
+      disarmAgent(id: string) {
+        this.disarmed.push(id);
+      },
+      rearmAgent(id: string) {
+        this.rearmed.push(id);
+      },
+    };
+    coord.setScheduler(sched);
+
+    for (let i = 1; i <= 3; i++) {
+      coord.enqueue("b", `p${i}`);
+      headless.finishNext("resumeFail");
+    }
+    expect(sched.disarmed).toEqual(["b"]); // paused exactly once, on the broken transition
+    expect(sched.rearmed).toEqual([]);
+
+    coord.onInteractiveUp("b"); // manual Restart
+    expect(sched.rearmed).toEqual(["b"]); // scheduling resumes
+  });
+
+  test("a spawn-fail broken also disarms scheduling", () => {
+    const { coord, headless } = make();
+    const disarmed: string[] = [];
+    coord.setScheduler({ disarmAgent: (id) => disarmed.push(id), rearmAgent: () => {} });
+    coord.enqueue("s", "p1");
+    headless.finishNext("spawnFail"); // one-strike broken
+    expect(disarmed).toEqual(["s"]);
+  });
 });
 
 describe("WakeCoordinator — headless turn limit", () => {
@@ -244,12 +279,12 @@ describe("WakeCoordinator — headless turn limit", () => {
     expect(reg.executionStateOf("q")).toBe("offline");
   });
 
-  test("a reset (the user viewed the agent) re-opens the budget", () => {
+  test("a reset (the turn-limit button's Reset control) re-opens the budget", () => {
     const { reg, headless, coord } = make(10_000, 1);
     reg.budgets.set("v", { turnLimitEnabled: true, headlessTurnsUsed: 1 }); // spent
     coord.enqueue("v", "p1");
     expect(headless.calls).toEqual([]); // gated
-    reg.budgets.get("v")!.headlessTurnsUsed = 0; // = registry.resetHeadlessTurns on view
+    reg.budgets.get("v")!.headlessTurnsUsed = 0; // = registry.resetHeadlessTurns (agents.resetTurnLimit)
     coord.enqueue("v", "p2");
     expect(headless.calls).toEqual(["v:p2"]);
     headless.finishNext("ok");
@@ -273,6 +308,37 @@ describe("WakeCoordinator — headless turn limit", () => {
     expect(await p).toBe("p1"); // delivered via the channel regardless of the budget
     expect(headless.calls).toEqual([]);
     expect(reg.budgets.get("i")!.headlessTurnsUsed).toBe(5); // untouched
+  });
+
+  test("wouldDropWake: true when broken or turn-exhausted (offline), false when interactive", () => {
+    const { reg, coord } = make(10_000, 1);
+    // Fresh offline agent, budget open → deliverable.
+    reg.budgets.set("w", { turnLimitEnabled: true, headlessTurnsUsed: 0 });
+    expect(coord.wouldDropWake("w")).toBe(false);
+    // Spent budget while offline → would drop.
+    reg.budgets.get("w")!.headlessTurnsUsed = 1;
+    expect(coord.wouldDropWake("w")).toBe(true);
+    // Interactive session ignores the budget → deliverable via the channel.
+    coord.onInteractiveUp("w");
+    expect(coord.wouldDropWake("w")).toBe(false);
+    // Broken → would drop.
+    const { reg: reg2, coord: coord2 } = make();
+    reg2.setExecutionState("b", "broken");
+    expect(coord2.wouldDropWake("b")).toBe(true);
+  });
+
+  test("the global feature switch off: never gated (but still counts — no freeze)", () => {
+    const { reg, headless, coord } = make(10_000, 1, /* featureEnabled */ false);
+    reg.budgets.set("g", { turnLimitEnabled: true, headlessTurnsUsed: 5 }); // past the limit
+    coord.enqueue("g", "p1");
+    coord.enqueue("g", "p2"); // queued behind the active run
+    expect(headless.calls).toEqual(["g:p1"]); // runs despite budget being spent
+    headless.finishNext("ok");
+    expect(headless.calls).toEqual(["g:p1", "g:p2"]); // and drains the next, no gate
+    headless.finishNext("ok");
+    // No freeze: the count still advances while off (it's reset wholesale on re-enable,
+    // so there's nothing to preserve). Only gating/notifying is suppressed.
+    expect(reg.budgets.get("g")!.headlessTurnsUsed).toBe(7); // 5 + 2 runs
   });
 });
 

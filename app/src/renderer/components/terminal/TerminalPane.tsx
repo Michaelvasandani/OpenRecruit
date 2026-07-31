@@ -9,6 +9,7 @@ import { cn } from "../../lib/utils";
 import { useConnectionStore } from "../../stores/connection";
 import { useTerminalStore } from "../../stores/terminal";
 import { useUIStore } from "../../stores/ui";
+import { SettingToggle } from "../settings/SettingToggle";
 import { Button } from "../ui/button";
 import { Popover, PopoverContent, PopoverTrigger } from "../ui/popover";
 import { Tooltip, TooltipContent, TooltipTrigger } from "../ui/tooltip";
@@ -63,7 +64,7 @@ export function TerminalPane({ agent }: { agent: Agent | null }) {
           className={cn("flex items-center gap-2", !backendConnected && "pointer-events-none")}
           style={{ WebkitAppRegion: "no-drag" } as CSSProperties}
         >
-          {agent && <TurnLimitChip agent={agent} />}
+          {agent && <TurnLimitButton agent={agent} />}
           {agent && <ApprovalModeToggle agent={agent} />}
           {agent && attachable && liveness === "dead" && (
             <Button
@@ -116,79 +117,99 @@ export function TerminalPane({ agent }: { agent: Agent | null }) {
   );
 }
 
+/** Remaining turns at which the button tints amber to prompt a reset. */
+const LOW_TURNS = 5;
+
 /**
  * The agent's headless turn budget: how many scheduled background turns remain
- * before automatic restrictions kick in (unattended wakes are dropped). Viewing the
- * agent resets the count, so this normally reads full — its job is to disclose the
- * budget and host the per-agent Reset / on-off controls. The limit VALUE is global
- * (Settings → Agents); per-agent there is only the toggle.
+ * before automatic restrictions kick in (unattended wakes are dropped). The button is
+ * the budget's ONLY refill path — its Reset control (there is no reset-on-view) —
+ * so it tints amber when turns run low and red when they're spent. The limit VALUE
+ * is global (Settings → Agents); per-agent there is only the on/off toggle. The
+ * popover is `modal` so any outside click dismisses it — the non-modal dismiss
+ * listener rides the bubble phase, which the xterm terminal's handlers stop.
+ *
+ * When the feature is disabled globally (`headlessTurnLimitEnabled` off in Settings)
+ * the button is hidden entirely (renders nothing).
  */
-function TurnLimitChip({ agent }: { agent: Agent }) {
+function TurnLimitButton({ agent }: { agent: Agent }) {
   const settings = useSettings();
   const update = trpc.agents.update.useMutation();
   const reset = trpc.agents.resetTurnLimit.useMutation();
+  const featureEnabled = settings.data?.headlessTurnLimitEnabled ?? true;
   const limit = settings.data?.maxHeadlessTurns ?? 20;
   const remaining = Math.max(0, limit - agent.headlessTurnsUsed);
   const exhausted = agent.turnLimitEnabled && remaining === 0;
+  // Amber when running low — but never from a full budget, so a small limit (≤ LOW_TURNS)
+  // doesn't render amber at max.
+  const low = agent.turnLimitEnabled && !exhausted && remaining < Math.min(LOW_TURNS, limit);
+
+  // Feature off globally → hide the button entirely.
+  if (!featureEnabled) return null;
+
+  const tooltip = !agent.turnLimitEnabled
+    ? "No background turn limit for this agent."
+    : `${remaining} of ${limit} turns left before agent pauses.`;
 
   return (
-    <Popover>
-      <PopoverTrigger asChild>
-        <button
-          type="button"
-          className={cn(
-            "flex items-center gap-1.5 rounded-md px-2 py-1 text-xs",
-            exhausted
-              ? "bg-destructive/15 text-destructive hover:bg-destructive/25"
-              : "bg-secondary text-muted-foreground hover:bg-accent",
-          )}
-        >
-          <Hourglass className="size-3" />
-          {agent.turnLimitEnabled ? `${remaining} turns` : "No limit"}
-        </button>
-      </PopoverTrigger>
+    <Popover modal>
+      <Tooltip>
+        <TooltipTrigger asChild>
+          <PopoverTrigger asChild>
+            <button
+              type="button"
+              className={cn(
+                "flex items-center gap-1.5 rounded-md px-2 py-1 text-xs",
+                exhausted
+                  ? "bg-destructive/15 text-destructive hover:bg-destructive/25"
+                  : low
+                    ? "bg-warning/15 text-warning hover:bg-warning/25"
+                    : "bg-secondary text-muted-foreground hover:bg-accent",
+              )}
+            >
+              <Hourglass className="size-3" />
+              {agent.turnLimitEnabled ? `${remaining} turns` : "No limit"}
+            </button>
+          </PopoverTrigger>
+        </TooltipTrigger>
+        <TooltipContent>{tooltip}</TooltipContent>
+      </Tooltip>
       <PopoverContent align="end" className="w-80 space-y-3 text-sm">
-        <div>
+        <div className="flex items-center justify-between">
           <p className="font-medium">Background turn limit</p>
-          <p className="mt-1 text-xs text-muted-foreground">
-            While you're away, scheduled wakes may run at most {limit} background turns; further
-            wakes are skipped until you check back in. Viewing this agent resets the count.
-            {agent.turnLimitEnabled && (
-              <>
-                {" "}
-                <span className="text-foreground">
-                  {remaining} of {limit}
-                </span>{" "}
-                turns left.
-              </>
-            )}
-          </p>
+          <div className="flex items-center gap-2">
+            <span className="text-xs text-muted-foreground">
+              {agent.turnLimitEnabled ? "Enabled" : "Disabled"}
+            </span>
+            <SettingToggle
+              checked={agent.turnLimitEnabled}
+              disabled={update.isPending}
+              onChange={(turnLimitEnabled) => update.mutate({ id: agent.id, turnLimitEnabled })}
+            />
+          </div>
         </div>
-        <div className="flex items-center gap-2">
+        <p className="text-xs text-muted-foreground">
+          While you're away, agents may run at most <span className="text-foreground">{limit}</span>{" "}
+          turns in the background; further turns are skipped until reset.
+        </p>
+        <div className="flex items-center gap-3">
           <Button
             type="button"
-            variant="secondary"
-            size="sm"
             disabled={reset.isPending || agent.headlessTurnsUsed === 0}
             onClick={() => reset.mutate({ id: agent.id })}
           >
-            Reset count
+            Reset
           </Button>
-          <Button
-            type="button"
-            variant="secondary"
-            size="sm"
-            disabled={update.isPending}
-            onClick={() =>
-              update.mutate({ id: agent.id, turnLimitEnabled: !agent.turnLimitEnabled })
-            }
-          >
-            {agent.turnLimitEnabled ? "Turn off for this agent" : "Turn limit back on"}
-          </Button>
+          {agent.turnLimitEnabled && (
+            <span className="text-xs text-muted-foreground">
+              <span className="text-foreground">
+                {remaining}/{limit}
+              </span>{" "}
+              left
+            </span>
+          )}
         </div>
-        <p className="text-xs text-muted-foreground/70">
-          The limit itself is global — change it in Settings → Agents.
-        </p>
+        <p className="text-xs text-muted-foreground/70">Change it in Settings → Agents.</p>
       </PopoverContent>
     </Popover>
   );

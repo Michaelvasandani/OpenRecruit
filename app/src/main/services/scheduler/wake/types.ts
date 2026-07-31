@@ -9,6 +9,10 @@ export interface WakeTransport {
   /** Enqueue a wake for an agent. Drained via the channel (a live PTY exists) or a
    *  headless `-p` child (none). Never blocks, never throws. */
   enqueue(agentId: string, prompt: string): void;
+  /** Would a wake for this agent be dropped rather than delivered (session BROKEN, or
+   *  out of background turns)? The Scheduler checks this to skip firing a paused agent —
+   *  no wake notification, history row, or enqueue — instead of firing then dropping. */
+  wouldDropWake(agentId: string): boolean;
   /** The `/wake-stream` consumer (channel transport): hand the queued head to the
    *  live interactive session, or park until one is offered / the hold elapses / the
    *  request aborts. Returns the wake prompt or null. */
@@ -24,6 +28,21 @@ export interface WakeTransport {
   /** Clean host shutdown: end every active headless run and clear its crash marker, so
    *  the next boot doesn't mistake an in-flight run for a crash orphan. */
   stopAll(): void;
+}
+
+/**
+ * The slice of the `Scheduler` the wake coordinator drives when an agent's
+ * resumability changes. A `broken` (unresumable) agent can't run wakes, so its crons
+ * and monitors are **paused** (disarmed, but left `enabled` in the DB) rather than
+ * left firing into a dead session — otherwise every tick spams a wake notification and
+ * a "dropping wake" log. A manual Restart clears `broken` and re-arms them. Late-bound
+ * (`WakeCoordinator.setScheduler`) because the scheduler is built after the coordinator.
+ */
+export interface SchedulerControl {
+  /** Disarm this agent's cron timers + stop its monitor children (DB `enabled` untouched). */
+  disarmAgent(agentId: string): void;
+  /** Re-arm this agent's still-enabled crons + monitors (Restart / recovery). */
+  rearmAgent(agentId: string): void;
 }
 
 /** How a headless `-p` run terminated, reported by the strategy to the coordinator:

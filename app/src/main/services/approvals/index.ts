@@ -114,7 +114,7 @@ export class ApprovalService {
     bus.emitEvent("approval:pending", approval);
     bus.emitEvent("notify", {
       kind: "approval",
-      title: `Approval needed — ${approval.agentName ?? "agent"}`,
+      title: `${approval.agentName ?? "agent"} — Approval needed`,
       body: approval.parsed?.summary ?? approval.toolName,
       agentId: args.agentId,
     });

@@ -17,6 +17,7 @@ import { SettingNumber } from "../components/settings/SettingNumber";
 import { SettingsRow } from "../components/settings/SettingsRow";
 import { SettingsSection } from "../components/settings/SettingsSection";
 import { SettingToggle } from "../components/settings/SettingToggle";
+import { Button } from "../components/ui/button";
 import { Tooltip, TooltipContent, TooltipTrigger } from "../components/ui/tooltip";
 import { useAgents } from "../hooks/useAgents";
 import { useBrokerStatus } from "../hooks/useBroker";
@@ -117,16 +118,16 @@ function GeneralPanel() {
           label="Re-run setup"
           hint="Reopen the onboarding wizard — Claude CLI check, Robinhood, first agent."
         >
-          <button
+          <Button
             type="button"
+            variant="outline"
             onClick={() => {
               update.mutate({ onboardingComplete: false });
               setView("agents");
             }}
-            className="rounded-md border border-border px-3 py-1.5 text-sm hover:bg-accent"
           >
             Re-run setup
-          </button>
+          </Button>
         </SettingsRow>
       </SettingsSection>
 
@@ -218,33 +219,70 @@ function AgentsPanel() {
   if (!s) return null;
 
   return (
-    <SettingsSection title="Agents" description="Defaults applied when you create a new agent.">
-      <SettingsRow
-        label="Default approval mode"
-        hint="Full-auto agents place orders without asking (still logged)."
+    <div className="space-y-8">
+      <SettingsSection title="Agents" description="Defaults applied when you create a new agent.">
+        <SettingsRow
+          label="Default approval mode"
+          hint="Full-auto agents place orders without asking (still logged)."
+        >
+          <SegmentedControl
+            options={[
+              { value: "approve", label: "Require approval" },
+              { value: "auto", label: "Full-auto" },
+            ]}
+            value={s.defaultApprovalMode}
+            onChange={(defaultApprovalMode) => update.mutate({ defaultApprovalMode })}
+          />
+        </SettingsRow>
+      </SettingsSection>
+
+      <SettingsSection
+        title="Background agents"
+        description="Behavior of scheduled runs that happen while you're away."
       >
-        <SegmentedControl
-          options={[
-            { value: "approve", label: "Require approval" },
-            { value: "auto", label: "Full-auto" },
-          ]}
-          value={s.defaultApprovalMode}
-          onChange={(defaultApprovalMode) => update.mutate({ defaultApprovalMode })}
-        />
-      </SettingsRow>
-      <SettingsRow
-        label="Background turn limit"
-        hint="Max scheduled background turns an agent may run while you're away — further wakes are skipped until you view the agent, which resets its count. One limit for all agents; each agent's view has an on/off toggle."
-      >
-        <SettingNumber
-          value={s.maxHeadlessTurns}
-          min={1}
-          max={1000}
-          suffix="turns"
-          onCommit={(maxHeadlessTurns) => update.mutate({ maxHeadlessTurns })}
-        />
-      </SettingsRow>
-    </SettingsSection>
+        <SettingsRow
+          label="Background turn limit"
+          hint="Pause agents after a set number of turns. Turns can be reset in the agent view."
+        >
+          <SettingToggle
+            checked={s.headlessTurnLimitEnabled}
+            onChange={(headlessTurnLimitEnabled) => update.mutate({ headlessTurnLimitEnabled })}
+          />
+        </SettingsRow>
+        {s.headlessTurnLimitEnabled && (
+          <SettingsRow
+            label="Maximum turns"
+            hint="Number of turns an agent can run before pausing."
+          >
+            <SettingNumber
+              value={s.maxHeadlessTurns}
+              min={1}
+              max={1000}
+              suffix="turns"
+              onCommit={(maxHeadlessTurns) => update.mutate({ maxHeadlessTurns })}
+            />
+          </SettingsRow>
+        )}
+        <SettingsRow label="Maximum run time" hint="Maximum duration of a single agent run.">
+          <SettingNumber
+            value={s.maxHeadlessRunMinutes}
+            min={5}
+            max={60}
+            suffix="minutes"
+            onCommit={(maxHeadlessRunMinutes) => update.mutate({ maxHeadlessRunMinutes })}
+          />
+        </SettingsRow>
+        <SettingsRow
+          label="Allow API key usage"
+          hint="Allow background runs to use your Anthropic/OpenAI API key instead of your Claude/Codex subscription."
+        >
+          <SettingToggle
+            checked={s.backgroundAllowApiKey}
+            onChange={(backgroundAllowApiKey) => update.mutate({ backgroundAllowApiKey })}
+          />
+        </SettingsRow>
+      </SettingsSection>
+    </div>
   );
 }
 
@@ -344,17 +382,16 @@ function BrokerConnectionRow() {
         {st === "connected" ? (
           <span className="text-sm text-muted-foreground">Connected</span>
         ) : (
-          <button
+          <Button
             type="button"
             disabled={connect.isPending || st === "connecting"}
             onClick={() => connect.mutate()}
-            className="flex items-center gap-1.5 rounded-md bg-primary px-3 py-1.5 text-sm font-medium text-primary-foreground hover:opacity-90 disabled:opacity-50"
           >
             {(connect.isPending || st === "connecting") && (
               <Loader2 className="size-4 animate-spin" />
             )}
             {st === "error" ? "Retry" : "Connect"}
-          </button>
+          </Button>
         )}
       </div>
     </SettingsRow>

@@ -28,8 +28,8 @@ export const Agent = z.object({
   lastSessionId: z.string().nullable(),
   status: AgentStatus,
   executionState: ExecutionState,
-  /** Headless (scheduled background) turns run since the user last viewed this agent
-   *  in the GUI. Reset on every view (and by the explicit Reset control). */
+  /** Headless (scheduled background) turns run since the last reset. Reset only via
+   *  the agent view's turn-limit button Reset control (`agents.resetTurnLimit`). */
   headlessTurnsUsed: z.number().int().nonnegative(),
   /** Whether the global headless turn limit (`AppSettings.maxHeadlessTurns`) applies
    *  to this agent. There is no per-agent limit VALUE — only this on/off switch. */

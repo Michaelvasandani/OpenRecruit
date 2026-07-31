@@ -77,7 +77,7 @@ describe("orderNotification", () => {
       "agent-1",
     );
     expect(n.kind).toBe("order");
-    expect(n.title).toBe("Order filled — Momentum Bot");
+    expect(n.title).toBe("Momentum Bot — Order filled");
     expect(n.body).toBe("BUY 2 AAPL — filled at $182.34");
     expect(n.agentId).toBe("agent-1");
   });
@@ -102,7 +102,7 @@ describe("orderNotification", () => {
       null,
     );
     expect(n.body).toBe("BUY $100 AAPL — filled at $50");
-    expect(n.title).toBe("Order filled — agent");
+    expect(n.title).toBe("agent — Order filled");
   });
   test("null fields fall back gracefully", () => {
     const n = orderNotification(

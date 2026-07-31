@@ -69,7 +69,7 @@ function trimNum(n: number): string {
 /**
  * Format an order-execution notification. Body reads like
  * `"BUY 2 AAPL — filled at $182.34"`; price is included only for fills (via
- * `avgPrice`). Title is `"Order filled — <agent>"`.
+ * `avgPrice`). Title is `"<agent> — Order filled"`.
  */
 export function orderNotification(
   o: OrderStatus,
@@ -81,7 +81,7 @@ export function orderNotification(
   const priced = verb === "filled" && o.avgPrice != null ? ` at $${trimNum(o.avgPrice)}` : "";
   return {
     kind: "order",
-    title: `Order ${verb} — ${agentName ?? "agent"}`,
+    title: `${agentName ?? "agent"} — Order ${verb}`,
     body: `${side} ${quantityClause(o)} — ${verb}${priced}`,
     agentId,
   };

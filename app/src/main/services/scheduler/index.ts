@@ -6,7 +6,7 @@ import type {
   Schedule,
   Wake,
 } from "@shared/schedule";
-import { desc, eq } from "drizzle-orm";
+import { and, desc, eq } from "drizzle-orm";
 import { nanoid } from "nanoid";
 import type { Db } from "../../db/client";
 import {
@@ -53,17 +53,25 @@ export class Scheduler {
         this.db.delete(schedulesTable).where(eq(schedulesTable.id, row.id)).run();
         continue;
       }
+      // A broken (unresumable) agent can't run wakes — leave its crons enabled but
+      // unarmed (no catch-up, no arm). A manual Restart clears broken → `rearmAgent`.
+      if (this.registry.executionStateOf(row.agentId) === "broken") continue;
       // Catch-up: if we were down past a recurring fire, run it once, then re-arm
       // from the expression (never trust the stored next_fire_at).
       if (row.nextFireAt != null && row.nextFireAt < Date.now()) {
-        this.fire(row.agentId, row.prompt, "cron");
-        this.markCronFired(row.id);
+        const fired = this.fire(row.agentId, row.prompt, "cron");
+        if (fired) this.markCronFired(row.id);
         if (!row.recurring) {
-          this.db
-            .update(schedulesTable)
-            .set({ enabled: false })
-            .where(eq(schedulesTable.id, row.id))
-            .run();
+          // Retire a one-shot only if it ran; a skipped one (agent paused) stays enabled
+          // so a later boot catch-up fires it once un-paused. Either way it's spent-in-time,
+          // so don't arm it.
+          if (fired) {
+            this.db
+              .update(schedulesTable)
+              .set({ enabled: false })
+              .where(eq(schedulesTable.id, row.id))
+              .run();
+          }
           continue;
         }
       }
@@ -76,9 +84,69 @@ export class Scheduler {
         this.db.delete(monitorsTable).where(eq(monitorsTable.id, row.id)).run();
         continue;
       }
+      if (this.registry.executionStateOf(row.agentId) === "broken") continue; // paused (see above)
       this.startMonitor(row.id, row.agentId, row.command);
     }
     hostLog.info(`scheduler started: ${this.runners.size} monitor(s), crons armed`);
+  }
+
+  /**
+   * Pause an agent's scheduling without deleting it: disarm every cron timer and stop
+   * every monitor child for the agent, leaving the DB rows `enabled` so they survive.
+   * Called by the `WakeCoordinator` when the agent goes `broken` — a dead session can't
+   * run wakes, so firing into it only spams notifications and drops. `rearmAgent`
+   * reverses it on Restart. (Distinct from `removeAgent`, which deletes.)
+   */
+  disarmAgent(agentId: string): void {
+    for (const row of this.db
+      .select()
+      .from(schedulesTable)
+      .where(eq(schedulesTable.agentId, agentId))
+      .all()) {
+      this.cron.disarm(row.id);
+    }
+    // Clear next-fire on the disarmed crons so the Scheduled view doesn't advertise a run
+    // that won't happen while paused; `rearmAgent` recomputes it. (Recurring rows only —
+    // a one-shot's original fire time is kept for a later catch-up.)
+    this.db
+      .update(schedulesTable)
+      .set({ nextFireAt: null })
+      .where(and(eq(schedulesTable.agentId, agentId), eq(schedulesTable.recurring, true)))
+      .run();
+    for (const row of this.db
+      .select()
+      .from(monitorsTable)
+      .where(eq(monitorsTable.agentId, agentId))
+      .all()) {
+      this.runners.get(row.id)?.stop();
+      this.runners.delete(row.id);
+    }
+    bus.emitEvent("scheduler:changed", { agentId });
+  }
+
+  /**
+   * Resume a previously-disarmed agent: re-arm its still-`enabled` crons and restart its
+   * enabled monitors. Called when the agent recovers from `broken` (a manual Restart).
+   * Idempotent: `armCron` re-arms in place and monitors already running are left alone.
+   */
+  rearmAgent(agentId: string): void {
+    if (this.isAgentGone(agentId)) return;
+    for (const row of this.db
+      .select()
+      .from(schedulesTable)
+      .where(eq(schedulesTable.agentId, agentId))
+      .all()) {
+      if (!row.enabled) continue;
+      this.armCron(row.id, row.agentId, row.cronExpr, row.prompt, row.recurring);
+    }
+    for (const row of this.db
+      .select()
+      .from(monitorsTable)
+      .where(eq(monitorsTable.agentId, agentId))
+      .all()) {
+      if (!row.enabled || this.runners.has(row.id)) continue;
+      this.startMonitor(row.id, row.agentId, row.command);
+    }
   }
 
   /** True if the agent no longer exists or has been archived (orphaned schedules). */
@@ -256,15 +324,20 @@ export class Scheduler {
     recurring: boolean,
   ): void {
     const next = this.cron.arm(id, cronExpr, recurring, () => {
-      this.fire(agentId, prompt, "cron");
-      this.markCronFired(id);
+      const fired = this.fire(agentId, prompt, "cron");
+      if (fired) this.markCronFired(id);
       if (recurring) {
+        // Advance the stored next-fire whether or not it fired, so the Scheduled view
+        // stays accurate — croner keeps ticking on schedule regardless.
         this.db
           .update(schedulesTable)
           .set({ nextFireAt: this.cron.nextRun(id) })
           .where(eq(schedulesTable.id, id))
           .run();
-      } else {
+      } else if (fired) {
+        // Retire a one-shot only when it ACTUALLY ran. If it was skipped (agent paused)
+        // leave it enabled + in the past so a later boot catch-up fires it once the
+        // agent is un-paused — otherwise a "run once at 9am" for a paused agent is lost.
         this.cron.disarm(id);
         this.db
           .update(schedulesTable)
@@ -300,12 +373,15 @@ export class Scheduler {
         OPENTRADE_TOKEN: this.localApi.token,
       }),
       onTrigger: (line) => {
-        this.db
-          .update(monitorsTable)
-          .set({ lastFiredAt: Date.now() })
-          .where(eq(monitorsTable.id, id))
-          .run();
-        this.fire(agentId, `Monitor triggered: ${line}`, "monitor");
+        // Only record the trigger if it actually woke the agent — a skipped fire
+        // (paused agent) shouldn't advance the monitor's last-fired time.
+        if (this.fire(agentId, `Monitor triggered: ${line}`, "monitor")) {
+          this.db
+            .update(monitorsTable)
+            .set({ lastFiredAt: Date.now() })
+            .where(eq(monitorsTable.id, id))
+            .run();
+        }
       },
     });
     runner.start();
@@ -316,10 +392,18 @@ export class Scheduler {
    * Record the fire in the Monitor tab and hand the wake to the coordinator. The
    * coordinator owns routing (interactive via the channel / headless via `-p`) and
    * per-agent queueing, so a fire is fire-and-forget here — never blocks the timer/monitor.
+   * Returns whether the fire actually happened: `false` means the agent is paused (broken /
+   * out of turns) and the wake was skipped, so the caller must NOT consume the schedule
+   * (advance last-fired, retire a one-shot) — see the callers in `armCron` / `start()`.
    */
-  private fire(agentId: string, prompt: string, sourceKind: "cron" | "monitor"): void {
+  private fire(agentId: string, prompt: string, sourceKind: "cron" | "monitor"): boolean {
     const agent = this.registry.get(agentId);
-    if (!agent || agent.archivedAt !== null) return;
+    if (!agent || agent.archivedAt !== null) return false;
+    // Skip the fire entirely if the coordinator would only drop this wake — the agent is
+    // broken, or out of background turns. Otherwise a paused agent keeps emitting a wake
+    // notification + history row on every cron tick / monitor trigger while nothing runs.
+    // Re-checked live each fire, so a reset / toggle / GUI-open resumes with no re-arm.
+    if (this.wake.wouldDropWake(agentId)) return false;
     // How this wake will be delivered: a live interactive session (the channel) takes it
     // warm; anything else (offline/headless) routes to a background `-p` run. The
     // coordinator decides this synchronously off the same execution state, so reading it
@@ -342,10 +426,11 @@ export class Scheduler {
     // while OpenTrade is unfocused — see §12.4).
     bus.emitEvent("notify", {
       kind: "wake",
-      title: `${agent.name} — ${sourceKind === "cron" ? "scheduled run" : "monitor triggered"}`,
-      body: firstLine(prompt),
+      title: `${agent.name} — ${sourceKind === "cron" ? "Scheduled run" : "Monitor fired"}`,
+      body: `${agent.name} is now running: ${firstLine(prompt)}`,
       agentId,
     });
+    return true;
   }
 
   private getCron(id: string): Schedule | undefined {

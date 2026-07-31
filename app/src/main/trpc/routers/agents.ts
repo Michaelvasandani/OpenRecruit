@@ -33,8 +33,8 @@ export const agentsRouter = router({
     )
     .mutation(({ ctx, input }) => ctx.registry.update(input.id, input) ?? null),
 
-  /** Zero the agent's headless turn budget (the Reset control on the agent view;
-   *  viewing the agent also resets it automatically). */
+  /** Zero the agent's headless turn budget — the turn-limit button's Reset control, the
+   *  budget's only refill path. */
   resetTurnLimit: publicProcedure.input(z.object({ id: z.string() })).mutation(({ ctx, input }) => {
     ctx.registry.resetHeadlessTurns(input.id);
     return { ok: true };

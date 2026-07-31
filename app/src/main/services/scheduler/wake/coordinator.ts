@@ -4,12 +4,19 @@ import { hostLog } from "../../../host/log";
 import type { AgentRegistry } from "../../agents/registry";
 import { analytics } from "../../analytics";
 import { bus } from "../../event-bus";
-import type { HeadlessExitReason, HeadlessWakeStrategy, WakeTransport } from "./types";
+import type {
+  HeadlessExitReason,
+  HeadlessWakeStrategy,
+  SchedulerControl,
+  WakeTransport,
+} from "./types";
 
-/** Hard ceiling on a single headless run, INCLUDING time parked at the approval gate.
- *  The only timer in the wake layer. On expiry we SIGTERM the child; its exit drives
- *  `headlessExited`. (If the kill lands mid-approval, the severed gate curl trips the
- *  existing `req.on("close")` → ApprovalService.abandon, so no row corruption.) */
+/** Default hard ceiling on a single headless run, INCLUDING time parked at the approval
+ *  gate. The kill timer is the only timer in the wake layer; on expiry we SIGTERM the
+ *  child and its exit drives `headlessExited` (a clean `ok`, not a resume-fail). The
+ *  actual value is a live Settings tunable (`maxHeadlessRunMinutes`); this is the
+ *  fallback when none is wired (tests/standalone). (If the kill lands mid-approval, the
+ *  severed gate curl trips the existing `req.on("close")` → ApprovalService.abandon.) */
 const MAX_HEADLESS_RUN_MS = 30 * 60_000;
 /** Consecutive headless resume-fails before an agent is declared unresumable. Each
  *  failure drops its own wake; the Nth in a row flips the agent to `broken`. Any clean
@@ -47,6 +54,25 @@ const TO_EXECUTION_STATE: Record<WriterState, ExecutionState> = {
  * The actor's state IS the agent's `executionState` (pushed to the registry on every
  * transition); there is no internal-vs-UI projection.
  */
+/** Everything an {@link AgentWriter} needs, as one object (vs a long positional list).
+ *  The `() => …` fields are live reads of Settings tunables so a change applies to the
+ *  next wake with no restart. */
+interface AgentWriterDeps {
+  registry: AgentRegistry;
+  headless: HeadlessWakeStrategy;
+  /** Live per-run max duration in ms (the kill-timer). */
+  maxHeadlessRunMs: () => number;
+  /** Live global per-agent turn budget. */
+  maxHeadlessTurns: () => number;
+  /** Live global on/off for the whole turn-limit feature. When off, no gating, counting,
+   *  or pause notification happens. Distinct from the per-agent `Agent.turnLimitEnabled`. */
+  turnLimitFeatureEnabled: () => boolean;
+  /** Fired when the writer enters/leaves BROKEN so the coordinator can pause/resume the
+   *  agent's crons + monitors (see {@link SchedulerControl}). No-op until a scheduler binds. */
+  onBroken: (id: string) => void;
+  onUnbroken: (id: string) => void;
+}
+
 class AgentWriter {
   private state: WriterState = "OFFLINE";
   /** The one wake queue (FIFO). Advanced on handoff (interactive) or on exit (headless). */
@@ -61,16 +87,30 @@ class AgentWriter {
    *  deliberate stop (→ OFFLINE) rather than a resume failure. */
   private stopping = false;
 
+  private readonly registry: AgentRegistry;
+  private readonly headless: HeadlessWakeStrategy;
+  private readonly maxHeadlessRunMs: () => number;
+  private readonly maxHeadlessTurns: () => number;
+  private readonly turnLimitFeatureEnabled: () => boolean;
+  private readonly onBroken: (id: string) => void;
+  private readonly onUnbroken: (id: string) => void;
+
   constructor(
     private id: string,
-    private registry: AgentRegistry,
-    private headless: HeadlessWakeStrategy,
-    private maxHeadlessRunMs: number,
-    private maxHeadlessTurns: () => number,
+    deps: AgentWriterDeps,
   ) {
+    this.registry = deps.registry;
+    this.headless = deps.headless;
+    this.maxHeadlessRunMs = deps.maxHeadlessRunMs;
+    this.maxHeadlessTurns = deps.maxHeadlessTurns;
+    this.turnLimitFeatureEnabled = deps.turnLimitFeatureEnabled;
+    this.onBroken = deps.onBroken;
+    this.onUnbroken = deps.onUnbroken;
     // Seed BROKEN from a boot-time spawn-marker reconcile: single-writer crash recovery
-    // sets `executionState = broken` directly, before this coordinator exists.
-    if (registry.executionStateOf(id) === "broken") this.state = "BROKEN";
+    // sets `executionState = broken` directly, before this coordinator exists. (The
+    // scheduler's own boot sweep skips arming a broken agent, so no disarm is needed
+    // here — this seed doesn't go through `transition`.)
+    if (this.registry.executionStateOf(id) === "broken") this.state = "BROKEN";
   }
 
   // ---- producer / consumer ----
@@ -176,10 +216,10 @@ class AgentWriter {
 
   private startHeadless(): void {
     // The headless turn budget: at most `maxHeadlessTurns` unattended `-p` runs since
-    // the user last viewed the agent in the GUI (viewing resets the count, §12.2). An
+    // the last reset — the agent view's turn-limit button is the only refill path (§12.2). An
     // exhausted budget drops the queued wakes and stays OFFLINE — a runaway scheduler
     // can't keep spending while nobody is watching. Recurring crons keep firing (and
-    // keep being dropped here) so the agent resumes on its own after the next view.
+    // keep being dropped here) so the agent resumes as soon as the user resets it.
     if (this.turnBudgetExhausted()) {
       hostLog.warn("headless turn limit reached; dropping queued wake(s)", this.id);
       this.pending = [];
@@ -187,17 +227,25 @@ class AgentWriter {
     }
     this.transition("HEADLESS_RUNNING");
     this.armKillTimer();
+    // Always count the run (no freeze while the feature is off — the count is reset
+    // wholesale when the feature is re-enabled, so there's nothing to preserve). The
+    // pause NOTIFICATION only makes sense when the feature + the agent's switch are on
+    // and this run crossed the limit.
     const used = this.registry.incrementHeadlessTurns(this.id);
     const agent = this.registry.get(this.id);
-    if (agent?.turnLimitEnabled && used >= this.maxHeadlessTurns()) {
+    if (
+      this.turnLimitFeatureEnabled() &&
+      agent?.turnLimitEnabled &&
+      used >= this.maxHeadlessTurns()
+    ) {
       // This run consumed the last budgeted turn — the next unattended wake is dropped
-      // until the user views the agent (which resets the count). Surface it so the user
-      // knows the agent has paused and needs a look (§12.4).
+      // until the user resets the count from the agent view's turn-limit button. Surface it so
+      // the user knows the agent has paused and needs a reset (§12.4).
       analytics.track("turn_limit_reached");
       bus.emitEvent("notify", {
         kind: "restricted",
-        title: `${agent.name} — paused`,
-        body: "Reached its unattended turn limit. Open OpenTrade to let it keep working.",
+        title: `${agent.name} — Paused`,
+        body: `${agent.name} has hit its turn limit. Reset to continue.`,
         agentId: this.id,
       });
     }
@@ -205,13 +253,26 @@ class AgentWriter {
     this.headless.run(this.id, head, (reason) => this.headlessExited(reason));
   }
 
-  /** True when the agent's turn limit is on and its unattended-turn budget is spent.
-   *  An unknown agent (e.g. archived mid-queue) is not gated here — the headless
-   *  strategy has its own archived/missing guards. */
+  /** True when the turn-limit feature is on globally, the agent's own switch is on, and
+   *  its unattended-turn budget is spent. The global off-switch short-circuits first, so
+   *  a disabled feature never gates. An unknown agent (e.g. archived mid-queue) is not
+   *  gated here — the headless strategy has its own archived/missing guards. */
   private turnBudgetExhausted(): boolean {
+    if (!this.turnLimitFeatureEnabled()) return false;
     const agent = this.registry.get(this.id);
     if (!agent?.turnLimitEnabled) return false;
     return agent.headlessTurnsUsed >= this.maxHeadlessTurns();
+  }
+
+  /** Would a wake enqueued right now be dropped rather than delivered? True when the
+   *  session is BROKEN, or when it's not interactive and the turn budget is spent.
+   *  Interactive sessions deliver via the channel and are never gated. The Scheduler
+   *  checks this to skip firing a paused agent entirely — otherwise its cron/monitor
+   *  keeps emitting a wake notification + history row every interval while nothing runs. */
+  wouldDropWake(): boolean {
+    if (this.state === "BROKEN") return true;
+    if (this.state === "INTERACTIVE_RUNNING") return false;
+    return this.turnBudgetExhausted();
   }
 
   private headlessExited(reason: HeadlessExitReason): void {
@@ -253,7 +314,7 @@ class AgentWriter {
     this.headlessKillTimer = setTimeout(() => {
       hostLog.warn("headless run exceeded max runtime; killing", this.id);
       this.headless.stop(this.id); // SIGTERM; its exit drives headlessExited(ok)
-    }, this.maxHeadlessRunMs);
+    }, this.maxHeadlessRunMs());
   }
 
   private clearKillTimer(): void {
@@ -268,7 +329,15 @@ class AgentWriter {
     const prev = this.state;
     this.state = next;
     this.registry.setExecutionState(this.id, TO_EXECUTION_STATE[next]);
-    if (next === "BROKEN" && prev !== "BROKEN") analytics.track("agent_marked_broken");
+    if (next === "BROKEN" && prev !== "BROKEN") {
+      analytics.track("agent_marked_broken");
+      // Unresumable → pause this agent's scheduling so it stops firing into a dead
+      // session (no wake-notification spam, no "dropping wake" churn).
+      this.onBroken(this.id);
+    } else if (prev === "BROKEN" && next !== "BROKEN") {
+      // Recovered (a manual Restart mints a fresh session) → resume its schedules.
+      this.onUnbroken(this.id);
+    }
   }
 }
 
@@ -283,29 +352,49 @@ class AgentWriter {
  */
 export class WakeCoordinator implements WakeTransport {
   private writers = new Map<string, AgentWriter>();
-  private maxHeadlessRunMs: number;
+  /** Live read of the per-run max duration in ms (a Settings tunable). */
+  private maxHeadlessRunMs: () => number;
   /** Live read of the global headless turn limit (a Settings tunable). */
   private maxHeadlessTurns: () => number;
+  /** Live read of the global on/off for the whole turn-limit feature (a Settings toggle). */
+  private turnLimitFeatureEnabled: () => boolean;
+  /** Late-bound (the scheduler is built after this coordinator). While unset, a writer
+   *  breaking/recovering is a no-op on scheduling. */
+  private scheduler?: SchedulerControl;
 
   constructor(
     private registry: AgentRegistry,
     private headless: HeadlessWakeStrategy,
-    opts: { maxHeadlessRunMs?: number; maxHeadlessTurns?: () => number } = {},
+    opts: {
+      maxHeadlessRunMs?: () => number;
+      maxHeadlessTurns?: () => number;
+      turnLimitFeatureEnabled?: () => boolean;
+    } = {},
   ) {
-    this.maxHeadlessRunMs = opts.maxHeadlessRunMs ?? MAX_HEADLESS_RUN_MS;
+    this.maxHeadlessRunMs = opts.maxHeadlessRunMs ?? (() => MAX_HEADLESS_RUN_MS);
     this.maxHeadlessTurns = opts.maxHeadlessTurns ?? (() => DEFAULT_SETTINGS.maxHeadlessTurns);
+    this.turnLimitFeatureEnabled =
+      opts.turnLimitFeatureEnabled ?? (() => DEFAULT_SETTINGS.headlessTurnLimitEnabled);
+  }
+
+  /** Bind the scheduler so a broken agent's crons/monitors are paused (and resumed on
+   *  Restart). Called once at host wiring, after both are constructed. */
+  setScheduler(scheduler: SchedulerControl): void {
+    this.scheduler = scheduler;
   }
 
   private writer(id: string): AgentWriter {
     let w = this.writers.get(id);
     if (!w) {
-      w = new AgentWriter(
-        id,
-        this.registry,
-        this.headless,
-        this.maxHeadlessRunMs,
-        this.maxHeadlessTurns,
-      );
+      w = new AgentWriter(id, {
+        registry: this.registry,
+        headless: this.headless,
+        maxHeadlessRunMs: this.maxHeadlessRunMs,
+        maxHeadlessTurns: this.maxHeadlessTurns,
+        turnLimitFeatureEnabled: this.turnLimitFeatureEnabled,
+        onBroken: (aid) => this.scheduler?.disarmAgent(aid),
+        onUnbroken: (aid) => this.scheduler?.rearmAgent(aid),
+      });
       this.writers.set(id, w);
     }
     return w;
@@ -313,6 +402,10 @@ export class WakeCoordinator implements WakeTransport {
 
   enqueue(agentId: string, prompt: string): void {
     this.writer(agentId).enqueue(prompt);
+  }
+
+  wouldDropWake(agentId: string): boolean {
+    return this.writer(agentId).wouldDropWake();
   }
 
   awaitPoll(agentId: string, signal: AbortSignal, holdMs: number): Promise<string | null> {

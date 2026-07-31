@@ -21,10 +21,25 @@ export const AppSettings = z.object({
   /** Anonymous product-telemetry opt-out. On by default; the capture-time gate in
    *  AnalyticsService reads this live via `settings:changed`. */
   telemetryEnabled: z.boolean(),
-  /** Max headless (scheduled background) turns an agent may run since the user last
-   *  viewed it in the GUI. One global value for all agents; per-agent there is only
-   *  an on/off toggle (`Agent.turnLimitEnabled`). Viewing the agent resets its count. */
+  /** Global on/off for the whole background turn-limit feature. On by default; when off,
+   *  no agent is ever gated/counted and the agent-view turn-limit button is hidden.
+   *  Distinct from the per-agent `Agent.turnLimitEnabled` switch. */
+  headlessTurnLimitEnabled: z.boolean(),
+  /** Max headless (scheduled background) turns an agent may run between resets. One
+   *  global value for all agents; per-agent there is only an on/off toggle
+   *  (`Agent.turnLimitEnabled`). The count refills only via the agent view's
+   *  turn-limit button's Reset control. */
   maxHeadlessTurns: z.number().int().min(1).max(1000),
+  /** Hard ceiling on a single scheduled background run, in minutes (includes time parked
+   *  at the approval gate). On expiry the run is SIGTERM'd; it's a clean stop, not a
+   *  failure. Always applies, independent of the turn limit. */
+  maxHeadlessRunMinutes: z.number().int().min(5).max(60),
+  /** Whether background (headless `-p`) runs may use `ANTHROPIC_API_KEY` from the env.
+   *  **Off by default**: unattended runs launch with the key stripped, so `claude` uses
+   *  the logged-in Claude subscription instead of silently billing the Anthropic API. On
+   *  keeps the key (the whole app env is inherited, so a shell `ANTHROPIC_API_KEY` flows
+   *  through). Interactive sessions are unaffected either way. */
+  backgroundAllowApiKey: z.boolean(),
 
   // ---- macOS notifications (§12.4). All default on: the launcher gates display. ----
   /** Notify when a cron/monitor wakes an agent (launcher shows it only while unfocused). */
@@ -49,7 +64,10 @@ export const DEFAULT_SETTINGS: AppSettings = {
   defaultApprovalMode: "approve",
   onboardingComplete: false,
   telemetryEnabled: true,
+  headlessTurnLimitEnabled: true,
   maxHeadlessTurns: 20,
+  maxHeadlessRunMinutes: 30,
+  backgroundAllowApiKey: false,
   notifyWakes: true,
   notifyOrders: true,
   notifyApprovals: true,

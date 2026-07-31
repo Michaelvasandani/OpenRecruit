@@ -9,9 +9,9 @@ import {
 } from "node:fs";
 import { dirname, join } from "node:path";
 import type { Agent, AgentStatus, CreateAgentInput, ExecutionState } from "@shared/agent";
+import { templateOf } from "@shared/analytics";
 import { eq } from "drizzle-orm";
 import { nanoid } from "nanoid";
-import { templateOf } from "@shared/analytics";
 import { type Db, OPENTRADE_HOME } from "../../db/client";
 import { agents as agentsTable } from "../../db/schema";
 import { analytics } from "../analytics";
@@ -283,7 +283,7 @@ export class AgentRegistry {
 
   /**
    * Count one headless wake run against the agent's turn budget. Returns the new
-   * count (0 for an unknown agent). Broadcast so the GUI's turns-left chip is live.
+   * count (0 for an unknown agent). Broadcast so the GUI's turns-left button is live.
    */
   incrementHeadlessTurns(id: string): number {
     const row = this.db.select().from(agentsTable).where(eq(agentsTable.id, id)).get();
@@ -299,14 +299,26 @@ export class AgentRegistry {
   }
 
   /**
-   * Zero the agent's headless turn budget. Called whenever the user views the agent
-   * in the GUI (the budget counts unattended turns only) and by the explicit Reset
-   * control on the agent view.
+   * Zero the agent's headless turn budget. The ONLY refill path: the turn-limit button's
+   * Reset control on the agent view (`agents.resetTurnLimit`) — the budget does
+   * not reset on viewing, restart, or any other implicit signal.
    */
   resetHeadlessTurns(id: string): void {
     const row = this.db.select().from(agentsTable).where(eq(agentsTable.id, id)).get();
     if (!row || row.headlessTurnsUsed === 0) return;
     this.db.update(agentsTable).set({ headlessTurnsUsed: 0 }).where(eq(agentsTable.id, id)).run();
+    this.broadcast();
+  }
+
+  /**
+   * Clean-slate every agent's turn-limit state: zero all counts AND turn the per-agent
+   * limit back on for everyone. Called when the global turn-limit feature is re-enabled
+   * (Settings `headlessTurnLimitEnabled` off → on) so re-enabling is a fresh start rather
+   * than instantly pausing agents on stale counts — this deliberately overrides any
+   * per-agent opt-out (a per-agent "off" does not survive a global toggle cycle).
+   */
+  resetAllTurnBudgets(): void {
+    this.db.update(agentsTable).set({ headlessTurnsUsed: 0, turnLimitEnabled: true }).run();
     this.broadcast();
   }
 
