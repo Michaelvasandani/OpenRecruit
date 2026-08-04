@@ -34,13 +34,17 @@ export interface MigrationDb {
 }
 
 /** Bump on every schema change, with a matching entry in MIGRATIONS. */
-export const SCHEMA_VERSION = 2;
+export const SCHEMA_VERSION = 3;
 
 const MIGRATIONS: Record<number, (db: MigrationDb) => void> = {
   // v2 — headless turn limit: per-agent unattended-turn counter + on/off toggle.
   2: (db) => {
     addColumnIfMissing(db, "agents", "headless_turns_used", "INTEGER NOT NULL DEFAULT 0");
     addColumnIfMissing(db, "agents", "turn_limit_enabled", "INTEGER NOT NULL DEFAULT 1");
+  },
+  // v3 — multi-harness: which agent CLI runs this agent (claude | codex).
+  3: (db) => {
+    addColumnIfMissing(db, "agents", "harness", "TEXT NOT NULL DEFAULT 'claude'");
   },
 };
 

@@ -8,6 +8,8 @@ import type { AppSettings } from "@shared/settings";
 /** Typed app-wide event bus bridged into tRPC observables. */
 export interface AppEvents {
   "agents:changed": Agent[];
+  /** An agent was archived — harness runtimes (codex app-server) shut down. */
+  "agent:archived": { agentId: string };
   "system:tick": { at: number };
   /** Global settings changed; live consumers (broker poller, renderer) re-read. */
   "settings:changed": AppSettings;

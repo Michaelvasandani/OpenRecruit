@@ -20,15 +20,24 @@ import { AuditLog } from "../services/audit";
 import { BrokerService } from "../services/broker";
 import { RobinhoodAdapter } from "../services/broker/robinhood/client";
 import { bus } from "../services/event-bus";
+import { registerHarness } from "../services/harness";
+import { CODEX_SUBSCRIPTION_AUTH_STRIP, createCodexHarness } from "../services/harness/codex";
+import { CodexAppServerManager } from "../services/harness/codex-app-server";
+import { buildCodexAnswerer, buildInteractivePushFactory } from "../services/harness/codex-gate";
 import { LocalApiServer } from "../services/local-api";
 import { derivePort } from "../services/local-api/endpoint";
 import { Scheduler } from "../services/scheduler";
+import {
+  CodexHeadlessStrategy,
+  HarnessRoutingHeadlessStrategy,
+} from "../services/scheduler/wake/codex-strategy";
 import { WakeCoordinator } from "../services/scheduler/wake/coordinator";
 import { HeadlessRunStrategy } from "../services/scheduler/wake/headless-strategy";
 import { readSpawnMarkers, reconcileSpawnMarkers } from "../services/scheduler/wake/spawn-marker";
 import { SettingsService } from "../services/settings";
 import { StatusArbiter } from "../services/status/arbiter";
 import { TerminalService } from "../services/terminal";
+import { buildAgentEnv } from "../services/terminal/env";
 import type { Context } from "../trpc/trpc";
 import { hostLog } from "./log";
 import { clearManifest, writeManifest } from "./manifest";
@@ -89,15 +98,48 @@ async function main() {
   });
   await localApi.start();
 
+  // Codex agents run against a per-agent supervised `codex app-server` (the engine
+  // the stock TUI in the PTY auto-attaches to). The backend connects episodically —
+  // wakes, headless turns, thread creation — and answers approval requests through
+  // the same ApprovalService gate as claude's hooks. Server env is fixed at server
+  // spawn; a `backgroundAllowApiKey` change applies to the next server (re)start.
+  const codexManager = new CodexAppServerManager(
+    (agentId) =>
+      buildAgentEnv(
+        agentId,
+        {
+          OPENTRADE_PORT: String(localApi.port),
+          OPENTRADE_TOKEN: token,
+          OPENTRADE_HARNESS: "codex",
+        },
+        {
+          stripEnvKeys: settings.get().backgroundAllowApiKey
+            ? []
+            : [...CODEX_SUBSCRIPTION_AUTH_STRIP],
+        },
+      ),
+    buildCodexAnswerer(approvals),
+  );
+  // Codex is constructed here (it needs the manager) and registered into the
+  // harness registry, which the rest of the app resolves through `harnessFor`.
+  registerHarness(createCodexHarness(codexManager));
+  // An archived agent's engine has no reason to keep running.
+  bus.onEvent("agent:archived", ({ agentId }) => codexManager.stopServer(agentId));
+
   // Autonomy: the single wake coordinator. It owns one per-agent queue and drains each
-  // wake through one of two transports — a `claude/channel` inject into a live PTY
-  // (interactive) or a headless `claude --resume -p` (headless). Built before the
+  // wake through its harness's transports — claude: `claude/channel` inject into a live
+  // PTY / headless `claude --resume -p` child; codex: a `turn/start` on the agent's
+  // app-server for BOTH (the TUI, when attached, renders it live). Built before the
   // TerminalService so the latter can report PTY up/down to it.
   const wake = new WakeCoordinator(
     registry,
-    // Background runs default to the Claude subscription (strip ANTHROPIC_API_KEY) so
-    // unattended agents don't silently bill the API; "Allow API key usage" opts out live.
-    new HeadlessRunStrategy(registry, localApi, () => !settings.get().backgroundAllowApiKey),
+    new HarnessRoutingHeadlessStrategy(
+      registry,
+      // Background runs default to the subscription login (strip the API key) so
+      // unattended agents don't silently bill the API; "Allow API key usage" opts out live.
+      new HeadlessRunStrategy(registry, localApi, () => !settings.get().backgroundAllowApiKey),
+      new CodexHeadlessStrategy(registry, codexManager),
+    ),
     {
       // The turn-limit gate + run-duration cap read live, so a Settings change applies
       // to the next wake without a restart.
@@ -107,7 +149,13 @@ async function main() {
     },
   );
 
-  const terminal = new TerminalService(registry, localApi, arbiter, wake);
+  const terminal = new TerminalService(
+    registry,
+    localApi,
+    arbiter,
+    wake,
+    buildInteractivePushFactory(codexManager, registry),
+  );
   await terminal.start();
 
   // Durable scheduler over the coordinator. The scheduler + coordinator are late-bound
@@ -175,6 +223,7 @@ async function main() {
     // Kill in-flight headless wakes + clear their markers so this clean exit isn't
     // mistaken for a crash on the next boot (which would flip agents to broken).
     wake.stopAll();
+    codexManager.stopAll();
     terminal.stop();
     localApi.stop();
     trpc.close();

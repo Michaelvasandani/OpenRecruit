@@ -8,23 +8,24 @@ import { OPENTRADE_HOME } from "../../db/client";
  * OPENTRADE_* identifiers. The hooks-server port/token (OPENTRADE_PORT /
  * OPENTRADE_TOKEN) are layered in by M3.
  *
- * `useSubscriptionAuth` (set for background/headless runs) strips `ANTHROPIC_API_KEY`
- * from the inherited env so `claude` uses the user's logged-in Claude subscription
- * instead of silently billing the Anthropic API — the whole app env is inherited, so
- * an `ANTHROPIC_API_KEY` in the user's shell would otherwise leak into every `-p` run
- * (the "unattended runs bill the API" cost bug).
+ * `stripEnvKeys` (set for background/headless runs, from the harness's
+ * `subscriptionAuthStrip` list — e.g. `ANTHROPIC_API_KEY` for claude,
+ * `OPENAI_API_KEY` for codex) removes API keys from the inherited env so the CLI
+ * bills the user's logged-in subscription instead of silently hitting an API key —
+ * the whole app env is inherited, so a key in the user's shell would otherwise
+ * leak into every unattended run (the "unattended runs bill the API" cost bug).
  */
 export function buildAgentEnv(
   agentId: string,
   extra?: Record<string, string>,
-  opts?: { useSubscriptionAuth?: boolean },
+  opts?: { stripEnvKeys?: readonly string[] },
 ): Record<string, string> {
   const base: Record<string, string> = {};
   for (const [k, v] of Object.entries(process.env)) {
     if (typeof v === "string") base[k] = v;
   }
 
-  if (opts?.useSubscriptionAuth) delete base.ANTHROPIC_API_KEY;
+  for (const key of opts?.stripEnvKeys ?? []) delete base[key];
 
   const home = homedir();
   const extraPathDirs = [

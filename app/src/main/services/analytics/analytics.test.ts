@@ -72,7 +72,7 @@ describe("AnalyticsService", () => {
   test("allowlisted event stamps super-props + the anonymous flag", () => {
     const fake = new FakeClient();
     const svc = makeService(new SettingsService(memDb()), fake);
-    svc.track("agent_created", { template: "dca", approval_mode: "auto" });
+    svc.track("agent_created", { template: "dca", harness: "claude", approval_mode: "auto" });
     expect(fake.events).toHaveLength(1);
     const e = fake.events[0];
     expect(e.event).toBe("agent_created");
@@ -189,7 +189,10 @@ describe("analytics allowlist + normalizers", () => {
   });
 
   test("error_name schema rejects anything but an identifier", () => {
-    const ok = TELEMETRY_EVENTS.app_error.safeParse({ subsystem: "host", error_name: "RangeError" });
+    const ok = TELEMETRY_EVENTS.app_error.safeParse({
+      subsystem: "host",
+      error_name: "RangeError",
+    });
     expect(ok.success).toBe(true);
     const bad = TELEMETRY_EVENTS.app_error.safeParse({
       subsystem: "host",
@@ -201,8 +204,10 @@ describe("analytics allowlist + normalizers", () => {
   test("RendererTrackInput rejects host-only events and non-renderer errors", () => {
     expect(RendererTrackInput.safeParse({ event: "host_started" }).success).toBe(false);
     expect(
-      RendererTrackInput.safeParse({ event: "onboarding_step_completed", props: { step: "broker" } })
-        .success,
+      RendererTrackInput.safeParse({
+        event: "onboarding_step_completed",
+        props: { step: "broker" },
+      }).success,
     ).toBe(true);
     // app_error is locked to subsystem "renderer" on the tRPC surface.
     expect(

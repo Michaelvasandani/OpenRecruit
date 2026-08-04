@@ -165,7 +165,7 @@ export function AgentSidebar() {
         body={
           <>
             <span className="font-medium text-foreground">{pendingDelete?.name}</span> will be
-            removed and its Claude Code session stopped. Its folder on disk is kept.
+            removed and its agent session stopped. Its folder on disk is kept.
           </>
         }
         confirmLabel="Delete"

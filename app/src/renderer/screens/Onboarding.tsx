@@ -14,14 +14,14 @@ import { useUIStore } from "../stores/ui";
 type Step = "claude" | "broker" | "showcase" | "agent";
 const STEPS: Step[] = ["claude", "broker", "showcase", "agent"];
 const STEP_LABELS: Record<Step, string> = {
-  claude: "Claude Code",
+  claude: "Agent CLI",
   broker: "Robinhood",
   showcase: "Features",
   agent: "First agent",
 };
 
 /**
- * First-run wizard. Confirm the Claude Code CLI is installed, connect Robinhood
+ * First-run wizard. Confirm an agent CLI (Claude Code / Codex) is installed, connect Robinhood
  * (optional; the panel degrades without it), show a quick feature showcase, then
  * create the first agent. Finishing (or skipping the last step) persists
  * `onboardingComplete`, which is what App.tsx gates on.
@@ -110,42 +110,52 @@ function Stepper({ current }: { current: Step }) {
 }
 
 function ClaudeStep({ onNext }: { onNext: () => void }) {
-  const probe = trpc.onboarding.checkClaudeCli.useQuery();
-  const found = probe.data?.found;
+  const probe = trpc.onboarding.harnesses.useQuery();
+  const anyFound = probe.data?.claude.found || probe.data?.codex.found;
+
+  const row = (label: string, r?: { found: boolean; version: string | null }) => (
+    <div className="flex items-center justify-between rounded-md border border-border bg-background px-3 py-2 text-sm">
+      <span className="text-muted-foreground">{label}</span>
+      {probe.isLoading ? (
+        <span className="flex items-center gap-2 text-muted-foreground">
+          <Loader2 className="size-4 animate-spin" /> Checking…
+        </span>
+      ) : r?.found ? (
+        <span className="flex items-center gap-2 text-success">
+          <Check className="size-4" /> {r.version}
+        </span>
+      ) : (
+        <span className="flex items-center gap-2 text-warning">
+          <AlertTriangle className="size-4" /> Not found
+        </span>
+      )}
+    </div>
+  );
 
   return (
     <div className="flex flex-col gap-4">
       <div className="flex items-start gap-3">
         <Terminal className="mt-0.5 size-5 text-muted-foreground" />
         <div>
-          <h2 className="text-sm font-medium">Claude Code CLI</h2>
+          <h2 className="text-sm font-medium">Agent CLI</h2>
           <p className="mt-1 text-sm text-muted-foreground">
-            Each agent runs as a Claude Code session in an embedded terminal, so the{" "}
-            <code className="rounded bg-muted px-1">claude</code> CLI must be installed.
+            Each agent runs as a coding-agent session in an embedded terminal. At least one
+            supported CLI — <code className="rounded bg-muted px-1">claude</code> or{" "}
+            <code className="rounded bg-muted px-1">codex</code> — must be installed.
           </p>
         </div>
       </div>
 
-      <div className="rounded-md border border-border bg-background px-3 py-2 text-sm">
-        {probe.isLoading ? (
-          <span className="flex items-center gap-2 text-muted-foreground">
-            <Loader2 className="size-4 animate-spin" /> Checking…
-          </span>
-        ) : found ? (
-          <span className="flex items-center gap-2 text-success">
-            <Check className="size-4" /> Found {probe.data?.version}
-          </span>
-        ) : (
-          <span className="flex items-center gap-2 text-warning">
-            <AlertTriangle className="size-4" /> Not found on your PATH
-          </span>
-        )}
+      <div className="flex flex-col gap-2">
+        {row("Claude Code", probe.data?.claude)}
+        {row("Codex (OpenAI)", probe.data?.codex)}
       </div>
 
-      {!found && !probe.isLoading && (
+      {!anyFound && !probe.isLoading && (
         <p className="text-xs text-muted-foreground">
-          Install it from <span className="font-mono">claude.com/code</span>, then re-check. You can
-          continue anyway, but agents won't start until it's available.
+          Install Claude Code from <span className="font-mono">claude.com/code</span> or Codex from{" "}
+          <span className="font-mono">developers.openai.com/codex</span>, then re-check. You can
+          continue anyway, but agents won't start until one is available.
         </p>
       )}
 
@@ -253,8 +263,8 @@ function AgentStep({ onDone, pending }: { onDone: () => void; pending: boolean }
       <div>
         <h2 className="text-sm font-medium">Create your first agent</h2>
         <p className="mt-1 text-sm text-muted-foreground">
-          The agent opens a Claude Code session in its own folder and interviews you about your
-          goals. Order-placing tools require your approval by default.
+          The agent opens a session in its own folder and interviews you about your goals.
+          Order-placing tools require your approval by default.
         </p>
       </div>
 

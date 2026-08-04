@@ -7,6 +7,14 @@ export const ApprovalMode = z.enum(["approve", "auto"]);
 export type ApprovalMode = z.infer<typeof ApprovalMode>;
 
 /**
+ * Which agent CLI runs this agent. Fixed at creation; every harness-specific
+ * behavior (spawn, wake transport, scaffold, gate wiring) is resolved through the
+ * harness seam (`services/harness/`) — nothing outside it may branch on this id.
+ */
+export const HarnessId = z.enum(["claude", "codex"]);
+export type HarnessId = z.infer<typeof HarnessId>;
+
+/**
  * Runtime execution context for an agent's single `claude` writer (orthogonal to
  * the 4-value status dot). Drives the terminal-pane overlays:
  *  - `offline`     — no live `claude` for this agent
@@ -24,6 +32,7 @@ export const Agent = z.object({
   slug: z.string(),
   name: z.string(),
   template: z.string(),
+  harness: HarnessId,
   approvalMode: ApprovalMode,
   lastSessionId: z.string().nullable(),
   status: AgentStatus,
@@ -42,6 +51,7 @@ export type Agent = z.infer<typeof Agent>;
 export const CreateAgentInput = z.object({
   name: z.string().min(1).max(80),
   template: z.string().default("default"),
+  harness: HarnessId.default("claude"),
   approvalMode: ApprovalMode.default("approve"),
   /**
    * The agent's CLAUDE.md **specialty section** (strategy persona/principles), as

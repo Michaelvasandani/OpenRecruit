@@ -12,13 +12,13 @@ describe("buildAgentEnv — subscription auth", () => {
     else process.env.ANTHROPIC_API_KEY = prev;
   });
 
-  test("strips ANTHROPIC_API_KEY when useSubscriptionAuth is on (background runs)", () => {
-    const env = buildAgentEnv("a1", undefined, { useSubscriptionAuth: true });
+  test("strips the harness's API keys when subscription auth is on (background runs)", () => {
+    const env = buildAgentEnv("a1", undefined, { stripEnvKeys: ["ANTHROPIC_API_KEY"] });
     expect(env.ANTHROPIC_API_KEY).toBeUndefined();
   });
 
-  test("keeps ANTHROPIC_API_KEY when useSubscriptionAuth is off", () => {
-    const env = buildAgentEnv("a1", undefined, { useSubscriptionAuth: false });
+  test("keeps ANTHROPIC_API_KEY when no strip list is given", () => {
+    const env = buildAgentEnv("a1", undefined, { stripEnvKeys: [] });
     expect(env.ANTHROPIC_API_KEY).toBe("sk-ant-test");
   });
 

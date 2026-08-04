@@ -17,6 +17,7 @@ export const SCHEMA_DDL = `
       slug TEXT NOT NULL UNIQUE,
       name TEXT NOT NULL,
       template TEXT NOT NULL DEFAULT 'default',
+      harness TEXT NOT NULL DEFAULT 'claude',
       approval_mode TEXT NOT NULL DEFAULT 'approve',
       last_session_id TEXT,
       status TEXT NOT NULL DEFAULT 'idle',

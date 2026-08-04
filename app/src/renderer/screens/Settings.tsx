@@ -117,7 +117,7 @@ function GeneralPanel() {
       <SettingsSection title="Setup" description="First-run onboarding.">
         <SettingsRow
           label="Re-run setup"
-          hint="Reopen the onboarding wizard — Claude CLI check, Robinhood, first agent."
+          hint="Reopen the onboarding wizard — agent CLI check, Robinhood, first agent."
         >
           <Button
             type="button"
@@ -484,7 +484,7 @@ function NotificationsPanel() {
 
 function AboutPanel() {
   const info = trpc.system.appInfo.useQuery();
-  const claude = trpc.onboarding.checkClaudeCli.useQuery();
+  const harnesses = trpc.onboarding.harnesses.useQuery();
 
   return (
     <SettingsSection
@@ -500,9 +500,22 @@ function AboutPanel() {
       <SettingsRow label="Platform">
         <span className="text-sm text-muted-foreground">{info.data?.platform ?? "—"}</span>
       </SettingsRow>
-      <SettingsRow label="Claude Code CLI" hint="Required to run agents.">
+      <SettingsRow label="Claude Code CLI" hint="Runs agents created with the Claude Code harness.">
         <span className="text-sm text-muted-foreground">
-          {claude.isLoading ? "checking…" : claude.data?.found ? claude.data.version : "Not found"}
+          {harnesses.isLoading
+            ? "checking…"
+            : harnesses.data?.claude.found
+              ? harnesses.data.claude.version
+              : "Not found"}
+        </span>
+      </SettingsRow>
+      <SettingsRow label="Codex CLI" hint="Runs agents created with the Codex harness.">
+        <span className="text-sm text-muted-foreground">
+          {harnesses.isLoading
+            ? "checking…"
+            : harnesses.data?.codex.found
+              ? harnesses.data.codex.version
+              : "Not found"}
         </span>
       </SettingsRow>
       <SettingsRow label="Data directory">

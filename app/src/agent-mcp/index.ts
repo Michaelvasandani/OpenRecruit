@@ -14,11 +14,36 @@
 // (claude passes its PTY env to the MCP child): OPENTRADE_PORT / OPENTRADE_TOKEN /
 // OPENTRADE_AGENT_ID.
 
+import { readFileSync } from "node:fs";
 import { request as httpRequest } from "node:http";
+import { homedir } from "node:os";
+import { join } from "node:path";
 
-const PORT = process.env.OPENTRADE_PORT;
-const TOKEN = process.env.OPENTRADE_TOKEN;
 const AGENT_ID = process.env.OPENTRADE_AGENT_ID;
+
+/**
+ * Resolve the host endpoint. Claude inherits OPENTRADE_PORT/TOKEN from the PTY
+ * env; codex spawns MCP children with a CLEANED env, so those are absent — fall
+ * back to the host manifest (`$OPENTRADE_HOME/host.json`, the same discovery
+ * contract the launcher uses; port + token are stable). Read per call so a host
+ * restart's fresh manifest is picked up.
+ */
+function backendEndpoint(): { port: string; token: string } | null {
+  const port = process.env.OPENTRADE_PORT;
+  const token = process.env.OPENTRADE_TOKEN;
+  if (port && token) return { port, token };
+  const home = process.env.OPENTRADE_HOME ?? join(homedir(), ".opentrade");
+  try {
+    const m = JSON.parse(readFileSync(join(home, "host.json"), "utf8")) as {
+      faucetPort?: number;
+      token?: string;
+    };
+    if (m.faucetPort && m.token) return { port: String(m.faucetPort), token: m.token };
+  } catch {
+    // no manifest → host not running
+  }
+  return null;
+}
 
 const SERVER_INFO = { name: "opentrade", version: "0.1.0" };
 const DEFAULT_PROTOCOL = "2024-11-05";
@@ -49,9 +74,13 @@ function callHost(
   body?: unknown,
 ): Promise<{ status: number; json: unknown }> {
   return new Promise((resolve, reject) => {
-    if (!PORT || !TOKEN || !AGENT_ID) {
-      return reject(new Error("OpenTrade backend env missing (OPENTRADE_PORT/TOKEN/AGENT_ID)"));
+    const endpoint = backendEndpoint();
+    if (!endpoint || !AGENT_ID) {
+      return reject(
+        new Error("OpenTrade backend unreachable (no env endpoint and no host manifest)"),
+      );
     }
+    const { port: PORT, token: TOKEN } = endpoint;
     const payload = body == null ? undefined : Buffer.from(JSON.stringify(body), "utf8");
     const req = httpRequest(
       {
@@ -262,8 +291,11 @@ async function handle(msg: JsonRpcMessage): Promise<void> {
       return;
     }
     case "notifications/initialized":
-      // The session is live — start the warm-wake poll loop.
-      startWakePoller();
+      // The session is live — start the warm-wake poll loop. Claude only: under a
+      // codex harness there is no channel to push into (wakes arrive via the agent's
+      // app-server, and a served poll here would silently EAT the wake), so the
+      // poller stays off. The env flag rides the codex config's MCP entry.
+      if (process.env.OPENTRADE_HARNESS !== "codex") startWakePoller();
       return;
     case "notifications/cancelled":
       return; // no-op notification

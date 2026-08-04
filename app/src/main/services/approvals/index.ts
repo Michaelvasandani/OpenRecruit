@@ -36,6 +36,8 @@ interface Waiter {
  */
 export class ApprovalService {
   private waiters = new Map<string, Waiter>();
+  /** Extra resolvers attached to a pending approval by joined duplicate requests. */
+  private joiners = new Map<string, Array<(d: PreToolUseDecision) => void>>();
 
   constructor(
     private db: Db,
@@ -65,9 +67,43 @@ export class ApprovalService {
       toolName: string;
       rawInput: unknown;
     },
-    opts?: { signal?: AbortSignal },
+    opts?: { signal?: AbortSignal; joinDecidedMs?: number },
   ): Promise<PreToolUseDecision> {
     const agent = this.registry.get(args.agentId);
+    const rawJson = JSON.stringify(args.rawInput ?? null);
+
+    // Idempotent join. A harness may run more than one gate layer for ONE order call
+    // and both funnel here — codex fires the PreToolUse hook AND the `approval_mode`
+    // elicitation. Two shapes:
+    //  1. PENDING-join (both callers): a request whose identical twin is still pending
+    //     attaches to that card — one card, one audit trail, one answer.
+    //  2. DECIDED-mirror (opt-in only): codex serializes its layers (hook decides
+    //     first, then the elicitation fires a beat later), so the second arrival finds
+    //     the first already DECIDED — not pending — and must mirror it, or the one
+    //     order shows two cards. The codex elicitation answerer opts into this via
+    //     `joinDecidedMs` (a short window). The PreToolUse hook path and claude pass
+    //     nothing, so a re-fire there is treated as a GENUINE repeat order and gets a
+    //     fresh card — never silently auto-approved (a real repeat needs a full model
+    //     round-trip, far longer than the window, so it can't sneak through).
+    const dup = this.latestByKey(args.agentId, args.toolName, rawJson);
+    if (dup && dup.status === "pending" && this.waiters.has(dup.id)) {
+      return new Promise<PreToolUseDecision>((resolve) => {
+        const list = this.joiners.get(dup.id) ?? [];
+        list.push(resolve);
+        this.joiners.set(dup.id, list);
+      });
+    }
+    const joinMs = opts?.joinDecidedMs ?? 0;
+    if (
+      dup &&
+      joinMs > 0 &&
+      dup.status !== "pending" &&
+      dup.decidedAt &&
+      Date.now() - dup.decidedAt < joinMs
+    ) {
+      return this.decisionFor(dup.id);
+    }
+
     const parsed = parseOrderInput(args.toolName, args.rawInput);
     const id = nanoid();
     const now = Date.now();
@@ -79,7 +115,7 @@ export class ApprovalService {
         id,
         agentId: args.agentId,
         toolName: args.toolName,
-        rawInput: JSON.stringify(args.rawInput ?? null),
+        rawInput: rawJson,
         parsed: JSON.stringify(parsed),
         status: "pending",
         decidedBy: null,
@@ -127,13 +163,28 @@ export class ApprovalService {
           "timeout",
           `No decision within ${timeoutSec}s — treated as declined. Do not retry; note it and continue.`,
         );
-        this.waiters.delete(id);
-        resolve(this.decisionFor(id));
+        this.wake(id);
       }, timeoutSec * 1000);
       this.waiters.set(id, { resolve, timer });
       // If the agent's session dies mid-poll, the order is moot — abandon it.
       opts?.signal?.addEventListener("abort", () => this.abandon(id), { once: true });
     });
+  }
+
+  /** Most recent approval for this exact (agent, tool, raw input) key. */
+  private latestByKey(agentId: string, toolName: string, rawInput: string) {
+    return this.db
+      .select()
+      .from(approvalsTable)
+      .where(
+        and(
+          eq(approvalsTable.agentId, agentId),
+          eq(approvalsTable.toolName, toolName),
+          eq(approvalsTable.rawInput, rawInput),
+        ),
+      )
+      .orderBy(desc(approvalsTable.requestedAt))
+      .get();
   }
 
   /** User pressed Approve/Reject in the UI. */
@@ -296,13 +347,17 @@ export class ApprovalService {
     });
   }
 
-  /** Resolve the long-poll waiting on this approval, if any. */
+  /** Resolve the long-poll waiting on this approval (and any joined duplicates). */
   private wake(id: string) {
+    const decision = this.decisionFor(id);
     const w = this.waiters.get(id);
-    if (!w) return;
-    clearTimeout(w.timer);
-    this.waiters.delete(id);
-    w.resolve(this.decisionFor(id));
+    if (w) {
+      clearTimeout(w.timer);
+      this.waiters.delete(id);
+      w.resolve(decision);
+    }
+    for (const joined of this.joiners.get(id) ?? []) joined(decision);
+    this.joiners.delete(id);
   }
 
   /** Recompute the agent's pending count and feed it to the status arbiter. */

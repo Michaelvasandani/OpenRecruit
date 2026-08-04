@@ -369,3 +369,112 @@ describe("WakeCoordinator — stop", () => {
     expect(coord.stop("nope")).toBe(false);
   });
 });
+
+describe("WakeCoordinator — push transport (codex interactive)", () => {
+  /** A controllable InteractivePush: resolves when the test settles it. */
+  function makePush() {
+    const delivered: string[] = [];
+    const settles: Array<(ok: boolean) => void> = [];
+    const push = (prompt: string) =>
+      new Promise<boolean>((resolve) => {
+        delivered.push(prompt);
+        settles.push(resolve);
+      });
+    return { push, delivered, settle: (ok: boolean) => settles.shift()?.(ok) };
+  }
+
+  test("wake while interactive delivers via push; head advances only on ack", async () => {
+    const { headless, coord } = make();
+    const { push, delivered, settle } = makePush();
+    coord.onInteractiveUp("a", push);
+    coord.enqueue("a", "w1");
+    expect(delivered).toEqual(["w1"]);
+    // Not acked yet — a PTY drop now must re-route the (still-queued) head.
+    settle(true);
+    await tick();
+    expect(headless.calls).toEqual([]); // delivered interactively, nothing headless
+  });
+
+  test("queued wakes deliver one at a time, in order, after each ack", async () => {
+    const { coord } = make();
+    const { push, delivered, settle } = makePush();
+    coord.onInteractiveUp("a", push);
+    coord.enqueue("a", "w1");
+    coord.enqueue("a", "w2");
+    expect(delivered).toEqual(["w1"]); // one in flight at a time
+    settle(true);
+    await tick();
+    expect(delivered).toEqual(["w1", "w2"]);
+    settle(true);
+  });
+
+  test("a failed push keeps the head and retries after the backoff", async () => {
+    const { coord } = make();
+    const { push, delivered, settle } = makePush();
+    coord.onInteractiveUp("a", push);
+    coord.enqueue("a", "w1");
+    settle(false);
+    await tick();
+    expect(delivered).toEqual(["w1"]); // not retried yet (5s backoff)
+    // The head was NOT dropped: PTY down re-routes it to headless.
+    coord.onInteractiveDown("a");
+    // (drain goes headless — asserted via the fake in the next test)
+  });
+
+  test("un-acked head re-routes to headless when the PTY dies mid-push", async () => {
+    const { headless, coord } = make();
+    const { push, settle } = makePush();
+    coord.onInteractiveUp("a", push);
+    coord.enqueue("a", "w1");
+    coord.onInteractiveDown("a"); // TUI died before the ack
+    expect(headless.calls).toEqual(["a:w1"]); // head re-routed, not lost
+    settle(true); // late ack from the dead session must not double-deliver
+    await tick();
+    expect(headless.calls).toEqual(["a:w1"]);
+  });
+
+  test("in push mode the parked /wake-stream poll is never served", async () => {
+    const { coord } = make();
+    const { push, delivered, settle } = makePush();
+    coord.onInteractiveUp("a", push);
+    const { p, ac } = poll(coord, "a", 50);
+    coord.enqueue("a", "w1");
+    expect(delivered).toEqual(["w1"]); // push got it…
+    settle(true);
+    expect(await p).toBeNull(); // …the poll parked inertly and timed out empty
+    ac.abort();
+  });
+
+  test("channel mode (no push) still serves the parked poll — claude unchanged", async () => {
+    const { coord } = make();
+    coord.onInteractiveUp("a"); // no push: channel transport
+    const { p } = poll(coord, "a");
+    coord.enqueue("a", "w1");
+    expect(await p).toBe("w1");
+  });
+
+  test("respawn-while-interactive: a new push isn't wedged by the old in-flight one (B5)", async () => {
+    const { coord } = make();
+    const first = makePush();
+    coord.onInteractiveUp("a", first.push);
+    coord.enqueue("a", "w1");
+    expect(first.delivered).toEqual(["w1"]); // in flight on the first push, not yet acked
+
+    // A respawn-while-interactive installs a FRESH push before the first one settled
+    // (maybeRespawnFresh keeps the writer INTERACTIVE and re-reports onInteractiveUp).
+    const second = makePush();
+    coord.onInteractiveUp("a", second.push);
+    // The queue head must be served by the new push right away (pushInFlight was reset).
+    expect(second.delivered).toEqual(["w1"]);
+
+    // A late settle from the STALE push must not clobber the new push's in-flight state
+    // or shift the head — the new push still owns delivery.
+    first.settle(true);
+    await tick();
+    second.settle(true);
+    await tick();
+    // A follow-up wake still delivers, proving the queue isn't wedged.
+    coord.enqueue("a", "w2");
+    expect(second.delivered).toEqual(["w1", "w2"]);
+  });
+});

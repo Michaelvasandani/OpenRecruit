@@ -7,8 +7,14 @@ import {
   readFileSync,
   writeFileSync,
 } from "node:fs";
-import { dirname, join } from "node:path";
-import type { Agent, AgentStatus, CreateAgentInput, ExecutionState } from "@shared/agent";
+import { dirname, join, relative, sep } from "node:path";
+import type {
+  Agent,
+  AgentStatus,
+  CreateAgentInput,
+  ExecutionState,
+  HarnessId,
+} from "@shared/agent";
 import { templateOf } from "@shared/analytics";
 import { eq } from "drizzle-orm";
 import { nanoid } from "nanoid";
@@ -16,6 +22,8 @@ import { type Db, OPENTRADE_HOME } from "../../db/client";
 import { agents as agentsTable } from "../../db/schema";
 import { analytics } from "../analytics";
 import { bus } from "../event-bus";
+import { harnessFor } from "../harness";
+import { resolveAgentMcp, resolveHooksDir, resolveTemplatesDir } from "./paths";
 
 const AGENTS_DIR = join(OPENTRADE_HOME, "agents");
 
@@ -25,46 +33,6 @@ function slugify(name: string): string {
     .replace(/[^a-z0-9]+/g, "-")
     .replace(/^-+|-+$/g, "")
     .slice(0, 48);
-}
-
-/** Locate the bundled agent templates in dev and packaged layouts. */
-function resolveTemplatesDir(): string {
-  const candidates = [
-    join(process.cwd(), "..", "templates", "agents"),
-    join(process.cwd(), "templates", "agents"),
-    // out/main -> repo root in dev
-    join(__dirname, "..", "..", "..", "templates", "agents"),
-    join(process.resourcesPath ?? "", "templates", "agents"),
-  ];
-  for (const c of candidates) {
-    if (c && existsSync(c)) return c;
-  }
-  // Fall back to the first candidate; create() will surface a clear error.
-  return candidates[0];
-}
-
-/** Locate the bundled hook scripts (resources/hooks) across dev/packaged layouts. */
-function resolveHooksDir(): string {
-  const candidates = [
-    join(process.cwd(), "..", "resources", "hooks"),
-    join(process.cwd(), "resources", "hooks"),
-    join(__dirname, "..", "..", "..", "resources", "hooks"),
-    join(process.resourcesPath ?? "", "resources", "hooks"),
-  ];
-  for (const c of candidates) {
-    if (c && existsSync(c)) return c;
-  }
-  return candidates[0];
-}
-
-/**
- * Absolute path to the bundled `opentrade` agent-MCP server (`out/main/agent-mcp.js`),
- * which `claude` spawns per agent. In a packaged app it's spawned as a child process
- * (not by Electron), so it must be the asar-UNPACKED copy (see electron-builder.yml).
- */
-function resolveAgentMcp(): string {
-  const local = join(__dirname, "agent-mcp.js"); // host bundle lives in out/main
-  return local.includes("app.asar") ? local.replace("app.asar", "app.asar.unpacked") : local;
 }
 
 /**
@@ -81,17 +49,18 @@ function readTemplateSpecialty(templatesDir: string, template: string): string {
 }
 
 /**
- * Compose an agent's full `CLAUDE.md` = shared OpenTrade prefix + the given
- * specialty section. The prefix (`templates/agents/CLAUDE.prefix.md`) carries the
- * system mechanics every strategy shares (faucet, Robinhood MCP, approval gate,
- * durable scheduler, wake delivery) and is always prepended at scaffold time — it
- * is never shown in or edited through the New Agent dialog. Missing prefix is a
- * hard error.
+ * Compose an agent's instructions file = the harness's shared OpenTrade prefix +
+ * the given specialty section. The prefix (`templates/agents/CLAUDE.prefix.md` /
+ * `AGENTS.prefix.codex.md`) carries the system mechanics every strategy shares
+ * (faucet, Robinhood MCP, approval gate, durable scheduler, wake delivery) and is
+ * always prepended at scaffold time — it is never shown in or edited through the
+ * New Agent dialog. Missing prefix is a hard error. Specialty sections are
+ * harness-neutral by design, so one template serves every harness.
  */
-function composeClaudeMd(templatesDir: string, specialty: string): string {
-  const prefixPath = join(templatesDir, "CLAUDE.prefix.md");
+function composeInstructions(templatesDir: string, prefixFile: string, specialty: string): string {
+  const prefixPath = join(templatesDir, prefixFile);
   if (!existsSync(prefixPath)) {
-    throw new Error(`shared CLAUDE.md prefix not found: ${prefixPath}`);
+    throw new Error(`shared instructions prefix not found: ${prefixPath}`);
   }
   const prefix = readFileSync(prefixPath, "utf8").trim();
   const s = specialty.trim();
@@ -164,7 +133,7 @@ export class AgentRegistry {
       slug = `${slug}-${i}`;
     }
 
-    this.scaffoldFolder(slug, input.template, input.claudeMd);
+    this.scaffoldFolder(slug, input.template, input.harness, id, input.claudeMd);
 
     const now = Date.now();
     this.db
@@ -174,6 +143,7 @@ export class AgentRegistry {
         slug,
         name: input.name,
         template: input.template,
+        harness: input.harness,
         approvalMode: input.approvalMode,
         lastSessionId: null,
         status: "idle",
@@ -184,13 +154,21 @@ export class AgentRegistry {
     this.broadcast();
     analytics.track("agent_created", {
       template: templateOf(input.template),
+      harness: input.harness,
       approval_mode: input.approvalMode,
     });
     return this.get(id)!;
   }
 
-  private scaffoldFolder(slug: string, template: string, claudeMd?: string) {
+  private scaffoldFolder(
+    slug: string,
+    template: string,
+    harnessId: HarnessId,
+    agentId: string,
+    claudeMd?: string,
+  ) {
     const dir = join(AGENTS_DIR, slug);
+    const harness = harnessFor(harnessId);
     const templatesDir = resolveTemplatesDir();
     const templateDir = join(templatesDir, template);
     const src = existsSync(templateDir) ? templateDir : join(templatesDir, "default");
@@ -198,18 +176,50 @@ export class AgentRegistry {
       throw new Error(`agent template not found: ${src}`);
     }
     mkdirSync(dir, { recursive: true });
-    cpSync(src, dir, { recursive: true });
+    // Templates are claude-shaped; a non-claude harness generates its own config
+    // (harness.writeConfig below), so the claude-specific files are skipped.
+    const claudeOnly = harnessId !== "claude";
+    cpSync(src, dir, {
+      recursive: true,
+      // Match against the path RELATIVE to the template root, not the absolute source:
+      // an absolute path can itself contain a `/.claude` segment (this repo lives under
+      // `.claude/worktrees/`), which would wrongly filter out EVERY template file and
+      // leave a codex agent with no kickoff.md (B3). `src` itself always passes (rel = "").
+      filter: (source) => {
+        if (!claudeOnly) return true;
+        const rel = relative(src, source);
+        if (rel === "") return true;
+        // Skip claude-only artifacts AND the template's top-level CLAUDE.md — its text
+        // is consumed as the specialty source (readTemplateSpecialty) and re-emitted as
+        // the harness's own instructions file (AGENTS.md for codex), so copying it
+        // verbatim would leave a stray CLAUDE.md the agent doesn't own.
+        return !(
+          rel.split(sep).includes(".claude") ||
+          rel.endsWith(".mcp.json") ||
+          rel === "CLAUDE.md"
+        );
+      },
+    });
     mkdirSync(join(dir, ".opentrade"), { recursive: true });
     mkdirSync(join(dir, "journal"), { recursive: true });
 
-    // The agent's CLAUDE.md = shared prefix + a specialty section. The specialty
-    // is the (possibly edited) text from the New Agent dialog, falling back to the
-    // template's own CLAUDE.md. The prefix is always prepended here — it is never
-    // shown in or edited through the dialog.
+    // The agent's instructions file = the harness's shared prefix + a specialty
+    // section. The specialty is the (possibly edited) text from the New Agent
+    // dialog, falling back to the template's own CLAUDE.md. The prefix is always
+    // prepended here — it is never shown in or edited through the dialog.
     const specialty = claudeMd?.trim() ? claudeMd : readTemplateSpecialty(templatesDir, template);
-    writeFileSync(join(dir, "CLAUDE.md"), composeClaudeMd(templatesDir, specialty));
-    this.injectOpentradeMcp(dir);
+    writeFileSync(
+      join(dir, harness.instructionsFile),
+      composeInstructions(templatesDir, harness.instructionsPrefixFile, specialty),
+    );
 
+    if (harness.writeConfig) {
+      // Harness-generated config (codex: config.toml + hooks + auth link).
+      harness.writeConfig(dir, agentId);
+      return;
+    }
+
+    this.injectOpentradeMcp(dir);
     // Copy executable hook scripts referenced by the template's settings.json.
     const hooksSrc = resolveHooksDir();
     const hooksDest = join(dir, ".claude", "hooks");
@@ -325,6 +335,7 @@ export class AgentRegistry {
   archive(id: string): void {
     this.db.update(agentsTable).set({ archivedAt: Date.now() }).where(eq(agentsTable.id, id)).run();
     this.broadcast();
+    bus.emitEvent("agent:archived", { agentId: id });
     analytics.track("agent_archived");
   }
 
@@ -383,6 +394,7 @@ function rowToAgent(row: typeof agentsTable.$inferSelect, executionState: Execut
     slug: row.slug,
     name: row.name,
     template: row.template,
+    harness: row.harness as Agent["harness"],
     approvalMode: row.approvalMode as Agent["approvalMode"],
     lastSessionId: row.lastSessionId,
     status: row.status as Agent["status"],

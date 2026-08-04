@@ -1,4 +1,4 @@
-import type { ApprovalMode } from "@shared/agent";
+import type { ApprovalMode, HarnessId } from "@shared/agent";
 import {
   ArrowUp,
   Check,
@@ -19,6 +19,7 @@ import { useSettings } from "../../hooks/useSettings";
 import { trpc } from "../../lib/trpc";
 import { cn } from "../../lib/utils";
 import { useUIStore } from "../../stores/ui";
+import { HarnessGlyph } from "../icons/HarnessGlyph";
 import { Button } from "../ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogTitle } from "../ui/dialog";
 import { Input } from "../ui/input";
@@ -43,8 +44,19 @@ const TEMPLATES: PickerOption[] = [
 ];
 
 const ENVIRONMENTS: PickerOption[] = [
-  { value: "local", icon: <Laptop className="size-3.5" />, label: "Local", hint: "Runs on this Mac" },
-  { value: "cloud", icon: <Cloud className="size-3.5" />, label: "Cloud", hint: "Soon", disabled: true },
+  {
+    value: "local",
+    icon: <Laptop className="size-3.5" />,
+    label: "Local",
+    hint: "Runs on this Mac",
+  },
+  {
+    value: "cloud",
+    icon: <Cloud className="size-3.5" />,
+    label: "Cloud",
+    hint: "Soon",
+    disabled: true,
+  },
 ];
 
 const APPROVALS: PickerOption[] = [
@@ -58,7 +70,7 @@ const APPROVALS: PickerOption[] = [
     value: "auto",
     icon: <Zap className="size-3.5" />,
     label: "Full-auto",
-    hint: "Orders execute, still logged",
+    hint: "Orders execute automatically",
   },
 ];
 
@@ -86,7 +98,7 @@ export function NewAgentDialog() {
       >
         <DialogTitle className="sr-only">New agent</DialogTitle>
         <DialogDescription className="sr-only">
-          Create a new trading agent and edit its CLAUDE.md.
+          Create a new trading agent and edit its instructions.
         </DialogDescription>
         {/* Remount the form each open so its state resets. */}
         {open && <NewAgentForm />}
@@ -101,6 +113,25 @@ function NewAgentForm() {
 
   const [name, setName] = useState("");
   const [template, setTemplate] = useState("default");
+  const [harness, setHarness] = useState<HarnessId>("claude");
+  // CLI availability drives the picker: a missing codex install is shown but disabled.
+  const probes = trpc.onboarding.harnesses.useQuery(undefined, { staleTime: 60_000 });
+  const codexFound = probes.data?.codex.found ?? false;
+  const harnessOptions: PickerOption[] = [
+    {
+      value: "claude",
+      icon: <HarnessGlyph harness="claude" />,
+      label: "Claude Code",
+    },
+    {
+      value: "codex",
+      icon: <HarnessGlyph harness="codex" />,
+      label: "Codex",
+      // Keep the "not found" note — it explains why the option is disabled.
+      hint: codexFound ? undefined : "codex CLI not found",
+      disabled: !codexFound,
+    },
+  ];
   const [environment, setEnvironment] = useState<Environment>("local");
   const [approvalMode, setApprovalMode] = useState<ApprovalMode>(
     settings.data?.defaultApprovalMode ?? "approve",
@@ -121,7 +152,7 @@ function NewAgentForm() {
   const canSubmit = !isPending && !!name.trim();
   const submit = () => {
     if (!canSubmit) return;
-    create({ name: name.trim(), template, approvalMode, claudeMd });
+    create({ name: name.trim(), template, harness, approvalMode, claudeMd });
   };
 
   const selectedTemplate = TEMPLATES.find((t) => t.value === template) ?? TEMPLATES[0];
@@ -156,13 +187,13 @@ function NewAgentForm() {
       <div className="flex flex-col rounded-lg border border-border bg-foreground/[0.02]">
         <div className="flex items-center gap-1.5 border-b border-border/60 px-3.5 py-2 font-mono text-[11px] font-medium text-muted-foreground">
           <FileText className="size-3" />
-          CLAUDE.md
+          {harness === "codex" ? "AGENTS.md" : "CLAUDE.md"}
         </div>
         <Textarea
           value={claudeMd}
           onChange={(e) => setClaudeMd(e.target.value)}
           spellCheck={false}
-          placeholder="Write this agent's CLAUDE.md — its strategy, principles, and journaling. Leave blank for a clean slate."
+          placeholder="Write this agent's instructions — its strategy, principles, and journaling. Leave blank for a clean slate."
           className="h-[19rem] resize-none border-transparent bg-transparent px-3.5 py-3 font-mono text-[12px] leading-relaxed shadow-none placeholder:text-muted-foreground/40 focus-visible:border-transparent"
         />
         <div className="flex items-center justify-end px-2.5 pb-2.5">
@@ -182,14 +213,33 @@ function NewAgentForm() {
       <div className="flex items-center justify-between gap-2 px-0.5">
         <div className="flex items-center gap-1.5">
           <PickerPill
-            icon={environment === "local" ? <Laptop className="size-3.5" /> : <Cloud className="size-3.5" />}
+            icon={
+              environment === "local" ? (
+                <Laptop className="size-3.5" />
+              ) : (
+                <Cloud className="size-3.5" />
+              )
+            }
             label={environment === "local" ? "Local" : "Cloud"}
             options={ENVIRONMENTS}
             value={environment}
             onValueChange={(v) => setEnvironment(v as Environment)}
           />
           <PickerPill
-            icon={approvalMode === "approve" ? <ShieldCheck className="size-3.5" /> : <Zap className="size-3.5" />}
+            icon={<HarnessGlyph harness={harness} />}
+            label={harness === "codex" ? "Codex" : "Claude Code"}
+            options={harnessOptions}
+            value={harness}
+            onValueChange={(v) => setHarness(v as HarnessId)}
+          />
+          <PickerPill
+            icon={
+              approvalMode === "approve" ? (
+                <ShieldCheck className="size-3.5" />
+              ) : (
+                <Zap className="size-3.5" />
+              )
+            }
             label={approvalMode === "approve" ? "Require approval" : "Full-auto"}
             options={APPROVALS}
             value={approvalMode}
@@ -265,7 +315,9 @@ function PickerPill({
               <span className="mt-0.5 text-muted-foreground">{opt.icon}</span>
               <span className="min-w-0 flex-1">
                 <span className="block text-sm font-medium">{opt.label}</span>
-                {opt.hint && <span className="block text-xs text-muted-foreground">{opt.hint}</span>}
+                {opt.hint && (
+                  <span className="block text-xs text-muted-foreground">{opt.hint}</span>
+                )}
               </span>
               {selected && <Check className="mt-0.5 size-4 shrink-0 text-primary" />}
             </button>

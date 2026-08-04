@@ -3,8 +3,10 @@ import { randomUUID } from "node:crypto";
 import { hostLog } from "../../../host/log";
 import type { AgentRegistry } from "../../agents/registry";
 import { analytics } from "../../analytics";
+import { harnessFor } from "../../harness";
 import type { LocalApiServer } from "../../local-api";
 import { buildAgentEnv } from "../../terminal/env";
+import { formatWakePrompt } from "./prompt";
 import { clearSpawnMarker, writeSpawnMarker } from "./spawn-marker";
 import type { HeadlessExitReason, HeadlessWakeStrategy } from "./types";
 
@@ -16,11 +18,6 @@ const RESUME_FAIL_MS = 10_000;
  *  to carry claude's error line (e.g. "Credit balance is too low", an auth/network
  *  failure) without unbounded buffering. */
 const STDERR_TAIL_CHARS = 2000;
-/** Prepended to a cold (headless) wake prompt so the agent can tell a system wake from a
- *  real user turn. The agent templates' CLAUDE.md document what it means. The wake's
- *  fire time (ISO 8601) is appended so the agent knows *when* it was woken — relevant for
- *  trading decisions (market hours, staleness) and for reasoning across catch-up fires. */
-const WAKE_PREFIX = "OPENTRADE WAKE";
 
 /**
  * The headless transport (the autonomy backbone). Spawns a one-shot
@@ -93,42 +90,46 @@ export class HeadlessRunStrategy implements HeadlessWakeStrategy {
       return;
     }
 
+    const harness = harnessFor(agent.harness);
     // I3: OpenTrade owns the session id. Resume the known one, or mint+store one for a
     // never-started agent (begins the conversation headlessly).
     let resuming = false;
     let sessionId: string;
-    let sessionArgs: string[];
     if (agent.lastSessionId) {
       sessionId = agent.lastSessionId;
-      sessionArgs = ["--resume", sessionId];
       resuming = true;
     } else {
       sessionId = randomUUID();
       this.registry.setLastSessionId(agentId, sessionId);
-      sessionArgs = ["--session-id", sessionId];
     }
 
-    // A headless `-p` wake lands as a plain user turn — indistinguishable from a real
+    // A headless wake lands as a plain user turn — indistinguishable from a real
     // user message. Prefix it (with the fire timestamp) so the agent knows the system woke
-    // it and when (CLAUDE.md explains the marker). The interactive path needs no prefix: it
-    // self-identifies as `<channel source="opentrade">`.
+    // it and when (the agent instructions explain the marker). The claude interactive path
+    // needs no prefix: it self-identifies as `<channel source="opentrade">`.
     const startedAt = Date.now();
-    const wakePrompt = `[${WAKE_PREFIX} ${new Date(startedAt).toISOString()}] ${prompt}`;
-    const args = [...sessionArgs, "--dangerously-skip-permissions", "-p", wakePrompt];
+    const wakePrompt = formatWakePrompt(prompt, startedAt);
+    const stripEnvKeys = this.useSubscriptionAuth() ? harness.subscriptionAuthStrip : [];
+    // This strategy is the CLI-child transport; the routing strategy only sends it
+    // harnesses whose headless transport IS a CLI child (i.e. defines headlessArgs).
+    if (!harness.headlessArgs) {
+      throw new Error(`harness ${harness.id} has no CLI headless transport`);
+    }
+    const args = harness.headlessArgs(resuming ? "resume" : "start", sessionId, wakePrompt);
     const env = buildAgentEnv(
       agentId,
       {
         OPENTRADE_PORT: String(this.localApi.port),
         OPENTRADE_TOKEN: this.localApi.token,
       },
-      { useSubscriptionAuth: this.useSubscriptionAuth() },
+      { stripEnvKeys },
     );
 
     // stdout is ignored (the transcript on disk is the run's record), but stderr is
-    // piped and tail-buffered: it's the ONLY place claude reports why a run failed
+    // piped and tail-buffered: it's the ONLY place the CLI reports why a run failed
     // (billing, auth, network, a genuinely-unresumable session), and without it a
     // failure is an opaque `code=1` (the "Credit balance is too low" incident).
-    const child = spawn("claude", args, {
+    const child = spawn(harness.binary, args, {
       cwd: this.registry.agentDir(agent),
       env,
       stdio: ["ignore", "ignore", "pipe"],

@@ -7,9 +7,13 @@ import { bus } from "../../event-bus";
 import type {
   HeadlessExitReason,
   HeadlessWakeStrategy,
+  InteractivePush,
   SchedulerControl,
   WakeTransport,
 } from "./types";
+
+/** Delay before re-attempting a failed interactive push delivery. */
+const PUSH_RETRY_MS = 5_000;
 
 /** Default hard ceiling on a single headless run, INCLUDING time parked at the approval
  *  gate. The kill timer is the only timer in the wake layer; on expiry we SIGTERM the
@@ -79,6 +83,12 @@ class AgentWriter {
   private pending: string[] = [];
   /** A currently-parked `/wake-stream` long-poll (one poller per agent), or undefined. */
   private interactivePoll?: (prompt: string | null) => void;
+  /** Non-channel interactive delivery (codex app-server push). While set, the parked
+   *  poll is never served — the push IS the interactive transport. */
+  private push?: InteractivePush;
+  /** A push delivery is in flight (the head stays queued until its ack). */
+  private pushInFlight = false;
+  private pushRetryTimer?: NodeJS.Timeout;
   /** Max-runtime kill for the active `-p` child (HEADLESS_RUNNING only). */
   private headlessKillTimer?: NodeJS.Timeout;
   /** Consecutive headless resume-fails; reset by any clean exit. */
@@ -158,15 +168,24 @@ class AgentWriter {
 
   // ---- PTY lifecycle (reported by TerminalService) ----
 
-  onInteractiveUp(): void {
+  onInteractiveUp(push?: InteractivePush): void {
     if (this.state === "HEADLESS_RUNNING") return; // single-writer: no PTY during a `-p` run
     this.resumeFailCount = 0; // a fresh interactive session is healthy
+    // A prior push (from the previous PTY, e.g. a respawn-while-interactive) must not
+    // leave its in-flight flag or retry timer set — the NEW push's first delivery would
+    // be blocked by the stale `pushInFlight`, wedging the queue head (B5).
+    this.pushInFlight = false;
+    this.clearPushRetry();
+    this.push = push;
     this.transition("INTERACTIVE_RUNNING");
     this.serveInteractive();
   }
 
   onInteractiveDown(): void {
     if (this.state !== "INTERACTIVE_RUNNING") return;
+    this.push = undefined;
+    this.pushInFlight = false;
+    this.clearPushRetry();
     // The live writer is gone; the head + any queued wakes re-route to the `-p` transport.
     this.transition("OFFLINE");
     this.drain();
@@ -191,21 +210,69 @@ class AgentWriter {
     return this.headless.stop(this.id);
   }
 
-  /** Host shutdown: clear the kill timer (the children are SIGTERM'd via stopAll). */
+  /** Host shutdown: clear timers (the children are SIGTERM'd via stopAll). */
   dispose(): void {
     this.clearKillTimer();
+    this.clearPushRetry();
   }
 
   // ---- internals ----
 
-  /** Hand the queue head to a parked poll, if both a poll and a wake are present and a
-   *  PTY is live. Advance-on-handoff: the head shifts out the instant it's handed off. */
+  /** Deliver the queue head into the live interactive session. Channel transport:
+   *  hand to a parked poll (advance-on-handoff — the head shifts out the instant it's
+   *  handed off). Push transport (codex): call the push and advance on its ack —
+   *  the head stays queued until the app-server confirms the turn, then shifts. */
   private serveInteractive(): void {
     if (this.state !== "INTERACTIVE_RUNNING") return;
+    if (this.push) {
+      this.servePush();
+      return;
+    }
     if (!this.interactivePoll || this.pending.length === 0) return;
     const poll = this.interactivePoll;
     const head = this.pending.shift()!;
     poll(head); // resolves the parked /wake-stream long-poll; finish() clears the slot
+  }
+
+  /** Push-mode delivery: one in-flight push at a time; advance-on-ack; a failed
+   *  delivery keeps the head and retries while the session stays interactive. */
+  private servePush(): void {
+    if (this.pushInFlight || this.pending.length === 0) return;
+    const push = this.push;
+    if (!push) return;
+    const head = this.pending[0];
+    this.pushInFlight = true;
+    push(head).then(
+      (ok) => this.pushSettled(push, head, ok),
+      () => this.pushSettled(push, head, false),
+    );
+  }
+
+  private pushSettled(push: InteractivePush, head: string, ok: boolean): void {
+    // A newer push replaced this one (respawn-while-interactive installed a fresh push
+    // via onInteractiveUp): the current in-flight state belongs to THAT push, so a stale
+    // settle must not clear its `pushInFlight` (which would let a duplicate delivery
+    // through). Bail before touching any shared state (B5).
+    if (this.push !== push) return;
+    this.pushInFlight = false;
+    // The session may have flipped (PTY died, stop, broken) while the push ran —
+    // the head then belongs to whatever transport took over; don't touch it here.
+    if (this.state !== "INTERACTIVE_RUNNING") return;
+    if (ok) {
+      if (this.pending[0] === head) this.pending.shift();
+      this.serveInteractive(); // deliver the next queued wake, if any
+      return;
+    }
+    hostLog.warn("interactive wake push failed; retrying", this.id);
+    this.clearPushRetry();
+    this.pushRetryTimer = setTimeout(() => this.serveInteractive(), PUSH_RETRY_MS);
+  }
+
+  private clearPushRetry(): void {
+    if (this.pushRetryTimer) {
+      clearTimeout(this.pushRetryTimer);
+      this.pushRetryTimer = undefined;
+    }
   }
 
   /** OFFLINE with a queued wake → start the `-p` transport for the head. */
@@ -412,8 +479,8 @@ export class WakeCoordinator implements WakeTransport {
     return this.writer(agentId).awaitPoll(signal, holdMs);
   }
 
-  onInteractiveUp(agentId: string): void {
-    this.writer(agentId).onInteractiveUp();
+  onInteractiveUp(agentId: string, push?: InteractivePush): void {
+    this.writer(agentId).onInteractiveUp(push);
   }
 
   onInteractiveDown(agentId: string): void {

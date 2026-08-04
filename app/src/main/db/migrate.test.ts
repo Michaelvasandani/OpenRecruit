@@ -1,7 +1,7 @@
 import { Database } from "bun:sqlite";
 import { describe, expect, test } from "bun:test";
 import { SCHEMA_DDL } from "./ddl";
-import { migrate, type MigrationDb, SCHEMA_VERSION, userVersion } from "./migrate";
+import { type MigrationDb, migrate, SCHEMA_VERSION, userVersion } from "./migrate";
 
 /** Adapt bun:sqlite to the runner's minimal surface (the app adapts better-sqlite3). */
 function wrap(db: Database): MigrationDb {
@@ -34,6 +34,7 @@ describe("db migrations", () => {
     expect(userVersion(m)).toBe(SCHEMA_VERSION);
     expect(columns(db, "agents")).toContain("headless_turns_used");
     expect(columns(db, "agents")).toContain("turn_limit_enabled");
+    expect(columns(db, "agents")).toContain("harness");
   });
 
   test("a v0.1.x production DB (user_version 0) migrates in place, preserving rows", () => {
@@ -54,6 +55,7 @@ describe("db migrations", () => {
     expect(row.name).toBe("Citrini"); // data survived
     expect(row.headless_turns_used).toBe(0); // new columns arrived with their defaults
     expect(row.turn_limit_enabled).toBe(1);
+    expect(row.harness).toBe("claude"); // v3: pre-harness agents default to claude
   });
 
   test("replaying against an already-current table is a no-op (idempotent steps)", () => {

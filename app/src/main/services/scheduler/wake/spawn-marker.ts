@@ -87,7 +87,10 @@ export function readSpawnMarkers(dir = wakeRunsDir()): SpawnMarker[] {
  */
 export function reconcileSpawnMarkers(registry: AgentRegistry, dir = wakeRunsDir()): void {
   for (const m of readSpawnMarkers(dir)) {
-    if (isAlive(m.pid)) {
+    // Defence in depth against a marker written with a non-positive pid (a server that
+    // hadn't started yet): `isAlive` already rejects pid <= 0, but never route such a
+    // marker to `process.kill` — pid 0/-N would signal the host's own process group.
+    if (m.pid > 0 && isAlive(m.pid)) {
       hostLog.warn(
         "orphaned headless wake survived a host crash; killing",
         m.agentId,
@@ -99,9 +102,19 @@ export function reconcileSpawnMarkers(registry: AgentRegistry, dir = wakeRunsDir
         // already gone
       }
     }
-    if (registry.get(m.agentId)) {
-      hostLog.warn("marking agent broken after an interrupted wake (host crash)", m.agentId);
-      registry.setExecutionState(m.agentId, "broken");
+    const agent = registry.get(m.agentId);
+    if (agent) {
+      // A claude `--resume` of a crash-interrupted transcript is unreliable, so we force
+      // a fresh-session Restart (broken). A codex thread's rollout is durable and cleanly
+      // resumable, and the orphaned server has just been killed — so a codex agent can
+      // recover straight to `offline` and let the next wake resume it (no forced Restart).
+      if (agent.harness === "codex") {
+        hostLog.warn("codex agent recovered to offline after a host crash", m.agentId);
+        registry.setExecutionState(m.agentId, "offline");
+      } else {
+        hostLog.warn("marking agent broken after an interrupted wake (host crash)", m.agentId);
+        registry.setExecutionState(m.agentId, "broken");
+      }
     }
     clearSpawnMarker(m.agentId, dir);
   }

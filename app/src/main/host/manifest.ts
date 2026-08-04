@@ -56,6 +56,11 @@ export function clearManifest(): void {
 
 /** Whether a pid is alive (signal 0 throws ESRCH when the process is gone). */
 export function isAlive(pid: number): boolean {
+  // pid <= 0 is NOT a real process: `process.kill(0, …)` / `kill(-pgid, …)` target a
+  // whole process GROUP, so `kill(0, 0)` would "succeed" for the caller's own group and
+  // a later SIGTERM would take down the host itself. Never treat a non-positive pid as
+  // alive (a stale spawn marker with pid 0 must not trigger a self-kill on boot).
+  if (!Number.isInteger(pid) || pid <= 0) return false;
   try {
     process.kill(pid, 0);
     return true;
@@ -67,10 +72,13 @@ export function isAlive(pid: number): boolean {
 /** Ping the host's faucet /health (no token needed) to confirm it's serving. */
 export function pingHost(faucetPort: number, timeoutMs = 1000): Promise<boolean> {
   return new Promise((resolve) => {
-    const req = get({ host: "127.0.0.1", port: faucetPort, path: "/health", timeout: timeoutMs }, (res) => {
-      res.resume();
-      resolve(res.statusCode === 200);
-    });
+    const req = get(
+      { host: "127.0.0.1", port: faucetPort, path: "/health", timeout: timeoutMs },
+      (res) => {
+        res.resume();
+        resolve(res.statusCode === 200);
+      },
+    );
     req.on("error", () => resolve(false));
     req.on("timeout", () => {
       req.destroy();

@@ -5,8 +5,9 @@ import { buildTerminalWsUrl } from "../../pty-daemon/ws-url";
 import type { AgentRegistry } from "../agents/registry";
 import { analytics } from "../analytics";
 import { bus } from "../event-bus";
+import { harnessFor } from "../harness";
 import type { LocalApiServer } from "../local-api";
-import type { WakeTransport } from "../scheduler/wake/types";
+import type { InteractivePush, WakeTransport } from "../scheduler/wake/types";
 import type { StatusArbiter } from "../status/arbiter";
 import { buildAgentEnv } from "./env";
 import { TerminalManager } from "./manager";
@@ -47,12 +48,23 @@ export class TerminalService {
   private idleTimers = new Map<string, NodeJS.Timeout>();
   /** Most recent launch per session, to detect a dead `--resume` resume. */
   private launches = new Map<string, LaunchInfo>();
+  /** In-flight `openOrAttach` spawn per agent. The spawn is now async (codex brings
+   *  its app-server up first — seconds), so two rapid opens (pane re-mount) both pass
+   *  the `isLive` check and run the spawn body twice: double kickoff, double
+   *  onInteractiveUp, a second minted session id (B7). Concurrent opens await one spawn. */
+  private opening = new Map<string, Promise<void>>();
+  /** True between `gui:gone` and the next `openOrAttach` — an async respawn that lands
+   *  in this window would orphan a PTY with no GUI, so it self-kills (E1). */
+  private guiGone = false;
 
   constructor(
     private registry: AgentRegistry,
     private localApi: LocalApiServer,
     private arbiter: StatusArbiter,
     private wake: WakeTransport,
+    /** Harness-specific interactive wake delivery (codex app-server push); undefined
+     *  for channel harnesses (claude). Built in host wiring. */
+    private interactivePushFor?: (agent: Agent) => InteractivePush | undefined,
   ) {
     // Terminal bytes ride a WS sharing the host's bearer token.
     this.wsServer = new TerminalWsServer(this.manager.store, this.localApi.token);
@@ -92,68 +104,122 @@ export class TerminalService {
     // (EC1) or for an unresumable session (EC13) — the renderer shows an overlay
     // for these, driven by `executionState` from the agents subscription.
     if (state === "headless" || state === "broken") return { alive: false, state };
-    if (!this.manager.isLive(agent.id)) this.spawn(agent, intent, cols, rows);
+    // The GUI is interacting again — clear the teardown guard.
+    this.guiGone = false;
+    if (!this.manager.isLive(agent.id)) {
+      // Coalesce concurrent opens onto ONE spawn (B7): a second call arriving during
+      // the multi-second async spawn awaits the same promise instead of re-running it.
+      let inflight = this.opening.get(agent.id);
+      if (!inflight) {
+        inflight = this.spawn(agent, intent, cols, rows).finally(() =>
+          this.opening.delete(agent.id),
+        );
+        this.opening.set(agent.id, inflight);
+      }
+      await inflight;
+    }
     return { alive: true, state: "interactive" };
   }
 
   /**
-   * Spawn the agent's `claude` PTY. OpenTrade owns the session id (I3): it mints a
-   * UUID via `--session-id` at first start and `--resume`s it thereafter. `intent`:
-   *  - `auto`   first run → `--session-id <uuid> "<kickoff>"`; otherwise `--resume <uuid>`
-   *  - `resume` `--resume <uuid>` (the Resume button); mints if none yet
-   *  - `fresh`  brand-new `--session-id <uuid>`, no kickoff (auto-respawn / restart)
+   * Spawn the agent's interactive PTY (its harness CLI). OpenTrade owns the
+   * session id (I3): it mints a UUID at first start and resumes it thereafter;
+   * the harness turns that decision into argv. `intent`:
+   *  - `auto`   first run → start a new session (+ kickoff); otherwise resume
+   *  - `resume` resume the stored session (the Resume button); mints if none yet
+   *  - `fresh`  brand-new session, no kickoff (auto-respawn / restart)
    *
-   * Every interactive PTY loads the `opentrade` channel so a scheduled wake injects
-   * into the live session: the `--dangerously-load-development-channels` flag is what
-   * registers the channel. (The agent MCP server runs in channel mode by default;
-   * headless `-p` runs just don't pass the dev flag, so their channel is inert.)
+   * Claude PTYs load the `opentrade` channel (wake injection into the live
+   * session); codex wakes arrive via the agent's app-server instead — both are
+   * encoded in the harness's argv/env builders, not here.
    */
-  private spawn(agent: Agent, intent: "auto" | "resume" | "fresh", cols: number, rows: number) {
+  private async spawn(
+    agent: Agent,
+    intent: "auto" | "resume" | "fresh",
+    cols: number,
+    rows: number,
+  ): Promise<void> {
     const dir = this.registry.agentDir(agent);
-    // `--dangerously-load-development-channels` is a VARIADIC flag (`<servers...>`):
-    // passed as two argv tokens (`--flag server:opentrade`) it greedily consumes every
-    // following non-`-` token — including the positional kickoff prompt on first run.
-    // Claude then parses the whole kickoff as a second channel spec, fails, prints the
-    // channel-format usage, and exits immediately (the first-run "session ended — Resume
-    // to continue" bug; resume/headless escaped it only because they have no trailing
-    // positional). The `=`-bound single-value form binds exactly one channel and stops
-    // the variadic there, so the kickoff stays a normal positional prompt.
-    const channelArgs = ["--dangerously-load-development-channels=server:opentrade"];
+    const harness = harnessFor(agent.harness);
+    // Self-heal the harness's generated config (codex: config.toml, hooks, gate
+    // anchors) before every launch — agent tampering doesn't survive a spawn —
+    // then bring the harness engine up (codex app-server) so the TUI's
+    // auto-attach finds it at boot.
+    harness.writeConfig?.(dir, agent.id);
+    await harness.prepareInteractive?.(agent, dir);
+
+    // Resolve intent → (mode, sessionId, kickoff). OpenTrade persists the id and
+    // owns the first-run marker; who MINTS it is per-harness — locally (claude,
+    // kickoff rides the argv) or by the harness's engine (codex: a bare `start`
+    // launch lets the TUI create the thread, and `adoptInteractiveSession`
+    // discovers/persists its id afterwards + delivers the kickoff as a turn).
+    const adopts = !!harness.adoptInteractiveSession;
+    /** argv for a session-starting launch. An adoption harness (codex) launches BARE
+     *  and its engine mints the id (adopted post-spawn), so we must NOT mint locally —
+     *  the guard is explicit here rather than hidden in an un-invoked lambda. A
+     *  local-mint harness (claude) reuses `reuseId` if given, else mints now, and
+     *  passes the id + kickoff as argv positionals. */
+    const startArgs = (reuseId: string | null, kickoff: string | null): string[] => {
+      if (adopts) return harness.interactiveArgs("start", "");
+      return harness.interactiveArgs("start", reuseId ?? this.mintSessionId(agent.id), kickoff);
+    };
+    // An adoption harness resumes any existing conversation even before the
+    // interactive first-run marker (a headless-first thread already has history
+    // the TUI can resume); replaying a kickoff into it would be wrong anyway.
+    const resumable =
+      agent.lastSessionId !== null && (this.registry.hasStarted(agent.id) || adopts);
+
     let args: string[];
+    let continued: boolean;
+    let adoptKickoff: string | null = null;
+    let starting = false;
     if (intent === "fresh") {
-      args = ["--session-id", this.mintSessionId(agent.id), ...channelArgs];
+      // Brand-new conversation: always a fresh id (never resurrect the dead one).
+      args = startArgs(null, null);
+      continued = false;
+      starting = true;
     } else if (intent === "resume") {
-      args = agent.lastSessionId
-        ? ["--resume", agent.lastSessionId, ...channelArgs]
-        : ["--session-id", this.mintSessionId(agent.id), ...channelArgs];
-    } else if (this.registry.hasStarted(agent.id) && agent.lastSessionId) {
-      args = ["--resume", agent.lastSessionId, ...channelArgs];
+      continued = agent.lastSessionId !== null;
+      if (continued) {
+        args = harness.interactiveArgs("resume", agent.lastSessionId as string);
+      } else {
+        args = startArgs(null, null);
+        starting = true;
+      }
+    } else if (resumable) {
+      args = harness.interactiveArgs("resume", agent.lastSessionId as string);
+      continued = true;
     } else {
-      const sid = agent.lastSessionId ?? this.mintSessionId(agent.id);
-      const kickoff = this.registry.readKickoff(agent);
-      // The kickoff is the positional prompt, placed after all flags. Safe only because
-      // `channelArgs` uses the `=`-bound form above (a bare variadic would swallow it).
-      args = ["--session-id", sid, ...channelArgs, ...(kickoff ? [kickoff] : [])];
+      adoptKickoff = this.registry.readKickoff(agent);
+      args = startArgs(agent.lastSessionId, adoptKickoff);
+      continued = false;
+      starting = true;
       this.registry.markStarted(agent.id);
     }
 
     const env = buildAgentEnv(agent.id, {
       OPENTRADE_PORT: String(this.localApi.port),
       OPENTRADE_TOKEN: this.localApi.token,
-      // Force Claude Code's fullscreen ("no-flicker") renderer for interactive PTYs:
-      // it draws on the alternate screen buffer and handles its own scrollback instead
-      // of spilling into the terminal's, which keeps memory flat and rendering clean in
-      // our embedded xterm. Equivalent to the saved `tui` setting, but enforced here so
-      // every session we launch gets it regardless of the user's config.
-      // https://code.claude.com/docs/en/fullscreen
-      CLAUDE_CODE_NO_FLICKER: "1",
+      ...harness.interactiveEnv({ agentDir: dir }),
     });
-    this.manager.open(agent.id, { command: "claude", args, cwd: dir, env, cols, rows });
-    this.launches.set(agent.id, { continued: args.includes("--resume"), at: Date.now() });
+    this.manager.open(agent.id, { command: harness.binary, args, cwd: dir, env, cols, rows });
+    this.launches.set(agent.id, { continued, at: Date.now() });
     // A live PTY is the interactive transport — tell the coordinator (it publishes
     // `executionState = interactive`). Synchronous, so it's set before the agent's MCP
-    // could poll `/wake-stream`.
-    this.wake.onInteractiveUp(agent.id);
+    // could poll `/wake-stream`. A push-transport harness (codex) also hands over its
+    // delivery closure here; channel harnesses (claude) pass none.
+    this.wake.onInteractiveUp(agent.id, this.interactivePushFor?.(agent));
+    // Engine-minted sessions: discover + persist the thread the TUI just created
+    // (and deliver the kickoff into it). Fire-and-forget by design.
+    if (starting && harness.adoptInteractiveSession) {
+      harness.adoptInteractiveSession(agent, dir, adoptKickoff, (sid) =>
+        this.registry.setLastSessionId(agent.id, sid),
+      );
+    } else if (!starting && agent.lastSessionId) {
+      // A resume launch: assert the TUI actually attached to our engine (not a split
+      // embedded session). Fire-and-forget; surfaces a warning + notify if not (E4).
+      harness.verifyResumedSession?.(agent, dir, agent.lastSessionId);
+    }
     analytics.track("terminal_session_started", { intent });
   }
 
@@ -165,10 +231,12 @@ export class TerminalService {
   }
 
   /**
-   * If a `--resume` launch died almost immediately, there was no conversation to
-   * resume — respawn a fresh `claude` and tell the renderer to reattach. A fresh
+   * If a resumed launch died almost immediately, there was no conversation to
+   * resume — respawn a fresh session and tell the renderer to reattach. A fresh
    * launch (`continued:false`) that dies is left alone, so we never loop. Returns
-   * whether a respawn happened (the exit handler keeps the lock held if so).
+   * whether a respawn was undertaken (the exit handler keeps the lock held if so);
+   * the spawn itself is async (codex mints its session server-side) and reports
+   * `onInteractiveDown` if it ultimately fails, so nothing is stranded.
    */
   private maybeRespawnFresh(agentId: string): boolean {
     const launch = this.launches.get(agentId);
@@ -177,30 +245,38 @@ export class TerminalService {
 
     const agent = this.registry.get(agentId);
     if (!agent || agent.archivedAt !== null) return false;
-    try {
-      this.spawn(agent, "fresh", DEFAULT_COLS, DEFAULT_ROWS);
-      bus.emitEvent("terminal:respawned", { agentId });
-      analytics.track("terminal_respawned");
-      return true;
-    } catch (err) {
-      console.error("[terminal] auto-respawn failed", err);
-      return false;
-    }
+    this.spawn(agent, "fresh", DEFAULT_COLS, DEFAULT_ROWS)
+      .then(() => {
+        // The GUI may have gone away DURING this async respawn (codex spawn takes
+        // seconds); teardown already ran and won't see this PTY, so kill it now rather
+        // than leave an interactive PTY alive with no GUI (E1).
+        if (this.guiGone) {
+          this.killForTeardown(agentId);
+          return;
+        }
+        bus.emitEvent("terminal:respawned", { agentId });
+        analytics.track("terminal_respawned");
+      })
+      .catch((err) => {
+        console.error("[terminal] auto-respawn failed", err);
+        this.wake.onInteractiveDown(agentId); // the writer is gone after all
+      });
+    return true;
   }
 
   /**
    * EC13 restart: the agent's session was unresumable (broken). Start a brand-new
-   * session (fresh uuid) and tell the renderer to reattach. The agent loses chat
+   * session (fresh id) and tell the renderer to reattach. The agent loses chat
    * history but re-reads STRATEGY.md on startup, so strategy continuity survives.
    */
-  restart(agentId: string): { alive: boolean } {
+  async restart(agentId: string): Promise<{ alive: boolean }> {
     const agent = this.registry.get(agentId);
     if (!agent) return { alive: false };
     this.manager.close(agentId, "SIGTERM");
     this.launches.delete(agentId);
     // `spawn` reports `onInteractiveUp`, which clears BROKEN → interactive on the
     // coordinator (and resets its resume-fail streak for the fresh session).
-    this.spawn(agent, "fresh", DEFAULT_COLS, DEFAULT_ROWS);
+    await this.spawn(agent, "fresh", DEFAULT_COLS, DEFAULT_ROWS);
     bus.emitEvent("terminal:respawned", { agentId });
     analytics.track("agent_restarted");
     return { alive: true };
@@ -235,6 +311,7 @@ export class TerminalService {
    * any queued wakes re-route to the headless transport.
    */
   private teardownOnGuiGone() {
+    this.guiGone = true;
     for (const info of this.manager.list()) this.killForTeardown(info.id);
   }
 

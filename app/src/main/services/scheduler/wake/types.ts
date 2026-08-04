@@ -17,8 +17,12 @@ export interface WakeTransport {
    *  live interactive session, or park until one is offered / the hold elapses / the
    *  request aborts. Returns the wake prompt or null. */
   awaitPoll(agentId: string, signal: AbortSignal, holdMs: number): Promise<string | null>;
-  /** A live interactive PTY came up (GUI opened/selected the agent). */
-  onInteractiveUp(agentId: string): void;
+  /** A live interactive PTY came up (GUI opened/selected the agent). `push` is the
+   *  harness's interactive wake delivery when it is NOT the claude channel: codex
+   *  wakes are pushed as `turn/start` on the agent's app-server (the attached TUI
+   *  renders them via event fanout). With a push set, the parked `/wake-stream`
+   *  poll is never served (it belongs to the channel transport only). */
+  onInteractiveUp(agentId: string, push?: InteractivePush): void;
   /** The interactive PTY went down (exit / GUI-close blanket kill); the head + any
    *  queued wakes re-route to the headless transport. */
   onInteractiveDown(agentId: string): void;
@@ -44,6 +48,14 @@ export interface SchedulerControl {
   /** Re-arm this agent's still-enabled crons + monitors (Restart / recovery). */
   rearmAgent(agentId: string): void;
 }
+
+/**
+ * Interactive wake delivery for a non-channel harness (codex): deliver the RAW wake
+ * prompt into the live session (the implementation prefixes/format as needed).
+ * Resolves `true` once the wake is confirmed accepted (advance-on-ack — the head may
+ * then be shifted), `false`/reject when delivery failed and should be retried.
+ */
+export type InteractivePush = (prompt: string) => Promise<boolean>;
 
 /** How a headless `-p` run terminated, reported by the strategy to the coordinator:
  *  - `ok`         — the child exited (clean, or killed by the max-runtime backstop)

@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { ApprovalMode } from "./agent";
+import { ApprovalMode, HarnessId } from "./agent";
 import { NotificationKind } from "./notify";
 
 /**
@@ -99,7 +99,11 @@ export const TELEMETRY_EVENTS = {
   onboarding_completed: z.strictObject({}),
 
   // agents
-  agent_created: z.strictObject({ template: agentTemplate, approval_mode: ApprovalMode }),
+  agent_created: z.strictObject({
+    template: agentTemplate,
+    harness: HarnessId,
+    approval_mode: ApprovalMode,
+  }),
   agent_archived: z.strictObject({}),
   agent_restarted: z.strictObject({}),
   terminal_session_started: z.strictObject({ intent: z.enum(["auto", "resume", "fresh"]) }),

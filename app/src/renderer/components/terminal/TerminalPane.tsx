@@ -9,6 +9,7 @@ import { cn } from "../../lib/utils";
 import { useConnectionStore } from "../../stores/connection";
 import { useTerminalStore } from "../../stores/terminal";
 import { useUIStore } from "../../stores/ui";
+import { HarnessGlyph } from "../icons/HarnessGlyph";
 import { SettingToggle } from "../settings/SettingToggle";
 import { Button } from "../ui/button";
 import { Popover, PopoverContent, PopoverTrigger } from "../ui/popover";
@@ -40,7 +41,7 @@ export function TerminalPane({ agent }: { agent: Agent | null }) {
     else terminalController.detach();
   }, [agentId, attachable]);
 
-  // The host auto-respawns a dead `--resume` session as a fresh `claude`;
+  // The host auto-respawns a dead resumed session as a fresh one;
   // reattach the focused agent so the new stream appears without a Resume click.
   trpc.terminal.onRespawn.useSubscription(undefined, {
     onData: ({ agentId }) => terminalController.reconnect(agentId),
@@ -59,7 +60,19 @@ export function TerminalPane({ agent }: { agent: Agent | null }) {
         className="flex h-10 shrink-0 items-center justify-between border-b border-border px-4 text-sm"
         style={{ WebkitAppRegion: "drag" } as CSSProperties}
       >
-        <span className="text-muted-foreground">{agent ? agent.name : "OpenTrade"}</span>
+        <span className="flex items-center gap-2 text-muted-foreground">
+          {agent && (
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <span className="text-muted-foreground/60">
+                  <HarnessGlyph harness={agent.harness} className="size-3" />
+                </span>
+              </TooltipTrigger>
+              <TooltipContent>{agent.harness === "codex" ? "Codex" : "Claude Code"}</TooltipContent>
+            </Tooltip>
+          )}
+          {agent ? agent.name : "OpenTrade"}
+        </span>
         <div
           className={cn("flex items-center gap-2", !backendConnected && "pointer-events-none")}
           style={{ WebkitAppRegion: "no-drag" } as CSSProperties}

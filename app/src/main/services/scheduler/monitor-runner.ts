@@ -1,7 +1,7 @@
 import { type ChildProcess, spawn } from "node:child_process";
 
-/** Min interval between wakes from a single monitor (mirrors native Monitor's debounce). */
-const DEFAULT_RATE_LIMIT_MS = 30_000;
+/** Min interval between wakes from a single monitor (debounce against a chatty signal). */
+const DEFAULT_RATE_LIMIT_MS = 5_000;
 const INITIAL_RESTART_MS = 1_000;
 const MAX_RESTART_MS = 60_000;
 /** A child that survives this long is considered healthy → reset the backoff. */

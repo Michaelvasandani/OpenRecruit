@@ -1,20 +1,14 @@
-import { execFile } from "node:child_process";
-import { promisify } from "node:util";
+import type { HarnessId } from "@shared/agent";
+import { harnessFor } from "../../services/harness";
 import { buildAgentEnv } from "../../services/terminal/env";
 import { publicProcedure, router } from "../trpc";
 
-const execFileAsync = promisify(execFile);
-
-async function probeClaude(): Promise<{ found: boolean; version: string | null }> {
-  try {
-    // Use the same PATH agents get, so we find `claude` wherever it lives.
-    const env = buildAgentEnv("onboarding");
-    const { stdout } = await execFileAsync("claude", ["--version"], { env, timeout: 5000 });
-    return { found: true, version: stdout.trim() };
-  } catch {
-    return { found: false, version: null };
-  }
+function probeCli(id: HarnessId): Promise<{ found: boolean; version: string | null }> {
+  // Use the same PATH agents get, so we find the CLI wherever it lives.
+  return harnessFor(id).probe(buildAgentEnv("onboarding"));
 }
+
+const probeClaude = () => probeCli("claude");
 
 export const onboardingRouter = router({
   state: publicProcedure.query(async ({ ctx }) => {
@@ -28,6 +22,12 @@ export const onboardingRouter = router({
   }),
 
   checkClaudeCli: publicProcedure.query(() => probeClaude()),
+
+  /** Probe every supported agent CLI (the onboarding step + the harness picker). */
+  harnesses: publicProcedure.query(async () => ({
+    claude: await probeClaude(),
+    codex: await probeCli("codex"),
+  })),
 
   /** The explicit Connect action: runs the Robinhood OAuth consent flow (opens a
    *  browser, including re-consent after a dead grant) and starts polling. */
