@@ -1,10 +1,10 @@
 <div align="center">
   <img src="assets/logo.svg" width="360" alt="OpenTrade" />
-  <p><strong>The open-source trading harness for Claude Code agents.</strong></p>
+  <p><strong>The open-source trading harness for Claude Code / Codex agents.</strong></p>
   <img src="assets/demo.png" width="820" alt="OpenTrade app — agent sidebar, live terminal, and portfolio panel" />
 </div>
 
-OpenTrade is a macOS app that enables agents to trade and react to the market autonomously. **Claude Code** agents execute trades in your [Robinhood Agentic Trading](https://robinhood.com/us/en/agentic-trading/) account through the official MCP. Set guardrails, monitors, and strategies so agents can trade 24/7 on *your machine*.
+OpenTrade is a macOS app that enables agents to trade and react to the market autonomously. Agents execute trades in your [Robinhood Agentic Trading](https://robinhood.com/us/en/agentic-trading/) account through the official MCP. Set guardrails, monitors, and strategies so agents can trade 24/7 on *your machine*.
 
 ## Install
 
@@ -30,9 +30,9 @@ are solely responsible for configuring, supervising, and bearing the financial
 consequences of your agents.** Trading involves substantial risk of loss.
 
 OpenTrade is an independent community project. It is **not affiliated with, endorsed by,
-or sponsored by Robinhood Markets, Inc. or Anthropic.** "Robinhood," "Claude," and
-"Claude Code" are trademarks of their respective owners. You are responsible for
-complying with the terms of service of any broker or API you connect to.
+or sponsored by Robinhood Markets, Inc. Anthropic, or OpenAI.** "Robinhood," "Claude,"
+"Claude Code," and "Codex" are trademarks of their respective owners. You are responsible
+for complying with the terms of service of any broker or API you connect to.
 
 ## License
 
