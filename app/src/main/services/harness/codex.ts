@@ -103,6 +103,9 @@ export function createCodexHarness(manager: CodexAppServerManager): Harness {
     instructionsPrefixFile: "AGENTS.prefix.codex.md",
     // Background runs bill the user's ChatGPT subscription login, not a stray key.
     subscriptionAuthStrip: CODEX_SUBSCRIPTION_AUTH_STRIP,
+    // writeConfig below emits the entire `.codex` config, so the scaffold skips the
+    // claude-style `.mcp.json`/hook steps for codex.
+    generatesFullConfig: true,
 
     interactiveArgs(mode: SessionMode, sessionId: string): string[] {
       // `start` is a BARE launch: the TUI creates its own thread on our server

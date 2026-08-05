@@ -1,12 +1,4 @@
-import {
-  chmodSync,
-  cpSync,
-  existsSync,
-  mkdirSync,
-  readdirSync,
-  readFileSync,
-  writeFileSync,
-} from "node:fs";
+import { cpSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join, relative, sep } from "node:path";
 import type {
   Agent,
@@ -23,7 +15,7 @@ import { agents as agentsTable } from "../../db/schema";
 import { analytics } from "../analytics";
 import { bus } from "../event-bus";
 import { harnessFor } from "../harness";
-import { resolveAgentMcp, resolveHooksDir, resolveTemplatesDir } from "./paths";
+import { resolveAgentMcp, resolveTemplatesDir } from "./paths";
 
 const AGENTS_DIR = join(OPENTRADE_HOME, "agents");
 
@@ -213,28 +205,19 @@ export class AgentRegistry {
       composeInstructions(templatesDir, harness.instructionsPrefixFile, specialty),
     );
 
-    if (harness.writeConfig) {
-      // Harness-generated config (codex: config.toml + hooks + auth link).
-      harness.writeConfig(dir, agentId);
+    if (harness.generatesFullConfig) {
+      // Harness generates its COMPLETE config (codex: config.toml + hooks + auth link);
+      // the claude-style .mcp.json / hook steps below don't apply.
+      harness.writeConfig?.(dir, agentId);
       return;
     }
 
+    // Claude-style scaffold: the template's Robinhood `.mcp.json` (+ the opentrade MCP),
+    // then the harness's generated config — for claude that's `.claude/settings.json`
+    // (the order-gate hook wiring, generated in code so it survives clean CI builds) and
+    // the hook scripts.
     this.injectOpentradeMcp(dir);
-    // Copy executable hook scripts referenced by the template's settings.json.
-    const hooksSrc = resolveHooksDir();
-    const hooksDest = join(dir, ".claude", "hooks");
-    if (existsSync(hooksSrc)) {
-      mkdirSync(hooksDest, { recursive: true });
-      for (const file of readdirSync(hooksSrc)) {
-        const destFile = join(hooksDest, file);
-        cpSync(join(hooksSrc, file), destFile);
-        try {
-          chmodSync(destFile, 0o755);
-        } catch {
-          // best effort
-        }
-      }
-    }
+    harness.writeConfig?.(dir, agentId);
   }
 
   /**

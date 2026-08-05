@@ -205,7 +205,7 @@ describe("AgentRegistry — codex scaffold divergence", () => {
   });
 
   test("claude agents scaffold exactly as before (regression)", async () => {
-    const { existsSync } = await import("node:fs");
+    const { existsSync, readFileSync } = await import("node:fs");
     const { join } = await import("node:path");
     const r = memRegistry();
     const agent = r.create({
@@ -220,5 +220,35 @@ describe("AgentRegistry — codex scaffold divergence", () => {
     expect(existsSync(join(dir, ".mcp.json"))).toBe(true);
     expect(existsSync(join(dir, "AGENTS.md"))).toBe(false);
     expect(existsSync(join(dir, ".codex"))).toBe(false);
+    // The order GATE must actually be wired — not just that the file exists. (The old
+    // test only checked existence, which passed in dev because the untracked template
+    // settings.json is present locally; clean CI builds lack it and shipped ungated.)
+    const settings = JSON.parse(readFileSync(join(dir, ".claude", "settings.json"), "utf8"));
+    const pre = settings.hooks.PreToolUse[0];
+    expect(pre.matcher).toBe("mcp__robinhood__(place|cancel)_(equity|option)_order");
+    expect(pre.hooks[0].command).toContain(".claude/hooks/approval-gate.sh");
+    expect(existsSync(join(dir, ".claude", "hooks", "approval-gate.sh"))).toBe(true);
+  });
+
+  test("claude writeConfig GENERATES the gate config from a bare dir (build-independent + self-heal)", async () => {
+    // The root cause of ungated orders: the template's .claude/settings.json is
+    // git-untracked, so a clean CI build never bundles it and a template-copy scaffold
+    // produced NO gate. writeConfig must generate it from code — proven here against a
+    // dir that has NO template settings.json (mimics a CI-created / tampered agent).
+    const { claudeHarness } = await import("../harness/claude");
+    const { existsSync, readFileSync, mkdtempSync, rmSync } = await import("node:fs");
+    const { join } = await import("node:path");
+    const { tmpdir } = await import("node:os");
+    const dir = mkdtempSync(join(tmpdir(), "claude-writeconfig-"));
+    try {
+      expect(existsSync(join(dir, ".claude", "settings.json"))).toBe(false); // bare
+      claudeHarness.writeConfig?.(dir, "agent-x");
+      const settings = JSON.parse(readFileSync(join(dir, ".claude", "settings.json"), "utf8"));
+      expect(settings.hooks.PreToolUse[0].hooks[0].command).toContain("approval-gate.sh");
+      expect(settings.hooks.PreToolUse[0].hooks[0].timeout).toBe(600);
+      expect(existsSync(join(dir, ".claude", "hooks", "approval-gate.sh"))).toBe(true);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 });

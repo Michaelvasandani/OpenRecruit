@@ -81,10 +81,22 @@ export interface Harness {
   verifyResumedSession?(agent: Agent, agentDir: string, sessionId: string): void;
 
   /**
-   * Write/refresh the harness's on-disk config in the agent dir (codex:
-   * `.codex/config.toml`, hooks, gate scripts, auth link). Called at scaffold AND
-   * before every spawn — self-healing against agent tampering. Absent when the
-   * scaffold's template files are the whole config (claude).
+   * When true, `writeConfig` produces the harness's COMPLETE on-disk config, so the
+   * scaffold skips the claude-style steps (`.mcp.json` injection, hook copy) — codex.
+   * When false/absent, the harness uses the claude-style scaffold AND `writeConfig`
+   * (if present) layers its own generated files on top (claude: the order-gate
+   * `settings.json` + hook scripts).
+   */
+  readonly generatesFullConfig?: boolean;
+
+  /**
+   * Write/refresh the harness's generated on-disk config in the agent dir. Called at
+   * scaffold AND before every spawn (interactive + headless) — **self-healing**, so a
+   * tampered or (critically) a never-created config is regenerated on the next launch.
+   *  - codex: `.codex/config.toml`, hooks, gate scripts, auth link (the whole config).
+   *  - claude: `.claude/settings.json` (the order-gate hook wiring — generated IN CODE
+   *    because the template copy is git-untracked and absent from clean CI builds) +
+   *    the hook scripts.
    */
   writeConfig?(agentDir: string, agentId: string): void;
 

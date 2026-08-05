@@ -91,6 +91,11 @@ export class HeadlessRunStrategy implements HeadlessWakeStrategy {
     }
 
     const harness = harnessFor(agent.harness);
+    // Self-heal the harness's generated gate config before an unattended run (parity with
+    // the interactive spawn): a claude agent created by an ungated build gets its
+    // `.claude/settings.json` regenerated here, so headless orders are gated too (the
+    // PreToolUse hook fires even under --dangerously-skip-permissions).
+    harness.writeConfig?.(this.registry.agentDir(agent), agentId);
     // I3: OpenTrade owns the session id. Resume the known one, or mint+store one for a
     // never-started agent (begins the conversation headlessly).
     let resuming = false;

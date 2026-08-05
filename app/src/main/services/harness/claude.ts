@@ -1,8 +1,84 @@
 import { execFile } from "node:child_process";
+import {
+  chmodSync,
+  copyFileSync,
+  existsSync,
+  mkdirSync,
+  readdirSync,
+  writeFileSync,
+} from "node:fs";
+import { join } from "node:path";
 import { promisify } from "node:util";
+import { resolveHooksDir } from "../agents/paths";
 import type { Harness, ProbeResult, SessionMode } from "./types";
 
 const execFileAsync = promisify(execFile);
+
+/**
+ * The agent-dir `.claude/settings.json` that wires Claude Code's order gate: the
+ * PreToolUse hook on the four order tools (→ `approval-gate.sh`, the approval card),
+ * the PostToolUse order-result capture, and the Notification/Stop status hooks, plus
+ * the read-only-tool allowlist. Generated IN CODE (not copied from the template): the
+ * template's `.claude/settings.json` is git-untracked (`.claude/` is gitignored), so a
+ * clean CI release build never bundles it and a template-copy scaffold leaves the agent
+ * UNGATED. Emitting it here — and re-emitting before every spawn — makes the gate
+ * build-independent and self-heals agents created by an older/ungated build.
+ * `$CLAUDE_PROJECT_DIR` resolves to the agent folder, so the hooks stay agent-scoped
+ * (never the user's global `~/.claude`).
+ */
+const CLAUDE_SETTINGS_JSON = `${JSON.stringify(
+  {
+    $schema: "https://json.schemastore.org/claude-code-settings.json",
+    enabledMcpjsonServers: ["robinhood", "opentrade"],
+    permissions: {
+      allow: [
+        "mcp__robinhood__get_*",
+        "mcp__robinhood__search",
+        "mcp__robinhood__review_*",
+        "mcp__opentrade__*",
+      ],
+      deny: [],
+    },
+    hooks: {
+      PreToolUse: [
+        {
+          matcher: "mcp__robinhood__(place|cancel)_(equity|option)_order",
+          hooks: [
+            {
+              type: "command",
+              command: "$CLAUDE_PROJECT_DIR/.claude/hooks/approval-gate.sh",
+              timeout: 600,
+            },
+          ],
+        },
+      ],
+      PostToolUse: [
+        {
+          matcher: "mcp__robinhood__(place|cancel)_(equity|option)_order",
+          hooks: [
+            { type: "command", command: "$CLAUDE_PROJECT_DIR/.claude/hooks/order-result.sh" },
+          ],
+        },
+      ],
+      Notification: [
+        {
+          hooks: [
+            { type: "command", command: "$CLAUDE_PROJECT_DIR/.claude/hooks/status-notify.sh" },
+          ],
+        },
+      ],
+      Stop: [
+        {
+          hooks: [
+            { type: "command", command: "$CLAUDE_PROJECT_DIR/.claude/hooks/status-notify.sh" },
+          ],
+        },
+      ],
+    },
+  },
+  null,
+  2,
+)}\n`;
 
 /**
  * `--dangerously-load-development-channels` is a VARIADIC flag (`<servers...>`):
@@ -37,6 +113,30 @@ export const claudeHarness: Harness = {
     // The kickoff is the positional prompt, placed after all flags. Safe only
     // because CHANNEL_ARG uses the `=`-bound form (a bare variadic would swallow it).
     return ["--session-id", sessionId, CHANNEL_ARG, ...(kickoff ? [kickoff] : [])];
+  },
+
+  writeConfig(agentDir: string): void {
+    // Generate the order-gate config in the agent's OWN .claude folder (project-scoped;
+    // never the user's global ~/.claude). Runs at scaffold AND before every spawn, so it
+    // heals agents that a clean CI build created without the (untracked) template
+    // settings.json — the root cause of ungated orders. Also (re)ensures the executable
+    // hook scripts the settings reference.
+    const claudeDir = join(agentDir, ".claude");
+    const hooksDir = join(claudeDir, "hooks");
+    mkdirSync(hooksDir, { recursive: true });
+    writeFileSync(join(claudeDir, "settings.json"), CLAUDE_SETTINGS_JSON);
+    const hooksSrc = resolveHooksDir();
+    if (existsSync(hooksSrc)) {
+      for (const file of readdirSync(hooksSrc)) {
+        const dest = join(hooksDir, file);
+        copyFileSync(join(hooksSrc, file), dest);
+        try {
+          chmodSync(dest, 0o755);
+        } catch {
+          // best effort
+        }
+      }
+    }
   },
 
   interactiveEnv(): Record<string, string> {
