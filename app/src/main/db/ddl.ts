@@ -82,6 +82,7 @@ export const SCHEMA_DDL = `
       id TEXT PRIMARY KEY,
       agent_id TEXT NOT NULL,
       source_kind TEXT NOT NULL,
+      source_id TEXT,
       prompt TEXT NOT NULL,
       background INTEGER NOT NULL,
       fired_at INTEGER NOT NULL

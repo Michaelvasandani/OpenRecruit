@@ -34,7 +34,7 @@ export interface MigrationDb {
 }
 
 /** Bump on every schema change, with a matching entry in MIGRATIONS. */
-export const SCHEMA_VERSION = 3;
+export const SCHEMA_VERSION = 4;
 
 const MIGRATIONS: Record<number, (db: MigrationDb) => void> = {
   // v2 — headless turn limit: per-agent unattended-turn counter + on/off toggle.
@@ -45,6 +45,12 @@ const MIGRATIONS: Record<number, (db: MigrationDb) => void> = {
   // v3 — multi-harness: which agent CLI runs this agent (claude | codex).
   3: (db) => {
     addColumnIfMissing(db, "agents", "harness", "TEXT NOT NULL DEFAULT 'claude'");
+  },
+  // v4 — link each wake back to its originating cron/monitor (joined with
+  // source_kind) so the history pane can show a retired timer's details.
+  // Nullable: pre-v4 wakes read NULL rather than a bogus id.
+  4: (db) => {
+    addColumnIfMissing(db, "wakes", "source_id", "TEXT");
   },
 };
 

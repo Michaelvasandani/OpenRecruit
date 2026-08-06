@@ -40,6 +40,9 @@ export const Wake = z.object({
   id: z.string(),
   agentId: z.string(),
   sourceKind: z.enum(["cron", "monitor"]),
+  /** Id of the originating schedule/monitor (joined with `sourceKind`); null for
+   *  wakes recorded before this link existed. */
+  sourceId: z.string().nullable(),
   prompt: z.string(),
   /** Delivered headlessly (no live interactive session) vs warm via the channel. */
   background: z.boolean(),

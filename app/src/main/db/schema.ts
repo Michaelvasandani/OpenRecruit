@@ -112,6 +112,10 @@ export const wakes = sqliteTable(
     id: text("id").primaryKey(),
     agentId: text("agent_id").notNull(),
     sourceKind: text("source_kind").notNull(), // "cron" | "monitor"
+    /** Id of the originating schedule/monitor row, joined with `source_kind`. Lets a
+     *  wake resolve its (possibly retired) timer's details for the history pane.
+     *  Nullable: rows written before this column existed read NULL. */
+    sourceId: text("source_id"),
     prompt: text("prompt").notNull(),
     /** True if delivered headlessly (no live interactive session); false if warm via the channel. */
     background: integer("background", { mode: "boolean" }).notNull(),

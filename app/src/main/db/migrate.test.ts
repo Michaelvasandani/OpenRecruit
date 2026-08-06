@@ -35,6 +35,7 @@ describe("db migrations", () => {
     expect(columns(db, "agents")).toContain("headless_turns_used");
     expect(columns(db, "agents")).toContain("turn_limit_enabled");
     expect(columns(db, "agents")).toContain("harness");
+    expect(columns(db, "wakes")).toContain("source_id"); // v4
   });
 
   test("a v0.1.x production DB (user_version 0) migrates in place, preserving rows", () => {
@@ -69,6 +70,30 @@ describe("db migrations", () => {
     // And running migrate again does nothing.
     migrate(m, { fresh: false });
     expect(userVersion(m)).toBe(SCHEMA_VERSION);
+  });
+
+  test("v4 adds wakes.source_id to an existing (v3) DB, preserving wake rows as NULL", () => {
+    const db = new Database(":memory:");
+    const m = wrap(db);
+    // A pre-v4 wakes table (no source_id) with a real wake in it, stamped at v3.
+    db.exec(`CREATE TABLE wakes (
+      id TEXT PRIMARY KEY, agent_id TEXT NOT NULL, source_kind TEXT NOT NULL,
+      prompt TEXT NOT NULL, background INTEGER NOT NULL, fired_at INTEGER NOT NULL
+    );`);
+    db.exec(
+      `INSERT INTO wakes (id, agent_id, source_kind, prompt, background, fired_at)
+       VALUES ('w1', 'a1', 'cron', 'run', 0, 1000)`,
+    );
+    db.exec("PRAGMA user_version = 3");
+    // Boot: current DDL (IF NOT EXISTS is a no-op for the existing wakes table), then migrate.
+    db.exec(SCHEMA_DDL);
+    migrate(m, { fresh: false });
+
+    expect(userVersion(m)).toBe(SCHEMA_VERSION);
+    expect(columns(db, "wakes")).toContain("source_id");
+    const row = db.query("SELECT * FROM wakes WHERE id = 'w1'").get() as Record<string, unknown>;
+    expect(row.prompt).toBe("run"); // data survived
+    expect(row.source_id).toBeNull(); // pre-v4 rows read NULL, not a bogus id
   });
 
   test("refuses to open a DB stamped newer than this build (downgrade guard)", () => {

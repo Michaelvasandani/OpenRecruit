@@ -47,8 +47,9 @@ export class Scheduler {
   start(): void {
     for (const row of this.db.select().from(schedulesTable).all()) {
       if (!row.enabled) continue;
-      // Self-heal: a schedule whose agent was archived/deleted is orphaned — drop it
-      // (covers leaks from before archival cascaded to the scheduler).
+      // Self-heal a genuinely-orphaned row (agent no longer exists at all) by hard-deleting
+      // it. Archival no longer reaches here: `removeAgent` now RETIRES an archived agent's
+      // rows (`enabled=false`), so they're skipped by the guard above before this check.
       if (this.isAgentGone(row.agentId)) {
         this.db.delete(schedulesTable).where(eq(schedulesTable.id, row.id)).run();
         continue;
@@ -59,7 +60,7 @@ export class Scheduler {
       // Catch-up: if we were down past a recurring fire, run it once, then re-arm
       // from the expression (never trust the stored next_fire_at).
       if (row.nextFireAt != null && row.nextFireAt < Date.now()) {
-        const fired = this.fire(row.agentId, row.prompt, "cron");
+        const fired = this.fire(row.agentId, row.prompt, "cron", row.id);
         if (fired) this.markCronFired(row.id);
         if (!row.recurring) {
           // Retire a one-shot only if it ran; a skipped one (agent paused) stays enabled
@@ -95,7 +96,8 @@ export class Scheduler {
    * every monitor child for the agent, leaving the DB rows `enabled` so they survive.
    * Called by the `WakeCoordinator` when the agent goes `broken` — a dead session can't
    * run wakes, so firing into it only spams notifications and drops. `rearmAgent`
-   * reverses it on Restart. (Distinct from `removeAgent`, which deletes.)
+   * reverses it on Restart. (Distinct from `removeAgent`, which retires the rows so they
+   * stay paused permanently and drop out of every list.)
    */
   disarmAgent(agentId: string): void {
     for (const row of this.db
@@ -156,8 +158,12 @@ export class Scheduler {
   }
 
   /**
-   * An agent was archived/deleted: disarm and delete all of its schedules and
-   * monitors so nothing keeps ticking. Called from the archive path.
+   * An agent was archived: disarm every cron and stop every monitor child so nothing
+   * keeps ticking, then RETIRE the rows (`enabled=false`) rather than deleting them.
+   * Timers/monitors are never hard-deleted — the rows are kept so the wake history can
+   * still resolve a fired timer's details after the agent is gone. Retired rows are
+   * hidden everywhere (filtered from every list) and never re-armed. Called from the
+   * archive path.
    */
   removeAgent(agentId: string): void {
     for (const row of this.db
@@ -167,7 +173,11 @@ export class Scheduler {
       .all()) {
       this.cron.disarm(row.id);
     }
-    this.db.delete(schedulesTable).where(eq(schedulesTable.agentId, agentId)).run();
+    this.db
+      .update(schedulesTable)
+      .set({ enabled: false })
+      .where(eq(schedulesTable.agentId, agentId))
+      .run();
 
     for (const row of this.db
       .select()
@@ -177,7 +187,11 @@ export class Scheduler {
       this.runners.get(row.id)?.stop();
       this.runners.delete(row.id);
     }
-    this.db.delete(monitorsTable).where(eq(monitorsTable.agentId, agentId)).run();
+    this.db
+      .update(monitorsTable)
+      .set({ enabled: false })
+      .where(eq(monitorsTable.agentId, agentId))
+      .run();
     bus.emitEvent("scheduler:changed", { agentId });
   }
 
@@ -233,20 +247,25 @@ export class Scheduler {
     return this.getCron(id)!;
   }
 
+  /** This agent's LIVE crons (retired ones are hidden), for the agent's `CronList`
+   *  and the Monitor "Active" panel. A fired one-shot / removed cron is retired
+   *  (`enabled=false`) but kept in the DB — its fire stays in the wake history. */
   listCron(agentId: string): Schedule[] {
     return this.db
       .select()
       .from(schedulesTable)
-      .where(eq(schedulesTable.agentId, agentId))
+      .where(and(eq(schedulesTable.agentId, agentId), eq(schedulesTable.enabled, true)))
       .all()
       .map(rowToSchedule);
   }
 
+  /** Retire (not delete) a cron: disarm it and mark it `enabled=false`. The row is kept
+   *  so its wake history stays resolvable; it's hidden from `listCron` and never re-armed. */
   deleteCron(agentId: string, id: string): boolean {
     const row = this.db.select().from(schedulesTable).where(eq(schedulesTable.id, id)).get();
     if (!row || row.agentId !== agentId) return false;
     this.cron.disarm(id);
-    this.db.delete(schedulesTable).where(eq(schedulesTable.id, id)).run();
+    this.db.update(schedulesTable).set({ enabled: false }).where(eq(schedulesTable.id, id)).run();
     bus.emitEvent("scheduler:changed", { agentId });
     return true;
   }
@@ -274,11 +293,14 @@ export class Scheduler {
     return this.getMonitor(id)!;
   }
 
+  /** This agent's LIVE monitors (retired ones are hidden), for the agent's
+   *  `MonitorList` and the Monitor "Active" panel. A stopped monitor is retired
+   *  (`enabled=false`) but kept in the DB so its fires stay resolvable in history. */
   listMonitors(agentId: string): Monitor[] {
     return this.db
       .select()
       .from(monitorsTable)
-      .where(eq(monitorsTable.agentId, agentId))
+      .where(and(eq(monitorsTable.agentId, agentId), eq(monitorsTable.enabled, true)))
       .all()
       .map(rowToMonitor);
   }
@@ -297,12 +319,14 @@ export class Scheduler {
       .map(rowToWake);
   }
 
+  /** Retire (not delete) a monitor: stop its child and mark it `enabled=false`. The row is
+   *  kept so its wake history stays resolvable; it's hidden from `listMonitors` and never restarted. */
   stopMonitor(agentId: string, id: string): boolean {
     const row = this.db.select().from(monitorsTable).where(eq(monitorsTable.id, id)).get();
     if (!row || row.agentId !== agentId) return false;
     this.runners.get(id)?.stop();
     this.runners.delete(id);
-    this.db.delete(monitorsTable).where(eq(monitorsTable.id, id)).run();
+    this.db.update(monitorsTable).set({ enabled: false }).where(eq(monitorsTable.id, id)).run();
     bus.emitEvent("scheduler:changed", { agentId });
     return true;
   }
@@ -324,7 +348,7 @@ export class Scheduler {
     recurring: boolean,
   ): void {
     const next = this.cron.arm(id, cronExpr, recurring, () => {
-      const fired = this.fire(agentId, prompt, "cron");
+      const fired = this.fire(agentId, prompt, "cron", id);
       if (fired) this.markCronFired(id);
       if (recurring) {
         // Advance the stored next-fire whether or not it fired, so the Scheduled view
@@ -375,7 +399,7 @@ export class Scheduler {
       onTrigger: (line) => {
         // Only record the trigger if it actually woke the agent — a skipped fire
         // (paused agent) shouldn't advance the monitor's last-fired time.
-        if (this.fire(agentId, `Monitor triggered: ${line}`, "monitor")) {
+        if (this.fire(agentId, `Monitor triggered: ${line}`, "monitor", id)) {
           this.db
             .update(monitorsTable)
             .set({ lastFiredAt: Date.now() })
@@ -395,8 +419,16 @@ export class Scheduler {
    * Returns whether the fire actually happened: `false` means the agent is paused (broken /
    * out of turns) and the wake was skipped, so the caller must NOT consume the schedule
    * (advance last-fired, retire a one-shot) — see the callers in `armCron` / `start()`.
+   * `sourceId` is the originating schedule/monitor id, stored on the wake (with `sourceKind`)
+   * so history can resolve the timer's details even after it's retired — every caller
+   * (`armCron`, `start()` catch-up, `startMonitor`'s trigger) has it in scope.
    */
-  private fire(agentId: string, prompt: string, sourceKind: "cron" | "monitor"): boolean {
+  private fire(
+    agentId: string,
+    prompt: string,
+    sourceKind: "cron" | "monitor",
+    sourceId: string,
+  ): boolean {
     const agent = this.registry.get(agentId);
     if (!agent || agent.archivedAt !== null) return false;
     // Skip the fire entirely if the coordinator would only drop this wake — the agent is
@@ -413,7 +445,15 @@ export class Scheduler {
     // emit below re-queries it (and the upcoming schedules) — no separate bus event needed.
     this.db
       .insert(wakesTable)
-      .values({ id: nanoid(), agentId, sourceKind, prompt, background, firedAt: Date.now() })
+      .values({
+        id: nanoid(),
+        agentId,
+        sourceKind,
+        sourceId,
+        prompt,
+        background,
+        firedAt: Date.now(),
+      })
       .run();
     analytics.track("schedule_fired", {
       source: sourceKind,
@@ -475,6 +515,7 @@ function rowToWake(row: typeof wakesTable.$inferSelect): Wake {
     id: row.id,
     agentId: row.agentId,
     sourceKind: row.sourceKind as Wake["sourceKind"],
+    sourceId: row.sourceId,
     prompt: row.prompt,
     background: row.background,
     firedAt: row.firedAt,
