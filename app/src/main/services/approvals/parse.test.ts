@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { parseOrderInput, parseOrderResult } from "./parse";
+import { enrichCancelParsed, parseOrderInput, parseOrderResult } from "./parse";
 
 describe("parseOrderInput", () => {
   test("limit buy computes est cost and a clean summary", () => {
@@ -65,6 +65,58 @@ describe("parseOrderInput", () => {
     expect(p.kind).toBe("place");
     expect(p.symbol).toBeNull();
     expect(p.summary).toBe("ORDER ? @ market");
+  });
+});
+
+describe("enrichCancelParsed", () => {
+  const bare = parseOrderInput("cancel_equity_order", { order_id: "abc-123" });
+
+  test("folds a dollar-based market order into the cancel card", () => {
+    const p = enrichCancelParsed(bare, {
+      symbol: "net",
+      side: "buy",
+      quantity: 0,
+      orderType: "market",
+      limitPrice: null,
+      dollarAmount: 5,
+    });
+    expect(p.summary).toBe("Cancel BUY $5.00 of NET");
+    expect(p.symbol).toBe("NET");
+    expect(p.side).toBe("buy");
+    expect(p.cancelsOrderId).toBe("abc-123"); // link preserved for folding
+  });
+
+  test("folds a share limit order with its price", () => {
+    const p = enrichCancelParsed(bare, {
+      symbol: "AAPL",
+      side: "sell",
+      quantity: 10,
+      orderType: "limit",
+      limitPrice: 150,
+      dollarAmount: null,
+    });
+    expect(p.summary).toBe("Cancel SELL 10 AAPL @ $150.00 limit");
+    expect(p.quantity).toBe(10);
+    expect(p.estCost).toBe(1500);
+  });
+
+  test("a null target leaves the bare-uuid summary as the fallback", () => {
+    const p = enrichCancelParsed(bare, null);
+    expect(p.summary).toBe("Cancel order abc-123");
+  });
+
+  test("a non-cancel parsed order is returned untouched", () => {
+    const place = parseOrderInput("place_equity_order", { symbol: "MSFT", side: "buy" });
+    expect(
+      enrichCancelParsed(place, {
+        symbol: "X",
+        side: "sell",
+        quantity: 1,
+        orderType: "market",
+        limitPrice: null,
+        dollarAmount: null,
+      }),
+    ).toBe(place);
   });
 });
 

@@ -7,6 +7,7 @@ import type {
   ParsedOrder,
   PreToolUseDecision,
 } from "@shared/approval";
+import type { OrderStatus } from "@shared/broker";
 import { DEFAULT_SETTINGS } from "@shared/settings";
 import { and, asc, desc, eq, isNull, like } from "drizzle-orm";
 import { nanoid } from "nanoid";
@@ -17,7 +18,7 @@ import { analytics } from "../analytics";
 import type { AuditLog } from "../audit";
 import { bus } from "../event-bus";
 import type { StatusArbiter } from "../status/arbiter";
-import { parseOrderInput, parseOrderResult } from "./parse";
+import { enrichCancelParsed, parseOrderInput, parseOrderResult } from "./parse";
 
 // Shared with SettingsService, which writes the same `approval_timeout_sec` key.
 const DEFAULT_TIMEOUT_SEC = DEFAULT_SETTINGS.approvalTimeoutSec;
@@ -38,6 +39,13 @@ export class ApprovalService {
   private waiters = new Map<string, Waiter>();
   /** Extra resolvers attached to a pending approval by joined duplicate requests. */
   private joiners = new Map<string, Array<(d: PreToolUseDecision) => void>>();
+  /**
+   * Look up a broker order by id (the cached agentic ledger). Injected after
+   * construction because BrokerService depends on ApprovalService (`orderLinks`),
+   * so the two can't be constructor-wired in a cycle. Used to enrich a cancel's
+   * card with the target order's details (§6.9).
+   */
+  private resolveOrder: ((orderId: string) => OrderStatus | null) | null = null;
 
   constructor(
     private db: Db,
@@ -45,6 +53,11 @@ export class ApprovalService {
     private audit: AuditLog,
     private arbiter: StatusArbiter,
   ) {}
+
+  /** Wire the ledger lookup used to enrich cancel cards. Called once at boot. */
+  setOrderResolver(fn: (orderId: string) => OrderStatus | null): void {
+    this.resolveOrder = fn;
+  }
 
   /** Seconds the user is given before an order auto-denies. */
   get timeoutSec(): number {
@@ -104,7 +117,24 @@ export class ApprovalService {
       return this.decisionFor(dup.id);
     }
 
-    const parsed = parseOrderInput(args.toolName, args.rawInput);
+    let parsed = parseOrderInput(args.toolName, args.rawInput);
+    // A cancel tool call carries only the target order id, so its card would read
+    // as a bare uuid. Resolve that id against the cached ledger (which includes
+    // manually-placed RH orders) to show what's actually being cancelled.
+    if (parsed.kind === "cancel" && parsed.cancelsOrderId && this.resolveOrder) {
+      const o = this.resolveOrder(parsed.cancelsOrderId);
+      parsed = enrichCancelParsed(
+        parsed,
+        o && {
+          symbol: o.symbol,
+          side: o.side,
+          quantity: o.quantity,
+          orderType: o.type,
+          limitPrice: o.limitPrice,
+          dollarAmount: o.dollarAmount,
+        },
+      );
+    }
     const id = nanoid();
     const now = Date.now();
     const timeoutSec = this.timeoutSec;

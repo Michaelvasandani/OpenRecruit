@@ -84,6 +84,11 @@ async function main() {
   // `approvals` supplies the order→agent link so order notifications fire only for
   // agent-placed orders (§12.4).
   const broker = new BrokerService(db, adapter, settings, approvals);
+  // Reverse link: let a cancel's approval card resolve the target order id against
+  // the cached ledger so it shows the real order, not a bare uuid (§6.9).
+  approvals.setOrderResolver(
+    (orderId) => broker.getAgenticOrdersCached()?.value.find((o) => o.id === orderId) ?? null,
+  );
 
   // Stable endpoint: home-derived faucet port + persisted token, shared by the
   // faucet/gate, the terminal WS, and the tRPC server.

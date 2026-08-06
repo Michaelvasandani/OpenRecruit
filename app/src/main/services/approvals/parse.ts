@@ -49,6 +49,72 @@ export function parseOrderInput(toolName: string, input: unknown): ParsedOrder {
   };
 }
 
+/**
+ * The subset of a resolved ledger order we fold into a cancel's card. A cancel
+ * tool call only carries the target order id, so on its own it reads as a bare
+ * uuid ("Cancel order <uuid>"). Resolving that id against the broker's cached
+ * ledger (which includes orders placed manually in the Robinhood app, not just
+ * agent-placed ones) lets us render the real order — "Cancel BUY $5 of NET".
+ */
+export interface CancelTarget {
+  symbol: string | null;
+  side: string | null;
+  quantity: number | null;
+  orderType: string | null;
+  limitPrice: number | null;
+  dollarAmount: number | null;
+}
+
+/**
+ * Fold a resolved ledger order into a `cancel` ParsedOrder so its card shows what
+ * is being cancelled instead of an opaque order id. A no-op for non-cancels or a
+ * null target (the bare-uuid summary from `parseOrderInput` stands as the
+ * fallback). `cancelsOrderId` is preserved — it's the link the Activity feed uses
+ * to fold the cancel into the original order (for agent-placed orders).
+ */
+export function enrichCancelParsed(parsed: ParsedOrder, target: CancelTarget | null): ParsedOrder {
+  if (parsed.kind !== "cancel" || !target) return parsed;
+  const symbol = up(target.symbol);
+  const side = low(target.side);
+  const quantity = target.quantity && target.quantity > 0 ? target.quantity : null;
+  const orderType = low(target.orderType);
+  const limitPrice = target.limitPrice ?? null;
+  const dollars = target.dollarAmount ?? null;
+  const estCost =
+    limitPrice != null && quantity != null ? limitPrice * quantity : (dollars ?? null);
+  return {
+    ...parsed,
+    symbol: symbol ?? parsed.symbol,
+    side,
+    quantity,
+    orderType: orderType ?? parsed.orderType,
+    limitPrice,
+    estCost,
+    summary: cancelSummary({ side, quantity, symbol, orderType, limitPrice, dollars }),
+  };
+}
+
+function cancelSummary(a: {
+  side: string | null;
+  quantity: number | null;
+  symbol: string | null;
+  orderType: string | null;
+  limitPrice: number | null;
+  dollars: number | null;
+}): string {
+  if (!a.symbol) return "Cancel order";
+  const verb = a.side ? a.side.toUpperCase() : "";
+  const size =
+    a.quantity != null
+      ? `${trimNum(a.quantity)} `
+      : a.dollars != null
+        ? `${usd(a.dollars)} of `
+        : "";
+  const price =
+    a.orderType === "limit" && a.limitPrice != null ? ` @ ${usd(a.limitPrice)} limit` : "";
+  return `Cancel ${verb} ${size}${a.symbol}${price}`.replace(/\s+/g, " ").trim();
+}
+
 function placeSummary(a: {
   side: string | null;
   quantity: number | null;
