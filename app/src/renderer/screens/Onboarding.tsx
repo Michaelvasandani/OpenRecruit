@@ -1,4 +1,4 @@
-import { AlertTriangle, ArrowRight, Check, Loader2, Terminal } from "lucide-react";
+import { AlertTriangle, ArrowRight, Check, ExternalLink, Loader2, Terminal } from "lucide-react";
 import { useEffect, useState } from "react";
 import { FeatureShowcase } from "../components/onboarding/FeatureShowcase";
 import { Button } from "../components/ui/button";
@@ -148,7 +148,7 @@ function ClaudeStep({ onNext }: { onNext: () => void }) {
 
       <div className="flex flex-col gap-2">
         {row("Claude Code", probe.data?.claude)}
-        {row("Codex (OpenAI)", probe.data?.codex)}
+        {row("Codex", probe.data?.codex)}
       </div>
 
       {!anyFound && !probe.isLoading && (
@@ -187,24 +187,23 @@ function BrokerStep({ onNext }: { onNext: () => void }) {
   return (
     <div className="flex flex-col gap-4">
       <div>
-        <h2 className="text-sm font-medium">Connect Robinhood</h2>
+        <h2 className="text-sm font-medium">Connect Robinhood to OpenTrade</h2>
         <p className="mt-1 text-sm text-muted-foreground">
-          OpenTrade keeps its own read-only Robinhood session to power the portfolio panel. This
-          opens a browser for a one-time login. You can skip and connect later — the panel just
-          stays empty until you do.
+          OpenTrade keeps its own read-only Robinhood MCP session to power the portfolio panel. This
+          opens a browser for a one-time login.
         </p>
       </div>
 
       {connected ? (
-        <div className="rounded-md border border-border bg-background px-3 py-2 text-sm">
+        // Same row shape as the per-CLI MCP rows below: the account identifies the
+        // row on the left, the status indicator sits right.
+        <div className="flex items-center justify-between rounded-md border border-border bg-background px-3 py-2 text-sm">
+          <span className="text-muted-foreground">
+            {status.data?.account &&
+              `${status.data.account.agentic ? "agentic" : status.data.account.type} ${status.data.account.accountNumber}`}
+          </span>
           <span className="flex items-center gap-2 text-success">
             <Check className="size-4" /> Connected
-            {status.data?.account && (
-              <span className="text-muted-foreground">
-                · {status.data.account.agentic ? "agentic" : status.data.account.type}{" "}
-                {status.data.account.accountNumber}
-              </span>
-            )}
           </span>
         </div>
       ) : (
@@ -220,17 +219,91 @@ function BrokerStep({ onNext }: { onNext: () => void }) {
       )}
 
       {connect.isError && (
-        <p className="text-xs text-destructive">Connection failed. You can try again or skip.</p>
+        <p className="text-xs text-destructive">Connection failed. You can try again.</p>
       )}
 
-      <div className="flex justify-between">
-        <Button type="button" variant="ghost" onClick={onNext} className="text-muted-foreground">
-          Skip for now
-        </Button>
+      <RobinhoodMcpCheck />
+
+      {/* Continue is NEVER gated — not on the broker session, not on the MCP check.
+          Both are advisory; the wizard always lets the user move on. */}
+      <div className="flex justify-end">
         <Button type="button" onClick={onNext}>
           Continue <ArrowRight className="size-4" />
         </Button>
       </div>
+    </div>
+  );
+}
+
+/**
+ * Step 2's second half: is Robinhood's Agentic Trading MCP registered in the agent
+ * CLIs' configs? The broker connection above only powers OpenTrade's own portfolio
+ * panel — the *agents* trade through this MCP, so a missing one is the difference
+ * between an agent that can trade and one that silently can't.
+ *
+ * This reads the CLI config files, so it answers "registered", not "authenticated";
+ * the OAuth consent still happens on the user's first `/mcp` inside the CLI.
+ */
+function RobinhoodMcpCheck() {
+  const mcp = trpc.onboarding.robinhoodMcp.useQuery();
+
+  const clis = [
+    { label: "Claude Code", ...mcp.data?.claude },
+    { label: "Codex", ...mcp.data?.codex },
+  ];
+  // Gated on a settled query: mid-load every `configured` is undefined, which
+  // would flash the link block before we know anything is actually missing.
+  const anyMissing = !mcp.isLoading && clis.some((c) => !c.configured);
+
+  return (
+    <div className="flex flex-col gap-2 border-t border-border pt-4">
+      <h3 className="text-sm font-medium">Connect Robinhood to your agents</h3>
+      <p className="text-sm text-muted-foreground">
+        Agents place orders through Robinhood's Agentic Trading MCP. Install it for each agent you
+        plan to use.
+      </p>
+
+      <div className="flex flex-col gap-2">
+        {clis.map((c) => (
+          <div
+            key={c.label}
+            className="flex items-center justify-between rounded-md border border-border bg-background px-3 py-2 text-sm"
+          >
+            <span className="text-muted-foreground">{c.label}</span>
+            {/* Explicit loading state: an undefined `configured` would otherwise
+                flash a false "Not configured" before the first result lands. */}
+            {mcp.isLoading ? (
+              <span className="flex items-center gap-2 text-muted-foreground">
+                <Loader2 className="size-4 animate-spin" /> Checking…
+              </span>
+            ) : c.configured ? (
+              // Reads "Connected" by product choice; the underlying check is config
+              // presence, so this is optimistic — a registered-but-unauthorized MCP
+              // shows green. See `robinhood-mcp.ts`.
+              <span className="flex items-center gap-2 text-success">
+                <Check className="size-4" /> Connected
+              </span>
+            ) : (
+              <span className="flex items-center gap-2 text-warning">
+                <AlertTriangle className="size-4" /> Not configured
+              </span>
+            )}
+          </div>
+        ))}
+      </div>
+
+      {/* Robinhood owns the setup steps — we link their guide rather than restating
+          commands here, which would rot the moment either CLI changes its syntax. */}
+      {anyMissing && (
+        <a
+          href={mcp.data?.connectUrl}
+          target="_blank"
+          rel="noreferrer"
+          className="flex items-center gap-1.5 text-xs text-primary hover:underline"
+        >
+          How to connect your AI agent <ExternalLink className="size-3" />
+        </a>
+      )}
     </div>
   );
 }
@@ -282,16 +355,7 @@ function AgentStep({ onDone, pending }: { onDone: () => void; pending: boolean }
 
       {create.isError && <p className="text-xs text-destructive">Couldn't create the agent.</p>}
 
-      <div className="flex justify-between">
-        <Button
-          type="button"
-          variant="ghost"
-          onClick={onDone}
-          disabled={busy}
-          className="text-muted-foreground"
-        >
-          Skip
-        </Button>
+      <div className="flex justify-end">
         <Button type="button" onClick={submit} disabled={busy || !name.trim()}>
           {busy && <Loader2 className="size-4 animate-spin" />}
           Create agent

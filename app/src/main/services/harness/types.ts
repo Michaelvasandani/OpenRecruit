@@ -112,4 +112,11 @@ export interface Harness {
 
   /** Is the CLI installed? (onboarding + the New Agent dialog's picker). */
   probe(env: Record<string, string>): Promise<ProbeResult>;
+
+  /**
+   * Is Robinhood's Agentic Trading MCP registered in this CLI's user config?
+   * (Onboarding step 2.) A plain read of the CLI's own config file — each keeps
+   * it in a different place and format, hence the seam. Never launches the CLI.
+   */
+  robinhoodMcpConfigured(): boolean;
 }

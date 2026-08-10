@@ -5,11 +5,14 @@ import {
   existsSync,
   mkdirSync,
   readdirSync,
+  readFileSync,
   writeFileSync,
 } from "node:fs";
+import { homedir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
 import { resolveHooksDir } from "../agents/paths";
+import { claudeConfigHasRobinhood } from "./robinhood-mcp";
 import type { Harness, ProbeResult, SessionMode } from "./types";
 
 const execFileAsync = promisify(execFile);
@@ -162,6 +165,19 @@ export const claudeHarness: Harness = {
       return { found: true, version: stdout.trim() };
     } catch {
       return { found: false, version: null };
+    }
+  },
+
+  robinhoodMcpConfigured(): boolean {
+    // Claude Code's user config. Only the top-level `mcpServers` map is user-scope
+    // — the one every agent folder inherits. Servers added at local/project scope
+    // live under that project's own entry and don't carry over, so they
+    // deliberately don't count as configured here.
+    try {
+      return claudeConfigHasRobinhood(readFileSync(join(homedir(), ".claude.json"), "utf8"));
+    } catch {
+      // No config file yet (fresh Claude Code install) — nothing registered.
+      return false;
     }
   },
 };

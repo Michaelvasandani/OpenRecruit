@@ -20,11 +20,10 @@ import { hostLog } from "../../host/log";
 import { resolveAgentMcp, resolveHooksDir } from "../agents/paths";
 import { bus } from "../event-bus";
 import { type CodexAppServerManager, codexHomeFor } from "./codex-app-server";
+import { codexConfigHasRobinhood, ROBINHOOD_MCP_URL } from "./robinhood-mcp";
 import type { Harness, ProbeResult, SessionMode } from "./types";
 
 const execFileAsync = promisify(execFile);
-
-const ROBINHOOD_MCP_URL = "https://agent.robinhood.com/mcp/trading";
 /** The four order-placing tools gated by the approval anchor + the hook matcher.
  *  Single source for the codex side of the gate surface (the claude template's
  *  settings.json carries the equivalent matcher as a static string). */
@@ -349,6 +348,19 @@ ${hooksState}`;
         return { found: true, version: stdout.trim() };
       } catch {
         return { found: false, version: null };
+      }
+    },
+
+    robinhoodMcpConfigured(): boolean {
+      // The USER's `~/.codex/config.toml` — deliberately not a per-agent CODEX_HOME
+      // (none exists during onboarding, and the question is about the user's own CLI).
+      try {
+        return codexConfigHasRobinhood(
+          readFileSync(join(homedir(), ".codex", "config.toml"), "utf8"),
+        );
+      } catch {
+        // No config file yet (fresh codex install) — nothing registered.
+        return false;
       }
     },
   };

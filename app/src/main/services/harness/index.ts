@@ -2,6 +2,7 @@ import type { HarnessId } from "@shared/agent";
 import { claudeHarness } from "./claude";
 import type { Harness } from "./types";
 
+export { ROBINHOOD_MCP_CONNECT_URL } from "./robinhood-mcp";
 export type { Harness, ProbeResult, SessionMode } from "./types";
 
 /**
