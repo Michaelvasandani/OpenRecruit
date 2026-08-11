@@ -112,3 +112,29 @@ jobs:
             unset CSC_LINK CSC_KEY_PASSWORD APPLE_ID APPLE_APP_SPECIFIC_PASSWORD APPLE_TEAM_ID
           fi
           bun run --cwd app package -- --publish always
+
+      # Publish the renderer + daemon sourcemaps as a GitHub Release asset so any
+      # released version's sanitized `app_error` stack frames (bundle.js:line — see
+      # app/src/shared/analytics.ts) resolve back to source during triage:
+      #   gh release download <tag> -p 'sourcemaps-*.zip'
+      # These are PUBLIC (public repo), which is fine here: they only reconstruct
+      # already-public source (all of app/src is on the open remote) and carry no secret
+      # the shipped app binary doesn't already contain — the sole baked-in build value is
+      # the public PostHog ingestion key. Emitted as "hidden" (electron.vite.config.ts)
+      # and excluded from the app bundle (electron-builder.yml `!out/**/*.map`), so they
+      # reach users only as this explicit, durable release asset — never inside the app.
+      # Tag pushes only: electron-builder created the draft release in the step above
+      # (the maintainer re-publishes it after CI), and `gh release upload` attaches to it.
+      - name: Publish sourcemaps to the GitHub Release (for error triage)
+        if: ${{ startsWith(github.ref, 'refs/tags/') && !cancelled() }}
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          if [ -z "$(find app/out -name '*.js.map' -print -quit)" ]; then
+            echo "::warning::no sourcemaps found to publish"; exit 0
+          fi
+          # Preserve the out/ layout in the zip so renderer vs daemon maps stay distinct.
+          find app/out -name '*.js.map' -print0 | xargs -0 zip -q "sourcemaps-$TAG.zip"
+          gh release upload "$TAG" "sourcemaps-$TAG.zip" --clobber

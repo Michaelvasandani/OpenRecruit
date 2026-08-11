@@ -247,12 +247,12 @@ async function main() {
   // flush + exit non-zero on a fatal error; an unhandled rejection is logged only.
   process.on("uncaughtException", (err) => {
     hostLog.error("uncaughtException", String(err));
-    analytics.trackError("host", err);
+    analytics.trackError("host", err, "uncaught_exception");
     void analytics.shutdown(1000).finally(() => process.exit(1));
   });
   process.on("unhandledRejection", (reason) => {
     hostLog.error("unhandledRejection", String(reason));
-    analytics.trackError("host", reason);
+    analytics.trackError("host", reason, "unhandled_rejection");
   });
 }
 

@@ -164,6 +164,7 @@ export class HeadlessRunStrategy implements HeadlessWakeStrategy {
 
     child.on("error", (err) => {
       hostLog.error("headless spawn failed", agentId, String(err));
+      analytics.trackError("wake", err, "caught");
       settle("spawnFail");
     });
     child.on("exit", (code) => {

@@ -60,7 +60,7 @@ export class Scheduler {
       // Catch-up: if we were down past a recurring fire, run it once, then re-arm
       // from the expression (never trust the stored next_fire_at).
       if (row.nextFireAt != null && row.nextFireAt < Date.now()) {
-        const fired = this.fire(row.agentId, row.prompt, "cron", row.id);
+        const fired = this.fireTracked(row.agentId, row.prompt, "cron", row.id);
         if (fired) this.markCronFired(row.id);
         if (!row.recurring) {
           // Retire a one-shot only if it ran; a skipped one (agent paused) stays enabled
@@ -348,7 +348,7 @@ export class Scheduler {
     recurring: boolean,
   ): void {
     const next = this.cron.arm(id, cronExpr, recurring, () => {
-      const fired = this.fire(agentId, prompt, "cron", id);
+      const fired = this.fireTracked(agentId, prompt, "cron", id);
       if (fired) this.markCronFired(id);
       if (recurring) {
         // Advance the stored next-fire whether or not it fired, so the Scheduled view
@@ -399,7 +399,7 @@ export class Scheduler {
       onTrigger: (line) => {
         // Only record the trigger if it actually woke the agent — a skipped fire
         // (paused agent) shouldn't advance the monitor's last-fired time.
-        if (this.fire(agentId, `Monitor triggered: ${line}`, "monitor", id)) {
+        if (this.fireTracked(agentId, `Monitor triggered: ${line}`, "monitor", id)) {
           this.db
             .update(monitorsTable)
             .set({ lastFiredAt: Date.now() })
@@ -471,6 +471,27 @@ export class Scheduler {
       agentId,
     });
     return true;
+  }
+
+  /**
+   * `fire()` wrapped so an unexpected throw off a timer/monitor tick (a DB write, the
+   * coordinator enqueue) surfaces as a labeled `app_error` (subsystem "scheduler")
+   * instead of vanishing into the croner/child callback. Treats an error as "did not
+   * fire" (returns false) so the caller doesn't consume the schedule on a failed run.
+   */
+  private fireTracked(
+    agentId: string,
+    prompt: string,
+    sourceKind: "cron" | "monitor",
+    sourceId: string,
+  ): boolean {
+    try {
+      return this.fire(agentId, prompt, sourceKind, sourceId);
+    } catch (err) {
+      hostLog.error("scheduler fire failed", sourceKind, String(err));
+      analytics.trackError("scheduler", err, "caught");
+      return false;
+    }
   }
 
   private getCron(id: string): Schedule | undefined {

@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import {
+  type ErrorSource,
   type ErrorSubsystem,
   errorNameOf,
   sanitizeStack,
@@ -149,13 +150,16 @@ export class AnalyticsService {
 
   /**
    * Capture a sanitized `app_error`: the error class name + bundle-only stack
-   * fingerprint. Never the message, a stack line's path, or any free text.
+   * fingerprint, plus how it surfaced (`source`). Never the message, a stack line's
+   * path, or any free text. `source` defaults to `caught` — the value for an explicit
+   * try/catch; the global process handlers pass `uncaught_exception` / `unhandled_rejection`.
    */
-  trackError(subsystem: ErrorSubsystem, err: unknown): void {
+  trackError(subsystem: ErrorSubsystem, err: unknown, source: ErrorSource = "caught"): void {
     const frames = sanitizeStack(err);
     this.track("app_error", {
       subsystem,
       error_name: errorNameOf(err),
+      source,
       ...(frames.length ? { frames } : {}),
     });
   }

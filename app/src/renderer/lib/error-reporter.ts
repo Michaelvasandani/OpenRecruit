@@ -1,4 +1,4 @@
-import { errorNameOf, sanitizeStack } from "@shared/analytics";
+import { type ErrorSource, errorNameOf, sanitizeStack } from "@shared/analytics";
 import { getImperativeClient } from "./trpc";
 
 /**
@@ -11,7 +11,7 @@ import { getImperativeClient } from "./trpc";
 const MAX_REPORTS = 5;
 let sent = 0;
 
-function report(err: unknown): void {
+function report(err: unknown, source: ErrorSource): void {
   if (sent >= MAX_REPORTS) return;
   sent++;
   const frames = sanitizeStack(err);
@@ -22,6 +22,7 @@ function report(err: unknown): void {
         props: {
           subsystem: "renderer",
           error_name: errorNameOf(err),
+          source,
           ...(frames.length ? { frames } : {}),
         },
       })
@@ -32,6 +33,9 @@ function report(err: unknown): void {
 }
 
 export function installRendererErrorReporter(): void {
-  window.addEventListener("error", (e) => report(e.error ?? e.message));
-  window.addEventListener("unhandledrejection", (e) => report(e.reason));
+  // The two window handlers carry the only signal that distinguishes a synchronous
+  // throw from a rejected promise — recorded as `source` so triage can tell them
+  // apart without a message (see ErrorSource in shared/analytics.ts).
+  window.addEventListener("error", (e) => report(e.error ?? e.message, "uncaught_exception"));
+  window.addEventListener("unhandledrejection", (e) => report(e.reason, "unhandled_rejection"));
 }

@@ -18,7 +18,11 @@ export default defineConfig({
       },
     },
     build: {
-      sourcemap: true,
+      // "hidden": emit sourcemaps but leave no `//# sourceMappingURL` comment in the
+      // bundle, so the maps are NOT shipped/referenced in the user build — they're
+      // excluded from the app in electron-builder.yml and published as a GitHub Release
+      // asset for symbolicating `app_error` frames. See docs/ARCHITECTURE.md §telemetry.
+      sourcemap: "hidden",
       rollupOptions: {
         // ws's optional perf deps — left as runtime requires so ws's internal
         // try/catch falls back to its pure-JS implementations.
@@ -44,6 +48,8 @@ export default defineConfig({
       },
     },
     build: {
+      // See the main build: hidden maps, published as a Release asset, never shipped.
+      sourcemap: "hidden",
       rollupOptions: {
         input: { index: resolve("src/preload/index.ts") },
       },
@@ -59,9 +65,11 @@ export default defineConfig({
       },
     },
     build: {
-      // Emit sourcemaps so sanitized renderer stack fingerprints (bundle
-      // file:line — see shared/analytics.ts) resolve back to source locally.
-      sourcemap: true,
+      // Emit sourcemaps so sanitized renderer stack fingerprints (bundle file:line —
+      // see shared/analytics.ts) resolve back to source. "hidden" keeps them out of the
+      // shipped bundle (no sourceMappingURL comment; also excluded in electron-builder.yml)
+      // — they're published as a GitHub Release asset for triage, not handed to users.
+      sourcemap: "hidden",
       rollupOptions: {
         input: { index: resolve("src/renderer/index.html") },
       },

@@ -57,6 +57,18 @@ export const ErrorSubsystem = z.enum([
 ]);
 export type ErrorSubsystem = z.infer<typeof ErrorSubsystem>;
 
+/**
+ * How an `app_error` reached the reporter — the *capture mechanism*, not the error
+ * itself. Because we deliberately never send the message, this is the cheapest way
+ * to make triage tractable: it separates an uncaught throw from an unhandled promise
+ * rejection (e.g. a background clipboard write denied while the window is unfocused)
+ * without any free text. `caught` is an explicit try/catch that chose to report.
+ * Process-agnostic — the renderer's `error` / `unhandledrejection` window listeners and
+ * the host's `uncaughtException` / `unhandledRejection` handlers map onto the same three.
+ */
+export const ErrorSource = z.enum(["uncaught_exception", "unhandled_rejection", "caught"]);
+export type ErrorSource = z.infer<typeof ErrorSource>;
+
 /** Keys of the global AppSettings (kept in sync manually — the enum is the guard). */
 const settingKey = z.enum([
   "approvalTimeoutSec",
@@ -163,6 +175,7 @@ export const TELEMETRY_EVENTS = {
   app_error: z.strictObject({
     subsystem: ErrorSubsystem,
     error_name: errorName,
+    source: ErrorSource.optional(),
     frames: frames.optional(),
   }),
 } as const;
@@ -176,7 +189,10 @@ export type TelemetryProps<E extends TelemetryEvent> = z.infer<(typeof TELEMETRY
  * The subset of events the renderer/launcher may emit over the `analytics.track`
  * tRPC mutation. A discriminated union so the tRPC surface can't be used to smuggle
  * host-only events or extra props; the host re-validates through TELEMETRY_EVENTS
- * regardless. Note `app_error` is locked to `subsystem: "renderer"` here.
+ * regardless. `app_error` here is restricted to the two subsystems that actually run
+ * in the GUI process and relay over this surface — `renderer` and `updater` (the
+ * auto-updater lives in the Electron main process, not the host) — so it still can't
+ * smuggle a host-only subsystem label.
  */
 export const RendererTrackInput = z.discriminatedUnion("event", [
   z.object({ event: z.literal("onboarding_started") }),
@@ -193,8 +209,9 @@ export const RendererTrackInput = z.discriminatedUnion("event", [
   z.object({
     event: z.literal("app_error"),
     props: z.strictObject({
-      subsystem: z.literal("renderer"),
+      subsystem: z.enum(["renderer", "updater"]),
       error_name: errorName,
+      source: ErrorSource.optional(),
       frames: frames.optional(),
     }),
   }),

@@ -5,6 +5,10 @@ directories:
   buildResources: build
 files:
   - out/**/*
+  # Sourcemaps are emitted ("hidden") for `app_error` triage but kept out of the
+  # shipped app — they're published as a GitHub Release asset instead (see
+  # .github/workflows/release-desktop.yml and docs/ARCHITECTURE.md §telemetry).
+  - "!out/**/*.map"
   - package.json
 # Native modules and the per-agent MCP server must live on the real filesystem,
 # not inside the asar archive:

@@ -103,6 +103,7 @@ export class CodexHeadlessStrategy implements HeadlessWakeStrategy {
         }
       } catch (err) {
         hostLog.warn("codex wake run errored", agentId, String(err));
+        analytics.trackError("wake", err, "caught");
         settle(err instanceof CodexServerUnavailableError ? "spawnFail" : "resumeFail");
       }
     })();

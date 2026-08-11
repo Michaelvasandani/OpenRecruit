@@ -220,6 +220,7 @@ export class BrokerService {
       bus.emitEvent("broker:updated", { keys: updated });
     } catch (err) {
       console.error("[broker] poll failed", err);
+      analytics.trackError("broker", err, "caught");
     } finally {
       this.polling = false;
     }

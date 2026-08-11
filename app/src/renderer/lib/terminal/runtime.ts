@@ -1,4 +1,4 @@
-import { ClipboardAddon } from "@xterm/addon-clipboard";
+import { ClipboardAddon, type IClipboardProvider } from "@xterm/addon-clipboard";
 import { FitAddon } from "@xterm/addon-fit";
 import { SearchAddon } from "@xterm/addon-search";
 import { Unicode11Addon } from "@xterm/addon-unicode11";
@@ -32,6 +32,29 @@ const THEME = {
   brightMagenta: "#bb9af7",
   brightCyan: "#7dcfff",
   brightWhite: "#ffffff",
+};
+
+/**
+ * Focus-tolerant clipboard provider for xterm's ClipboardAddon.
+ *
+ * The addon handles OSC 52 escape sequences — a program running in the terminal
+ * (e.g. the agent) asking to set/read the system clipboard — by calling
+ * `navigator.clipboard.{writeText,readText}`. When the OpenTrade window is not
+ * focused at that moment, Chromium rejects the call with a `NotAllowedError`
+ * ("Document is not focused"). This is unavoidable (the browser forbids clipboard
+ * access without focus) and harmless — the copy simply doesn't land.
+ *
+ * The stock provider lets that rejection escape unhandled, where our renderer
+ * error reporter picks it up and files it as a spurious `app_error`
+ * (`NotAllowedError`, subsystem "renderer"). We swallow it here to keep that
+ * benign, uncontrollable failure out of telemetry. Behavior is unchanged: the
+ * clipboard write was already failing either way; we only stop it from surfacing
+ * as an unhandled rejection. Errors from any *other* code path still report
+ * normally — we're muting only the clipboard case, not `NotAllowedError` globally.
+ */
+const clipboardProvider: IClipboardProvider = {
+  readText: (_selection) => navigator.clipboard.readText().catch(() => ""),
+  writeText: (_selection, text) => navigator.clipboard.writeText(text).catch(() => {}),
 };
 
 export interface TerminalRuntime {
@@ -81,7 +104,7 @@ export function createRuntime(cb: RuntimeCallbacks): TerminalRuntime {
   terminal.loadAddon(search);
   terminal.loadAddon(unicode11);
   terminal.unicode.activeVersion = "11";
-  terminal.loadAddon(new ClipboardAddon());
+  terminal.loadAddon(new ClipboardAddon(undefined, clipboardProvider));
 
   terminal.open(wrapper);
 

@@ -1,4 +1,5 @@
 import { join } from "node:path";
+import { errorNameOf, sanitizeStack } from "@shared/analytics";
 import type { HostNotification, NotificationKind } from "@shared/notify";
 import { type AppSettings, DEFAULT_SETTINGS } from "@shared/settings";
 import { createTRPCClient, createWSClient, wsLink } from "@trpc/client";
@@ -121,6 +122,23 @@ async function main() {
       relayTrpc?.analytics.track
         .mutate({ event: "update_downloaded", props: { to_version: toVersion } })
         .catch(() => {}),
+    // A failed update check/download rides the same relay to the host funnel as a
+    // sanitized `app_error` (subsystem "updater") — class name + bundle frames only,
+    // never the message — so update failures are triageable alongside other daemon errors.
+    onError: (err) => {
+      const frames = sanitizeStack(err);
+      relayTrpc?.analytics.track
+        .mutate({
+          event: "app_error",
+          props: {
+            subsystem: "updater",
+            error_name: errorNameOf(err),
+            source: "caught",
+            ...(frames.length ? { frames } : {}),
+          },
+        })
+        .catch(() => {});
+    },
     // The in-app "Update Available" button is the indicator when the window is open;
     // only fall back to an OS notification when the user is away, so we don't
     // double-notify on boot. Returns whether it displayed so the updater dedupes on a

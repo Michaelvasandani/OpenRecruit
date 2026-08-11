@@ -157,11 +157,26 @@ describe("AnalyticsService", () => {
     expect(fake.events).toHaveLength(1);
     const e = fake.events[0];
     expect(e.event).toBe("app_error");
-    expect(e.properties).toMatchObject({ subsystem: "broker", error_name: "TypeError" });
+    // Defaults to `caught` when the caller doesn't say how the error surfaced.
+    expect(e.properties).toMatchObject({
+      subsystem: "broker",
+      error_name: "TypeError",
+      source: "caught",
+    });
     const blob = JSON.stringify(e.properties);
     expect(blob).not.toContain("secret");
     expect(blob).not.toContain("/Users/");
     expect(blob).not.toContain("AAPL");
+  });
+
+  test("trackError records how the error surfaced via source", () => {
+    const fake = new FakeClient();
+    const svc = makeService(new SettingsService(memDb()), fake);
+    svc.trackError("host", new Error("x"), "unhandled_rejection");
+    expect(fake.events[0].properties).toMatchObject({
+      subsystem: "host",
+      source: "unhandled_rejection",
+    });
   });
 });
 
@@ -201,6 +216,21 @@ describe("analytics allowlist + normalizers", () => {
     expect(bad.success).toBe(false);
   });
 
+  test("app_error source accepts the enum and rejects free text", () => {
+    const ok = TELEMETRY_EVENTS.app_error.safeParse({
+      subsystem: "renderer",
+      error_name: "NotAllowedError",
+      source: "unhandled_rejection",
+    });
+    expect(ok.success).toBe(true);
+    const bad = TELEMETRY_EVENTS.app_error.safeParse({
+      subsystem: "renderer",
+      error_name: "NotAllowedError",
+      source: "Document is not focused",
+    });
+    expect(bad.success).toBe(false);
+  });
+
   test("RendererTrackInput rejects host-only events and non-renderer errors", () => {
     expect(RendererTrackInput.safeParse({ event: "host_started" }).success).toBe(false);
     expect(
@@ -209,7 +239,8 @@ describe("analytics allowlist + normalizers", () => {
         props: { step: "broker" },
       }).success,
     ).toBe(true);
-    // app_error is locked to subsystem "renderer" on the tRPC surface.
+    // app_error on the tRPC surface is restricted to the GUI-process subsystems
+    // (renderer + updater); a host-only subsystem is rejected.
     expect(
       RendererTrackInput.safeParse({
         event: "app_error",
@@ -220,6 +251,12 @@ describe("analytics allowlist + normalizers", () => {
       RendererTrackInput.safeParse({
         event: "app_error",
         props: { subsystem: "renderer", error_name: "X" },
+      }).success,
+    ).toBe(true);
+    expect(
+      RendererTrackInput.safeParse({
+        event: "app_error",
+        props: { subsystem: "updater", error_name: "X", source: "caught" },
       }).success,
     ).toBe(true);
   });

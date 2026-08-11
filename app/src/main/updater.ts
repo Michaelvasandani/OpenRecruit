@@ -34,6 +34,10 @@ const CHECK_INTERVAL_MS = 4 * 60 * 60 * 1000; // every 4h
 interface UpdaterHooks {
   /** Telemetry hook — the user accepted and the update finished downloading. */
   onDownloaded?: (version: string) => void;
+  /** Telemetry hook — an update check/download failed (electron-updater `error`
+   *  event). Routed to the host's funnel as a sanitized `app_error` (subsystem
+   *  "updater"); the message stays local (only the class name + frames are sent). */
+  onError?: (err: unknown) => void;
   /** Display hook — routed through the launcher's gated notification helper so the
    *  "App updates" toggle applies (§12.4). Fires when an update becomes available.
    *  Returns whether a banner was actually shown (false if suppressed by the toggle
@@ -120,6 +124,7 @@ function wireEvents(): void {
     checking = false;
     installOnDownloaded = false;
     console.error("[updater]", err);
+    hooks.onError?.(err);
     setState({ status: "error", error: errorMessage(err), checkedAt: Date.now() });
   });
 }
