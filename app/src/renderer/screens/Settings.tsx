@@ -17,6 +17,7 @@ import { SettingNumber } from "../components/settings/SettingNumber";
 import { SettingsRow } from "../components/settings/SettingsRow";
 import { SettingsSection } from "../components/settings/SettingsSection";
 import { SettingToggle } from "../components/settings/SettingToggle";
+import { TelemetryOptOutDialog } from "../components/settings/TelemetryOptOutDialog";
 import { Button } from "../components/ui/button";
 import { Tooltip, TooltipContent, TooltipTrigger } from "../components/ui/tooltip";
 import { useAgents } from "../hooks/useAgents";
@@ -107,10 +108,8 @@ export function SettingsScreen() {
 }
 
 function GeneralPanel() {
-  const settings = useSettings();
   const update = useUpdateSettings();
   const setView = useUIStore((s) => s.setView);
-  const s = settings.data;
 
   return (
     <div className="space-y-8">
@@ -129,20 +128,6 @@ function GeneralPanel() {
           >
             Re-run setup
           </Button>
-        </SettingsRow>
-      </SettingsSection>
-
-      <SettingsSection title="Privacy" description="Anonymous product analytics.">
-        <SettingsRow
-          label="Share anonymous usage data"
-          hint="Sends anonymous feature-usage and error events — a random ID, event names, categories, and timings — to help improve OpenTrade. Never includes your conversations, tickers, quantities, prices, or account details. On by default; turn it off any time."
-        >
-          {s && (
-            <SettingToggle
-              checked={s.telemetryEnabled}
-              onChange={(telemetryEnabled) => update.mutate({ telemetryEnabled })}
-            />
-          )}
         </SettingsRow>
       </SettingsSection>
 
@@ -489,7 +474,7 @@ function AboutPanel() {
   return (
     <SettingsSection
       title="About"
-      description="OpenTrade — an open-source control panel for local trading agents."
+      description="OpenTrade — an open-source control panel for trading agents."
     >
       <SettingsRow label="Version">
         <span className="text-sm tabular-nums text-muted-foreground">
@@ -528,7 +513,46 @@ function AboutPanel() {
           {info.data?.home && <TooltipContent>{info.data.home}</TooltipContent>}
         </Tooltip>
       </SettingsRow>
+      <TelemetryRow />
     </SettingsSection>
+  );
+}
+
+/**
+ * The anonymous-telemetry opt-out — an About row (it's a statement about the project,
+ * not an app preference). Turning it **on** applies immediately; turning it **off**
+ * first raises `TelemetryOptOutDialog` and only writes the setting if the user
+ * confirms, so an accidental click can't silently drop our only feedback channel.
+ */
+function TelemetryRow() {
+  const settings = useSettings();
+  const update = useUpdateSettings();
+  const [confirmingOptOut, setConfirmingOptOut] = useState(false);
+  const s = settings.data;
+
+  return (
+    <SettingsRow
+      label="Share anonymous usage data"
+      hint="Anonymous feature-usage and error events. Never your conversations, tickers, quantities, prices, or account details."
+    >
+      {s && (
+        <SettingToggle
+          checked={s.telemetryEnabled}
+          onChange={(telemetryEnabled) => {
+            if (telemetryEnabled) update.mutate({ telemetryEnabled: true });
+            else setConfirmingOptOut(true);
+          }}
+        />
+      )}
+      <TelemetryOptOutDialog
+        open={confirmingOptOut}
+        onCancel={() => setConfirmingOptOut(false)}
+        onConfirm={() => {
+          setConfirmingOptOut(false);
+          update.mutate({ telemetryEnabled: false });
+        }}
+      />
+    </SettingsRow>
   );
 }
 
