@@ -281,6 +281,38 @@ describe("analytics allowlist + normalizers", () => {
     ).toBe(true);
   });
 
+  test("errorCodeOf falls back to err.cause.code — the undici `fetch failed` shape", () => {
+    // What `fetch` throws on a network failure: a bare TypeError with the real code one
+    // level down. These are the exact shapes Node 22 produces (probed, not assumed).
+    const dns = new TypeError("fetch failed", {
+      cause: Object.assign(new Error("getaddrinfo ENOTFOUND agent.robinhood.com"), {
+        code: "ENOTFOUND",
+      }),
+    });
+    expect(errorCodeOf(dns)).toBe("ENOTFOUND");
+    // Dual-stack host: the cause is an AggregateError that Node also stamps with the code.
+    const refused = new TypeError("fetch failed", {
+      cause: Object.assign(new AggregateError([], "connect ECONNREFUSED"), {
+        code: "ECONNREFUSED",
+      }),
+    });
+    expect(errorCodeOf(refused)).toBe("ECONNREFUSED");
+    // Own code wins over the cause's; a cause with no code adds nothing; one level only.
+    expect(
+      errorCodeOf(Object.assign(new Error("x"), { code: "OWN", cause: { code: "INNER" } })),
+    ).toBe("OWN");
+    expect(
+      errorCodeOf(new TypeError("fetch failed", { cause: new Error("bad port") })),
+    ).toBeUndefined();
+    expect(
+      errorCodeOf(new Error("x", { cause: new Error("y", { cause: { code: "DEEP" } }) })),
+    ).toBeUndefined();
+    // The same sanitization applies to the cause's code.
+    expect(
+      errorCodeOf(new Error("x", { cause: { code: "not an identifier /path" } })),
+    ).toBeUndefined();
+  });
+
   test("app_error source accepts the enum and rejects free text", () => {
     const ok = TELEMETRY_EVENTS.app_error.safeParse({
       subsystem: "renderer",

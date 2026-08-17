@@ -14,6 +14,7 @@ import { analytics } from "../analytics";
 import { bus } from "../event-bus";
 import type { SettingsService } from "../settings";
 import { type BrokerAdapter, ConnectSuperseded } from "./adapter";
+import { isTransientNetworkError } from "./network-error";
 import { orderNotification, terminalTransition } from "./order-notify";
 
 /**
@@ -140,6 +141,9 @@ export class BrokerService {
 
   private async runConnect(opts: { interactive?: boolean }): Promise<void> {
     this.setStatus("connecting");
+    analytics.track("broker_connect_started", {
+      mode: opts.interactive ? "interactive" : "silent",
+    });
     try {
       await this.adapter.connect(opts);
       // A silent connect can end without a session — the stored grant was dead and the
@@ -185,6 +189,8 @@ export class BrokerService {
     this.adapter.reset();
     this.account = null;
     this.ledger.clear();
+    this.offlineSince = null; // an outage doesn't span a deliberate disconnect
+    this.failedPolls = 0;
     this.setStatus("disconnected");
   }
 
@@ -271,12 +277,42 @@ export class BrokerService {
       updated.push("agentic_orders");
 
       bus.emitEvent("broker:updated", { keys: updated });
+      this.noteOnline();
     } catch (err) {
       console.error("[broker] poll failed", err);
-      analytics.trackError("broker", err, "caught");
+      // A poll that was in flight when disconnect() ran fails by design (its client was
+      // closed under it) — nothing to report, and it must not reopen outage tracking.
+      if (this.status !== "connected") return;
+      // Network outage (laptop sleep/wake, Wi‑Fi blip) → broker_offline; else app_error.
+      if (isTransientNetworkError(err)) this.noteOffline(err);
+      else analytics.trackError("broker", err, "caught");
     } finally {
       this.polling = false;
     }
+  }
+
+  // ---- outage tracking (poll loop) ----
+
+  /** When the current network outage began (first failed poll), or null if online. */
+  private offlineSince: number | null = null;
+  private failedPolls = 0;
+
+  private noteOffline(err: unknown) {
+    this.failedPolls++;
+    if (this.offlineSince !== null) return;
+    this.offlineSince = Date.now();
+    const code = errorCodeOf(err);
+    analytics.track("broker_offline", code ? { error_code: code } : {});
+  }
+
+  private noteOnline() {
+    if (this.offlineSince === null) return;
+    analytics.track("broker_online", {
+      offline_ms: Date.now() - this.offlineSince,
+      failed_polls: this.failedPolls,
+    });
+    this.offlineSince = null;
+    this.failedPolls = 0;
   }
 
   // ---- reads (cache-first) ----
