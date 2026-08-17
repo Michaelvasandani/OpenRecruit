@@ -6,6 +6,7 @@ import { Card } from "../components/ui/card";
 import { Input } from "../components/ui/input";
 import { Label } from "../components/ui/label";
 import { useTrackEvent } from "../hooks/useAnalytics";
+import { useBrokerStatus } from "../hooks/useBroker";
 import { useUpdateSettings } from "../hooks/useSettings";
 import { trpc } from "../lib/trpc";
 import { cn } from "../lib/utils";
@@ -177,12 +178,18 @@ function ClaudeStep({ onNext }: { onNext: () => void }) {
 }
 
 function BrokerStep({ onNext }: { onNext: () => void }) {
-  const status = trpc.broker.connectionStatus.useQuery();
+  const status = useBrokerStatus();
   const utils = trpc.useUtils();
   const connect = trpc.onboarding.connectBroker.useMutation({
     onSuccess: () => utils.broker.connectionStatus.invalidate(),
   });
-  const connected = status.data?.status === "connected";
+  const disconnect = trpc.broker.disconnect.useMutation({
+    onSuccess: () => utils.broker.connectionStatus.invalidate(),
+  });
+  const connected = status?.status === "connected";
+  // Status-driven too, not just this mutation: a consent started before a remount /
+  // GUI restart is still pending in the daemon, and Settings isn't reachable from here.
+  const connecting = connect.isPending || status?.status === "connecting";
 
   return (
     <div className="flex flex-col gap-4">
@@ -199,26 +206,41 @@ function BrokerStep({ onNext }: { onNext: () => void }) {
         // row on the left, the status indicator sits right.
         <div className="flex items-center justify-between rounded-md border border-border bg-background px-3 py-2 text-sm">
           <span className="text-muted-foreground">
-            {status.data?.account &&
-              `${status.data.account.agentic ? "agentic" : status.data.account.type} ${status.data.account.accountNumber}`}
+            {status?.account &&
+              `${status.account.agentic ? "agentic" : status.account.type} ${status.account.accountNumber}`}
           </span>
           <span className="flex items-center gap-2 text-success">
             <Check className="size-4" /> Connected
           </span>
         </div>
+      ) : connecting ? (
+        <div className="flex items-center justify-between rounded-md border border-border bg-background px-3 py-2 text-sm">
+          <span className="flex items-center gap-2 text-muted-foreground">
+            <Loader2 className="size-4 animate-spin" /> Waiting for you to approve in the browser…
+          </span>
+          {/* The consent can't tell the browser tab was closed; without this the daemon
+              waits out its timeout and the user is stuck here. */}
+          <Button
+            type="button"
+            variant="outline"
+            size="sm"
+            disabled={disconnect.isPending}
+            onClick={() => disconnect.mutate()}
+          >
+            Cancel
+          </Button>
+        </div>
       ) : (
         <Button
           type="button"
-          disabled={connect.isPending}
           onClick={() => connect.mutate()}
           className="justify-center gap-2 py-2"
         >
-          {connect.isPending && <Loader2 className="size-4 animate-spin" />}
           Connect Robinhood
         </Button>
       )}
 
-      {connect.isError && (
+      {connect.isError && !connecting && (
         <p className="text-xs text-destructive">Connection failed. You can try again.</p>
       )}
 

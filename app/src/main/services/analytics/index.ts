@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import {
   type ErrorSource,
   type ErrorSubsystem,
+  errorCodeOf,
   errorNameOf,
   sanitizeStack,
   TELEMETRY_EVENTS,
@@ -149,16 +150,22 @@ export class AnalyticsService {
   }
 
   /**
-   * Capture a sanitized `app_error`: the error class name + bundle-only stack
-   * fingerprint, plus how it surfaced (`source`). Never the message, a stack line's
-   * path, or any free text. `source` defaults to `caught` — the value for an explicit
-   * try/catch; the global process handlers pass `uncaught_exception` / `unhandled_rejection`.
+   * Capture a sanitized `app_error`: the error class name, its machine code when it
+   * has one (`err.code` — e.g. `EADDRINUSE`), and a bundle-only stack fingerprint,
+   * plus how it surfaced (`source`). Never the message, a stack line's path, or any
+   * free text. `source` defaults to `caught` — the value for an explicit try/catch;
+   * the global process handlers pass `uncaught_exception` / `unhandled_rejection`.
+   * The code matters most for async Node system errors: their stack is entirely
+   * `node:internal` frames (so `frames` is empty) and their class is plain `Error`,
+   * leaving `error_code` as the only thing that says what actually went wrong.
    */
   trackError(subsystem: ErrorSubsystem, err: unknown, source: ErrorSource = "caught"): void {
     const frames = sanitizeStack(err);
+    const code = errorCodeOf(err);
     this.track("app_error", {
       subsystem,
       error_name: errorNameOf(err),
+      ...(code ? { error_code: code } : {}),
       source,
       ...(frames.length ? { frames } : {}),
     });

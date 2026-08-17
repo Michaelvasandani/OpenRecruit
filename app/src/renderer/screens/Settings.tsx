@@ -351,14 +351,18 @@ function BrokerConnectionRow() {
   const connect = trpc.onboarding.connectBroker.useMutation({
     onSuccess: () => utils.broker.connectionStatus.invalidate(),
   });
+  const disconnect = trpc.broker.disconnect.useMutation({
+    onSuccess: () => utils.broker.connectionStatus.invalidate(),
+  });
   const st = status?.status ?? "disconnected";
   const account = status?.account;
+  const connecting = connect.isPending || st === "connecting";
 
   const hint =
     st === "connected" && account
       ? `${account.agentic ? "agentic" : account.type} · ${account.accountNumber}`
-      : st === "connecting"
-        ? "Connecting…"
+      : connecting
+        ? "Waiting for you to approve in the browser. Closed the tab? Cancel and connect again."
         : "Not connected";
 
   return (
@@ -366,16 +370,39 @@ function BrokerConnectionRow() {
       <div className="flex items-center gap-2.5">
         <span className={cn("size-2 shrink-0 rounded-full", STATUS_DOT[st])} />
         {st === "connected" ? (
-          <span className="text-sm text-muted-foreground">Connected</span>
+          <>
+            <span className="text-sm text-muted-foreground">Connected</span>
+            {/* Forget the session: the next Connect is a fresh consent (also how to
+                switch Robinhood accounts). */}
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              disabled={disconnect.isPending}
+              onClick={() => disconnect.mutate()}
+            >
+              Disconnect
+            </Button>
+          </>
+        ) : connecting ? (
+          <>
+            <span className="flex items-center gap-2 text-sm text-muted-foreground">
+              <Loader2 className="size-4 animate-spin" /> Waiting for Robinhood…
+            </span>
+            {/* The consent flow can't tell that the browser tab was closed; this is the
+                way out (the daemon otherwise waits out its timeout). */}
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              disabled={disconnect.isPending}
+              onClick={() => disconnect.mutate()}
+            >
+              Cancel
+            </Button>
+          </>
         ) : (
-          <Button
-            type="button"
-            disabled={connect.isPending || st === "connecting"}
-            onClick={() => connect.mutate()}
-          >
-            {(connect.isPending || st === "connecting") && (
-              <Loader2 className="size-4 animate-spin" />
-            )}
+          <Button type="button" onClick={() => connect.mutate()}>
             {st === "error" ? "Retry" : "Connect"}
           </Button>
         )}
