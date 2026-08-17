@@ -149,10 +149,24 @@ export const TELEMETRY_EVENTS = {
   order_submit_resolved: z.strictObject({ result: z.enum(["ok", "rejected", "unknown"]) }),
 
   // broker
+  /** Top of the connect funnel; `connected` / `connect_failed` are the outcomes. The gap
+   *  is attempts with no outcome event: superseded by a later click, still pending, or a
+   *  silent connect that found a dead grant and quietly stayed disconnected. */
+  broker_connect_started: z.strictObject({ mode: z.enum(["interactive", "silent"]) }),
   broker_connected: z.strictObject({}),
   broker_connect_failed: z.strictObject({
     error_name: errorName,
     error_code: errorCode.optional(),
+  }),
+  /**
+   * The poll loop lost the network (laptop sleep/wake, Wi‑Fi blip): once per outage,
+   * with the first failure's code, instead of an `app_error` per failed poll. Not an
+   * error in the app — filter it out of error dashboards. `broker_online` closes it.
+   */
+  broker_offline: z.strictObject({ error_code: errorCode.optional() }),
+  broker_online: z.strictObject({
+    offline_ms: z.number().int().nonnegative(),
+    failed_polls: z.number().int().nonnegative(),
   }),
 
   // autonomy
@@ -304,13 +318,21 @@ export function errorNameOf(err: unknown): string {
 }
 
 /**
- * The machine code of a thrown value (`err.code`), or undefined unless it *already*
- * fits the `errorCode` shape — nothing is coerced or truncated into one, so a `code`
- * holding a message/path is dropped, not leaked. Numeric codes (DOMException) are
- * ignored: meaningless without the class name, which `errorNameOf` carries.
+ * The machine code of a thrown value — `err.code`, or failing that `err.cause.code` —
+ * or undefined unless it *already* fits the `errorCode` shape: nothing is coerced or
+ * truncated into one, so a `code` holding a message/path is dropped, not leaked.
+ * Numeric codes (DOMException) are ignored: meaningless without the class name, which
+ * `errorNameOf` carries.
+ *
+ * The `cause` hop is for undici: every network failure `fetch` throws is a bare
+ * `TypeError: fetch failed` with no code of its own — the useful token
+ * (`ENOTFOUND`, `ECONNRESET`, `ECONNREFUSED`, `UND_ERR_CONNECT_TIMEOUT`, …) sits on
+ * `.cause` (Node also copies it onto the `AggregateError` for dual-stack hosts). One
+ * level only.
  */
 export function errorCodeOf(err: unknown): string | undefined {
-  const code =
-    typeof err === "object" && err !== null ? (err as { code?: unknown }).code : undefined;
+  const codeOn = (v: unknown) =>
+    typeof v === "object" && v !== null ? (v as { code?: unknown }).code : undefined;
+  const code = codeOn(err) ?? codeOn((err as { cause?: unknown } | null)?.cause);
   return errorCode.safeParse(code).success ? (code as string) : undefined;
 }

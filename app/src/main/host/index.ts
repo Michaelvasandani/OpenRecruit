@@ -43,12 +43,19 @@ import { hostLog } from "./log";
 import { clearManifest, writeManifest } from "./manifest";
 import { HostTrpcServer } from "./trpc-server";
 
-/** Open a URL in the user's browser headlessly (no Electron shell). */
+/**
+ * Open a URL in the user's browser headlessly (no Electron shell). Its only caller is
+ * the broker's OAuth consent, so a failure is reported under `broker`: without that, a
+ * consent whose tab never opened is indistinguishable in telemetry from one the user
+ * abandoned (both end in `OAUTH_TIMEOUT`).
+ */
 function openExternal(url: string): void {
   const cmd =
     process.platform === "darwin" ? "open" : process.platform === "win32" ? "start" : "xdg-open";
   execFile(cmd, [url], (err) => {
-    if (err) hostLog.error("openExternal failed", String(err));
+    if (!err) return;
+    hostLog.error("openExternal failed", String(err));
+    analytics.trackError("broker", err, "caught");
   });
 }
 

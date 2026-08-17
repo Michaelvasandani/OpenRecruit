@@ -1,6 +1,6 @@
 import { Database } from "bun:sqlite";
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import type { Account } from "@shared/broker";
+import type { Account, OrderStatus, Portfolio, Position, Quote } from "@shared/broker";
 import { drizzle } from "drizzle-orm/bun-sqlite";
 import type { Db } from "../../db/client";
 import * as schema from "../../db/schema";
@@ -67,8 +67,25 @@ class FakeAdapter {
     this.cancelConnect();
     this.connected = false;
   }
+  /** Set to make the service pick an account and start polling. */
+  account: Account | null = null;
   async listAccounts(): Promise<Account[]> {
+    return this.account ? [this.account] : [];
+  }
+  // ---- the poll's reads: `pollScript` decides whether a poll succeeds or how it fails ----
+  pollScript: () => Promise<void> = async () => {};
+  async getPortfolio(): Promise<Portfolio> {
+    await this.pollScript();
+    return {} as Portfolio;
+  }
+  async getPositions(): Promise<Position[]> {
     return [];
+  }
+  async getQuotes(): Promise<Quote[]> {
+    return [];
+  }
+  async getAgenticOrders(): Promise<{ orders: OrderStatus[]; cursor: string | null }> {
+    return { orders: [], cursor: null };
   }
 }
 
@@ -249,5 +266,152 @@ describe("BrokerService.connect — failure telemetry", () => {
     const failed = client.events.find((e) => e.event === "broker_connect_failed");
     expect(failed?.properties).toMatchObject({ error_name: "TypeError" });
     expect(failed?.properties).not.toHaveProperty("error_code");
+  });
+});
+
+describe("BrokerService.connect — the funnel", () => {
+  test("every attempt opens with broker_connect_started {mode}", async () => {
+    const { svc, adapter, client } = setup();
+    const silent = svc.connect();
+    await tick();
+    adapter.fail(0, new Error("no session"));
+    await silent.catch(() => {});
+    const click = svc.connect({ interactive: true });
+    await tick();
+    adapter.succeed(1);
+    await click;
+    const started = client.events.filter((e) => e.event === "broker_connect_started");
+    expect(started.map((e) => e.properties?.mode)).toEqual(["silent", "interactive"]);
+    // Outcomes still close the funnel as before.
+    expect(client.events.map((e) => e.event)).toContain("broker_connect_failed");
+    expect(client.events.map((e) => e.event)).toContain("broker_connected");
+  });
+});
+
+/** The undici shape the poll loop actually catches on a network drop. */
+const fetchFailed = (code: string) =>
+  new TypeError("fetch failed", { cause: Object.assign(new Error(code), { code }) });
+
+/** Connect with an account so polling is live, then return the service + adapter. */
+async function connectedWithAccount() {
+  const s = setup();
+  s.adapter.account = { accountNumber: "A1", agentic: true } as Account;
+  const c = s.svc.connect();
+  await tick();
+  s.adapter.succeed(0);
+  await c;
+  expect(s.svc.getStatus()).toBe("connected");
+  s.client.events.length = 0; // look only at what polling produces from here
+  return s;
+}
+/** Drive one poll. (maxAge 0 is "cache older than now" — let the clock tick past the
+ *  previous poll's write first, or it short-circuits to the cache within the same ms.) */
+const poll = async (svc: BrokerService) => {
+  await new Promise((r) => setTimeout(r, 2));
+  await svc.getPositionsLive(0);
+};
+const events = (client: { events: { event: string }[] }) => client.events.map((e) => e.event);
+
+describe("BrokerService poll loop — network outages are not app errors", () => {
+  test("a transient network failure → one broker_offline, no app_error", async () => {
+    const { svc, adapter, client } = await connectedWithAccount();
+    adapter.pollScript = async () => {
+      throw fetchFailed("ECONNRESET");
+    };
+    await poll(svc);
+    expect(events(client)).toEqual(["broker_offline"]);
+    expect(client.events[0].properties).toMatchObject({ error_code: "ECONNRESET" });
+    // Status is untouched: the panel keeps showing cached data.
+    expect(svc.getStatus()).toBe("connected");
+  });
+
+  test("consecutive failures in one outage stay one event; recovery emits broker_online with counts", async () => {
+    const { svc, adapter, client } = await connectedWithAccount();
+    // Last night's shape: 5 failed polls in a row while the laptop's Wi‑Fi came back.
+    adapter.pollScript = async () => {
+      throw fetchFailed("ENOTFOUND");
+    };
+    for (let i = 0; i < 5; i++) await poll(svc);
+    expect(events(client)).toEqual(["broker_offline"]);
+    // Network is back.
+    adapter.pollScript = async () => {};
+    await poll(svc);
+    expect(events(client)).toEqual(["broker_offline", "broker_online"]);
+    expect(client.events[1].properties).toMatchObject({ failed_polls: 5 });
+    expect(client.events[1].properties?.offline_ms).toBeGreaterThanOrEqual(0);
+    // A second, separate outage reports again.
+    adapter.pollScript = async () => {
+      throw fetchFailed("ECONNREFUSED");
+    };
+    await poll(svc);
+    expect(events(client)).toEqual(["broker_offline", "broker_online", "broker_offline"]);
+    expect(client.events[2].properties).toMatchObject({ error_code: "ECONNREFUSED" });
+  });
+
+  test("healthy polls emit nothing", async () => {
+    const { svc, client } = await connectedWithAccount();
+    await poll(svc);
+    await poll(svc);
+    expect(events(client)).toEqual([]);
+  });
+
+  test("a non-network failure is still an app_error — every time", async () => {
+    const { svc, adapter, client } = await connectedWithAccount();
+    // e.g. a mapping bug thrown from our own code.
+    adapter.pollScript = async () => {
+      throw new TypeError("Cannot read properties of undefined (reading 'equity')");
+    };
+    await poll(svc);
+    await poll(svc);
+    expect(events(client)).toEqual(["app_error", "app_error"]);
+    expect(client.events[0].properties).toMatchObject({
+      subsystem: "broker",
+      error_name: "TypeError",
+      source: "caught",
+    });
+  });
+
+  test("disconnect closes the books: no broker_online spanning a deliberate disconnect", async () => {
+    const { svc, adapter, client } = await connectedWithAccount();
+    adapter.pollScript = async () => {
+      throw fetchFailed("ECONNRESET");
+    };
+    await poll(svc);
+    await svc.disconnect();
+    // Reconnect and poll fine: no stale broker_online from the pre-disconnect outage.
+    adapter.pollScript = async () => {};
+    const again = svc.connect();
+    await tick();
+    adapter.succeed(1);
+    await again;
+    await poll(svc);
+    expect(events(client).filter((e) => e === "broker_online")).toEqual([]);
+  });
+
+  test("a poll in flight when disconnect() runs reports nothing and doesn't reopen tracking", async () => {
+    const { svc, adapter, client } = await connectedWithAccount();
+    // Hold a poll mid-request, disconnect under it, then let it fail (as its closed
+    // client would make it): no app_error, no broker_offline, and a later reconnect's
+    // first good poll must not emit a broker_online spanning the disconnect.
+    let failPoll!: () => void;
+    adapter.pollScript = () =>
+      new Promise<void>((_, reject) => {
+        failPoll = () => reject(fetchFailed("ECONNRESET"));
+      });
+    const inflight = poll(svc);
+    await new Promise((r) => setTimeout(r, 5));
+    await svc.disconnect();
+    failPoll();
+    await inflight;
+    expect(events(client)).toEqual([]);
+    adapter.pollScript = async () => {};
+    const again = svc.connect();
+    await tick();
+    adapter.succeed(1);
+    await again;
+    await poll(svc);
+    expect(
+      events(client).filter((e) => e !== "broker_connect_started" && e !== "broker_connected"),
+    ).toEqual([]);
   });
 });
