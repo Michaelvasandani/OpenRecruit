@@ -29,6 +29,14 @@ import { NotificationKind } from "./notify";
 /** A bare identifier — an Error class name. Cannot carry a message/stack/path. */
 const errorName = z.string().regex(/^[A-Za-z0-9_$]{1,64}$/);
 
+/**
+ * A machine error code — `err.code` when it is a bare identifier (Node system codes
+ * like `EADDRINUSE`/`ECONNREFUSED`, `ERR_*`, our own `OAUTH_*`). Bounded token, no
+ * spaces: structurally unable to carry a message. It's the one field that turns a
+ * bare `Error` (whose class name says nothing) into something diagnosable.
+ */
+const errorCode = z.string().regex(/^[A-Za-z0-9_]{1,48}$/);
+
 /** A semver-ish version string. */
 const version = z.string().regex(/^\d+\.\d+\.\d+(?:-[\w.]+)?$/);
 
@@ -142,7 +150,10 @@ export const TELEMETRY_EVENTS = {
 
   // broker
   broker_connected: z.strictObject({}),
-  broker_connect_failed: z.strictObject({ error_name: errorName }),
+  broker_connect_failed: z.strictObject({
+    error_name: errorName,
+    error_code: errorCode.optional(),
+  }),
 
   // autonomy
   schedule_created: z.strictObject({
@@ -175,6 +186,7 @@ export const TELEMETRY_EVENTS = {
   app_error: z.strictObject({
     subsystem: ErrorSubsystem,
     error_name: errorName,
+    error_code: errorCode.optional(),
     source: ErrorSource.optional(),
     frames: frames.optional(),
   }),
@@ -289,4 +301,16 @@ export function errorNameOf(err: unknown): string {
   // Keep only identifier chars; guarantee the `errorName` regex passes.
   const clean = name.replace(/[^A-Za-z0-9_$]/g, "").slice(0, 64);
   return clean || "Error";
+}
+
+/**
+ * The machine code of a thrown value (`err.code`), or undefined unless it *already*
+ * fits the `errorCode` shape — nothing is coerced or truncated into one, so a `code`
+ * holding a message/path is dropped, not leaked. Numeric codes (DOMException) are
+ * ignored: meaningless without the class name, which `errorNameOf` carries.
+ */
+export function errorCodeOf(err: unknown): string | undefined {
+  const code =
+    typeof err === "object" && err !== null ? (err as { code?: unknown }).code : undefined;
+  return errorCode.safeParse(code).success ? (code as string) : undefined;
 }

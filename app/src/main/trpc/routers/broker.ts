@@ -19,6 +19,12 @@ export const brokerRouter = router({
     .input(z.object({ symbol: z.string(), maxAgeMs: z.number().default(5000) }))
     .query(({ ctx, input }) => ctx.broker.getQuote(input.symbol, input.maxAgeMs)),
 
+  /** Reset/Disconnect: abandon a pending consent, forget the session (§6.6). */
+  disconnect: publicProcedure.mutation(async ({ ctx }) => {
+    await ctx.broker.disconnect();
+    return { status: ctx.broker.getStatus() };
+  }),
+
   refreshNow: publicProcedure.mutation(async ({ ctx }) => {
     await ctx.broker.getPositionsLive(0);
     return { ok: true };

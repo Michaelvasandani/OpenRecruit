@@ -1,4 +1,4 @@
-import { errorNameOf } from "@shared/analytics";
+import { errorCodeOf, errorNameOf } from "@shared/analytics";
 import type {
   Account,
   BrokerConnectionStatus,
@@ -13,7 +13,7 @@ import { brokerCache } from "../../db/schema";
 import { analytics } from "../analytics";
 import { bus } from "../event-bus";
 import type { SettingsService } from "../settings";
-import type { BrokerAdapter } from "./adapter";
+import { type BrokerAdapter, ConnectSuperseded } from "./adapter";
 import { orderNotification, terminalTransition } from "./order-notify";
 
 /**
@@ -65,6 +65,14 @@ export class BrokerService {
   private ledger = new Map<string, OrderStatus>();
   /** When the last full-history sweep ran; 0 forces a sweep on the next poll. */
   private lastFullSweepAt = 0;
+  /**
+   * The connect in flight, if any — two never run at once (the adapter's consent flow
+   * relies on that). A silent connect joins it; an interactive one (a Connect click)
+   * supersedes it, since a pending flow is most likely a browser consent the user
+   * abandoned. Best-effort: if the click lands before the pending flow has bound its
+   * loopback (a tick or two), the cancel is a no-op and the click just waits for it.
+   */
+  private inflight: Promise<void> | null = null;
 
   constructor(
     private db: Db,
@@ -111,7 +119,26 @@ export class BrokerService {
    * omits it and just stays disconnected on a dead grant (§6.6).
    */
   async connect(opts: { interactive?: boolean } = {}): Promise<void> {
+    // Join or supersede whatever is in flight, then re-check — another caller may
+    // have started a new attempt while we waited.
+    while (this.inflight) {
+      if (this.status === "connected") return;
+      if (!opts.interactive) return this.inflight;
+      const current = this.inflight;
+      this.adapter.cancelConnect?.();
+      await current.catch(() => {});
+    }
     if (this.status === "connected") return;
+    const promise = this.runConnect(opts);
+    this.inflight = promise;
+    try {
+      await promise;
+    } finally {
+      if (this.inflight === promise) this.inflight = null;
+    }
+  }
+
+  private async runConnect(opts: { interactive?: boolean }): Promise<void> {
     this.setStatus("connecting");
     try {
       await this.adapter.connect(opts);
@@ -129,10 +156,36 @@ export class BrokerService {
       await this.pollOnce();
       this.startPolling();
     } catch (err) {
+      // A newer connect took this one over (the user clicked Connect again): not a
+      // failure — the newer attempt owns the status now, so leave it and report nothing.
+      // The abandoned call resolves quietly rather than surfacing a spurious error.
+      if (err instanceof ConnectSuperseded) return;
       this.setStatus("error");
-      analytics.track("broker_connect_failed", { error_name: errorNameOf(err) });
+      const code = errorCodeOf(err);
+      analytics.track("broker_connect_failed", {
+        error_name: errorNameOf(err),
+        ...(code ? { error_code: code } : {}),
+      });
       throw err;
     }
+  }
+
+  /**
+   * The explicit Reset/Disconnect action: abandon a consent still waiting on the
+   * browser (the user closed the tab — nothing else can unstick "connecting"), forget
+   * the stored session, stop polling. Status → `disconnected`, so the Connect CTA comes
+   * back and the next Connect is a fresh consent. Also how a user switches accounts.
+   */
+  async disconnect(): Promise<void> {
+    this.adapter.cancelConnect?.();
+    // Let the in-flight connect unwind (a superseded one resolves quietly and leaves the
+    // status alone — it's ours to set below).
+    await this.inflight?.catch(() => {});
+    this.stopPolling();
+    this.adapter.reset();
+    this.account = null;
+    this.ledger.clear();
+    this.setStatus("disconnected");
   }
 
   /** True if we already have tokens and can connect without a browser. */

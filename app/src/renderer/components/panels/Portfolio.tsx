@@ -13,6 +13,7 @@ const MASK = "****";
 export function Portfolio() {
   const status = useBrokerStatus();
   const connect = trpc.onboarding.connectBroker.useMutation();
+  const disconnect = trpc.broker.disconnect.useMutation();
   const data = useBrokerData();
   const balancesHidden = useUIStore((s) => s.balancesHidden);
   const toggleBalances = useUIStore((s) => s.toggleBalances);
@@ -42,8 +43,18 @@ export function Portfolio() {
 
   if (status.status === "connecting") {
     return (
-      <div className="flex items-center gap-2 p-4 text-sm text-muted-foreground">
-        <Loader2 className="size-4 animate-spin" /> Connecting…
+      <div className="flex items-center gap-3 p-4 text-sm text-muted-foreground">
+        <Loader2 className="size-4 animate-spin" /> Waiting for Robinhood…
+        {/* The consent can't tell the browser tab was closed; Cancel is the way out. */}
+        <Button
+          type="button"
+          variant="outline"
+          size="sm"
+          disabled={disconnect.isPending}
+          onClick={() => disconnect.mutate()}
+        >
+          Cancel
+        </Button>
       </div>
     );
   }

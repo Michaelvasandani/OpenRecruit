@@ -2,6 +2,7 @@ import { Database } from "bun:sqlite";
 import { afterEach, describe, expect, test } from "bun:test";
 import {
   assetTypeOf,
+  errorCodeOf,
   errorNameOf,
   orderKindOf,
   orderTypeOf,
@@ -177,6 +178,38 @@ describe("AnalyticsService", () => {
       subsystem: "host",
       source: "unhandled_rejection",
     });
+    // No code on the error → the prop is absent, not null/empty.
+    expect(fake.events[0].properties).not.toHaveProperty("error_code");
+  });
+
+  test("trackError carries err.code for a Node system error whose stack has no bundle frame", () => {
+    const fake = new FakeClient();
+    const svc = makeService(new SettingsService(memDb()), fake);
+    // The exact shape of a `listen EADDRINUSE` rejection: plain Error, code set, and a
+    // stack made only of node:internal frames — so `frames` is empty and, before
+    // error_code, PostHog received nothing that said what went wrong.
+    const err = Object.assign(
+      new Error("listen EADDRINUSE: address already in use 127.0.0.1:8771"),
+      {
+        code: "EADDRINUSE",
+      },
+    );
+    err.stack =
+      "Error: listen EADDRINUSE: address already in use 127.0.0.1:8771\n" +
+      "    at Server.setupListenHandle [as _listen2] (node:net:1940:16)\n" +
+      "    at listenInCluster (node:net:1997:12)\n" +
+      "    at node:net:2206:7\n" +
+      "    at process.processTicksAndRejections (node:internal/process/task_queues:89:21)";
+    svc.trackError("host", err, "unhandled_rejection");
+    expect(fake.events).toHaveLength(1);
+    expect(fake.events[0].properties).toMatchObject({
+      subsystem: "host",
+      error_name: "Error",
+      error_code: "EADDRINUSE",
+      source: "unhandled_rejection",
+    });
+    expect(fake.events[0].properties).not.toHaveProperty("frames");
+    expect(JSON.stringify(fake.events[0].properties)).not.toContain("127.0.0.1");
   });
 });
 
@@ -214,6 +247,38 @@ describe("analytics allowlist + normalizers", () => {
       error_name: "has spaces and /paths",
     });
     expect(bad.success).toBe(false);
+  });
+
+  test("errorCodeOf takes err.code only when it is already a bare identifier", () => {
+    // Node system errors: class is plain `Error`, the code is the whole story.
+    const sys = Object.assign(new Error("listen EADDRINUSE: address already in use"), {
+      code: "EADDRINUSE",
+      errno: -48,
+      syscall: "listen",
+    });
+    expect(errorCodeOf(sys)).toBe("EADDRINUSE");
+    expect(errorCodeOf(Object.assign(new Error("x"), { code: "ERR_SOCKET_CLOSED" }))).toBe(
+      "ERR_SOCKET_CLOSED",
+    );
+    // No code → undefined (never invents one).
+    expect(errorCodeOf(new Error("plain"))).toBeUndefined();
+    expect(errorCodeOf(new TypeError("fetch failed"))).toBeUndefined();
+    expect(errorCodeOf(null)).toBeUndefined();
+    expect(errorCodeOf("EADDRINUSE")).toBeUndefined();
+    // A code that isn't a bare identifier is dropped whole, not truncated/coerced.
+    expect(
+      errorCodeOf(Object.assign(new Error("x"), { code: "bad code /Users/a" })),
+    ).toBeUndefined();
+    expect(errorCodeOf(Object.assign(new Error("x"), { code: "x".repeat(49) }))).toBeUndefined();
+    // Numeric codes (DOMException.code) are ignored.
+    expect(errorCodeOf(Object.assign(new Error("x"), { code: 18 }))).toBeUndefined();
+    // broker_connect_failed carries the same field.
+    expect(
+      TELEMETRY_EVENTS.broker_connect_failed.safeParse({
+        error_name: "OAuthFlowError",
+        error_code: "OAUTH_TIMEOUT",
+      }).success,
+    ).toBe(true);
   });
 
   test("app_error source accepts the enum and rejects free text", () => {

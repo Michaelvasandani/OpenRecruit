@@ -7,6 +7,18 @@ export interface McpServerConfig {
 }
 
 /**
+ * Thrown to a pending interactive connect when a newer one takes over (the user
+ * clicked Connect again, most likely after abandoning the browser consent). Not a
+ * broker failure: the service neither reports it nor touches the connection status.
+ */
+export class ConnectSuperseded extends Error {
+  constructor() {
+    super("connect superseded by a newer connect");
+    this.name = "ConnectSuperseded";
+  }
+}
+
+/**
  * A trading execution + read backend. v1 implements Robinhood only, but the read
  * panel, poller, and faucet all speak this interface so a second broker (e.g.
  * Alpaca) slots in later.
@@ -21,6 +33,17 @@ export interface BrokerAdapter {
    * stays disconnected — never pops a browser unprompted.
    */
   connect(opts?: { interactive?: boolean }): Promise<void>;
+  /**
+   * Abandon an interactive connect waiting on the user (browser consent): its pending
+   * `connect()` rejects with `ConnectSuperseded`. No-op when nothing is pending.
+   */
+  cancelConnect?(): void;
+  /**
+   * Forget the session: abandon any pending consent, drop stored tokens + client
+   * registration, close the live connection. The next `connect({interactive})` is a
+   * fresh consent. Backs the user's Reset/Disconnect action.
+   */
+  reset(): void;
   isConnected(): boolean;
   listAccounts(): Promise<Account[]>;
   getPortfolio(accountNumber: string): Promise<Portfolio>;
