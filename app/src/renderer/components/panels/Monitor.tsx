@@ -5,6 +5,7 @@ import { useMonitor } from "../../hooks/useSchedules";
 import { ago, dateTime, describeCron, until } from "../../lib/format";
 import { cn } from "../../lib/utils";
 import { useUIStore } from "../../stores/ui";
+import { AutonomyHint } from "../schedule/AutonomyInfo";
 import { Badge } from "../ui/badge";
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -30,18 +31,19 @@ export function MonitorPanel() {
 
   return (
     <section className="flex flex-col p-4">
-      {hasUpcoming && (
-        <>
-          <SubLabel>Active</SubLabel>
-          <div className="flex flex-col">
-            {upcomingCrons.map((s) => (
-              <UpcomingCronRow key={s.id} schedule={s} />
-            ))}
-            {monitors.map((m) => (
-              <UpcomingMonitorRow key={m.id} monitor={m} />
-            ))}
-          </div>
-        </>
+      <SubLabel>Active</SubLabel>
+      {hasUpcoming ? (
+        <div className="flex flex-col">
+          {upcomingCrons.map((s) => (
+            <UpcomingCronRow key={s.id} schedule={s} />
+          ))}
+          {monitors.map((m) => (
+            <UpcomingMonitorRow key={m.id} monitor={m} />
+          ))}
+        </div>
+      ) : (
+        // Nothing armed: nudge the user to ask, and explain the two kinds on click.
+        <AutonomyHint />
       )}
 
       {/* History always shows (like the Activity tab), with an empty state when there

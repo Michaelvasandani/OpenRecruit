@@ -2,6 +2,7 @@ import type { Agent } from "@shared/agent";
 import type { Monitor, Schedule } from "@shared/schedule";
 import { CalendarOff, ChevronRight, Clock, Radio } from "lucide-react";
 import { type CSSProperties, useMemo, useState } from "react";
+import { AutonomyInfoButton } from "../components/schedule/AutonomyInfo";
 import { Tooltip, TooltipContent, TooltipTrigger } from "../components/ui/tooltip";
 import { useAgents } from "../hooks/useAgents";
 import { useSchedules } from "../hooks/useSchedules";
@@ -370,6 +371,7 @@ function EmptyState() {
         Agents set up their own timers and monitors to notify themselves. Just ask your agent to set
         one up.
       </p>
+      <AutonomyInfoButton />
     </div>
   );
 }
