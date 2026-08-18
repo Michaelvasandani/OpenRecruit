@@ -1,5 +1,6 @@
 import { Database } from "bun:sqlite";
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
+import { ErrorCode, McpError } from "@modelcontextprotocol/sdk/types.js";
 import type { Account, OrderStatus, Portfolio, Position, Quote } from "@shared/broker";
 import { drizzle } from "drizzle-orm/bun-sqlite";
 import type { Db } from "../../db/client";
@@ -322,6 +323,19 @@ describe("BrokerService poll loop — network outages are not app errors", () =>
     expect(events(client)).toEqual(["broker_offline"]);
     expect(client.events[0].properties).toMatchObject({ error_code: "ECONNRESET" });
     // Status is untouched: the panel keeps showing cached data.
+    expect(svc.getStatus()).toBe("connected");
+  });
+
+  test("a sleep-interrupted poll (MCP RequestTimeout) is broker_offline, labelled by enum name", async () => {
+    const { svc, adapter, client } = await connectedWithAccount();
+    // The POST connected, then the machine froze mid-request → the SDK's 60 s timer.
+    adapter.pollScript = async () => {
+      throw new McpError(ErrorCode.RequestTimeout, "Request timed out");
+    };
+    await poll(svc);
+    expect(events(client)).toEqual(["broker_offline"]);
+    // The numeric MCP code becomes its enum name instead of being dropped.
+    expect(client.events[0].properties).toMatchObject({ error_code: "RequestTimeout" });
     expect(svc.getStatus()).toBe("connected");
   });
 

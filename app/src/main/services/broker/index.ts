@@ -1,4 +1,4 @@
-import { errorCodeOf, errorNameOf } from "@shared/analytics";
+import { errorNameOf } from "@shared/analytics";
 import type {
   Account,
   BrokerConnectionStatus,
@@ -14,7 +14,7 @@ import { analytics } from "../analytics";
 import { bus } from "../event-bus";
 import type { SettingsService } from "../settings";
 import { type BrokerAdapter, ConnectSuperseded } from "./adapter";
-import { isTransientNetworkError } from "./network-error";
+import { brokerErrorCode, isTransientNetworkError } from "./network-error";
 import { orderNotification, terminalTransition } from "./order-notify";
 
 /**
@@ -165,7 +165,7 @@ export class BrokerService {
       // The abandoned call resolves quietly rather than surfacing a spurious error.
       if (err instanceof ConnectSuperseded) return;
       this.setStatus("error");
-      const code = errorCodeOf(err);
+      const code = brokerErrorCode(err);
       analytics.track("broker_connect_failed", {
         error_name: errorNameOf(err),
         ...(code ? { error_code: code } : {}),
@@ -301,7 +301,7 @@ export class BrokerService {
     this.failedPolls++;
     if (this.offlineSince !== null) return;
     this.offlineSince = Date.now();
-    const code = errorCodeOf(err);
+    const code = brokerErrorCode(err);
     analytics.track("broker_offline", code ? { error_code: code } : {});
   }
 
