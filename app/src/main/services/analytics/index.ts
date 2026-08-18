@@ -54,8 +54,10 @@ const REPORTABLE_SETTING_KEYS = [
  *
  * Privacy is structural: `track()` validates every payload against the strict
  * `TELEMETRY_EVENTS` allowlist and drops anything that doesn't parse. The distinct
- * id is a random per-install UUID (never a machine/user identifier); events set
- * `$process_person_profile: false` so PostHog keeps them anonymous.
+ * id is a random per-install UUID (never a machine/user identifier). Events create a
+ * PostHog person profile keyed by that anonymous id, carrying only the build metadata
+ * we already send as event props (version/platform/arch) — never a machine or user
+ * identifier. The profile is what makes Persons, cohorts and lifecycle work.
  *
  * Disabled ⇔ `client` is null (no key / dev / not started) **or** the user opted out
  * (`enabled`), checked live at capture time via `settings:changed`.
@@ -65,6 +67,7 @@ export class AnalyticsService {
   private enabled = false;
   private distinctId = "";
   private superProps: Record<string, unknown> = {};
+  private personProps: Record<string, unknown> = {};
   private lastSettings: AppSettings | null = null;
   private unsubs: Array<() => void> = [];
   private started = false;
@@ -108,6 +111,17 @@ export class AnalyticsService {
       platform: process.platform,
       arch: process.arch,
     };
+    // Person-profile properties: the same values we already send as event props, no
+    // new data. `$set` tracks the install's current build; `$set_once` records where
+    // it started — only the first event ever to land for this id sets those, so they
+    // survive upgrades and give "new vs existing install" a real anchor.
+    this.personProps = {
+      $set: { ...this.superProps },
+      $set_once: {
+        first_seen_version: this.superProps.app_version,
+        first_seen_at: new Date().toISOString(),
+      },
+    };
     this.unsubs.push(bus.onEvent("settings:changed", (next) => this.onSettingsChanged(next)));
     this.unsubs.push(bus.onEvent("gui:present", () => this.track("app_opened")));
   }
@@ -120,7 +134,7 @@ export class AnalyticsService {
   /**
    * Capture a telemetry event. Validated against the allowlist; a payload with an
    * unknown/extra prop (or an unknown event) is **dropped whole** — never partially
-   * sent. Super-props + the anonymous flag are stamped here, not by callers.
+   * sent. Super-props + person properties are stamped here, not by callers.
    */
   track<E extends TelemetryEvent>(event: E, props?: TelemetryProps<E>): void {
     if (!this.client || !this.enabled) return;
@@ -141,7 +155,7 @@ export class AnalyticsService {
         properties: {
           ...(parsed.data as Record<string, unknown>),
           ...this.superProps,
-          $process_person_profile: false,
+          ...this.personProps,
         },
       });
     } catch (err) {

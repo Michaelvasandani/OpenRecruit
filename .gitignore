@@ -28,3 +28,5 @@ CLAUDE.md
 # Local dev tooling and example env (not part of the public release)
 dev.sh
 .env.example
+
+/scripts/
