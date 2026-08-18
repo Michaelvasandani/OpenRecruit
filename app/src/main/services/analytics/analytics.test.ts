@@ -70,7 +70,7 @@ describe("AnalyticsService", () => {
     expect(svc.anonymousId).toMatch(/[0-9a-f-]{36}/);
   });
 
-  test("allowlisted event stamps super-props + the anonymous flag", () => {
+  test("allowlisted event stamps super-props + person properties", () => {
     const fake = new FakeClient();
     const svc = makeService(new SettingsService(memDb()), fake);
     svc.track("agent_created", { template: "dca", harness: "claude", approval_mode: "auto" });
@@ -83,9 +83,25 @@ describe("AnalyticsService", () => {
       approval_mode: "auto",
       platform: process.platform,
       arch: process.arch,
-      $process_person_profile: false,
     });
     expect(e.properties?.app_version).toBeDefined();
+    // Person profiles must be created: the personless flag would suppress them.
+    expect(e.properties).not.toHaveProperty("$process_person_profile");
+    // $set/$set_once are stamped AFTER Zod validation, so they are the one channel
+    // that bypasses the allowlist. Pin their key sets exactly: a subset match would let
+    // a newly added super-prop reach PostHog without anyone reviewing it.
+    const set = e.properties?.$set as Record<string, unknown>;
+    expect(Object.keys(set).sort()).toEqual(["app_version", "arch", "platform"]);
+    expect(set).toMatchObject({
+      app_version: e.properties?.app_version,
+      platform: process.platform,
+      arch: process.arch,
+    });
+    // The install's origin via $set_once, which never overwrites.
+    const setOnce = e.properties?.$set_once as Record<string, unknown>;
+    expect(Object.keys(setOnce).sort()).toEqual(["first_seen_at", "first_seen_version"]);
+    expect(setOnce.first_seen_version).toBe(e.properties?.app_version);
+    expect(String(setOnce.first_seen_at)).toMatch(/^\d{4}-\d{2}-\d{2}T/);
   });
 
   test("an event with an extra prop is dropped whole (no PII leak)", () => {
