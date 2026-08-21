@@ -7,7 +7,10 @@
     <a href="https://github.com/OpenTradeOSS/OpenTrade/releases"><img src="https://img.shields.io/github/v/release/OpenTradeOSS/OpenTrade?style=flat&logo=github" alt="Latest release" /></a>
     <a href="LICENSE"><img src="https://img.shields.io/badge/license-Elastic%20License%202.0-blue?style=flat" alt="License" /></a>
     <a href="https://discord.gg/F63YFPRtq"><img src="https://img.shields.io/badge/Discord-555?logo=discord" alt="Discord" /></a>
-    <a href="https://www.producthunt.com/products/opentrade"><img src="https://img.shields.io/badge/Product%20Hunt-555?logo=producthunt" alt="Product Hunt" /></a>
+  </p>
+
+  <p>
+    <a href="https://www.producthunt.com/products/opentrade?embed=true&amp;utm_source=badge-featured&amp;utm_medium=badge&amp;utm_campaign=badge-opentrade" target="_blank" rel="noopener noreferrer"><img alt="OpenTrade - Open-source trading harness for Claude Code / Codex. | Product Hunt" width="250" height="54" src="https://api.producthunt.com/widgets/embed-image/v1/featured.svg?post_id=1223212&amp;theme=light&amp;t=1787349340884"></a>
   </p>
 
   <img src="assets/demo.png" width="820" alt="OpenTrade app — agent sidebar, live terminal, and portfolio panel" />
