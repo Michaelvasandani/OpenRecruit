@@ -10,6 +10,7 @@ import type {
 import { eq } from "drizzle-orm";
 import type { Db } from "../../db/client";
 import { brokerCache } from "../../db/schema";
+import { hostLog } from "../../host/log";
 import { analytics } from "../analytics";
 import { bus } from "../event-bus";
 import type { SettingsService } from "../settings";
@@ -29,6 +30,43 @@ const FULL_SWEEP_INTERVAL_MS = 24 * 60 * 60 * 1000;
 // Robinhood's MCP rate limits are generous, so we poll often for a near-live
 // panel. The cadence (focused-during-market-hours vs otherwise) is user-tunable
 // in Settings; see SettingsService.pollInterval{Focused,Blurred}Ms.
+
+/**
+ * A broker failure rendered for the **local** host log: class, machine code, message,
+ * and the `cause` chain that carries the real reason for a wrapped `fetch failed`.
+ *
+ * `host.log` never leaves the machine — telemetry sends only the allowlisted class,
+ * code and frames — so this is the one place the actual message survives, and the thing
+ * that makes a poll failure diagnosable after the fact instead of only countable.
+ * Bounded in depth and length: the log is append-only and never rotated, so a verbose
+ * MCP payload must not be able to bloat it.
+ */
+function describeError(err: unknown): string {
+  // Every read is guarded: this runs *first* in pollOnce's catch, so a throw here would
+  // skip the telemetry below and convert a handled poll failure into an unhandled
+  // rejection. A null-prototype object makes `String()` throw, and a `message`/`code`
+  // getter can throw anything at all.
+  try {
+    const parts: string[] = [];
+    let cur: unknown = err;
+    for (let depth = 0; cur != null && depth < 3; depth++) {
+      const e = cur as { message?: unknown; code?: unknown; cause?: unknown };
+      let part: string;
+      try {
+        const code = e.code === undefined ? "" : ` (code=${String(e.code)})`;
+        const msg = typeof e.message === "string" ? e.message : String(cur);
+        part = `${errorNameOf(cur)}${code}: ${msg}`;
+      } catch {
+        part = "<unprintable>";
+      }
+      parts.push(part);
+      cur = e.cause;
+    }
+    return parts.join(" ← ").slice(0, 500);
+  } catch {
+    return "<unprintable>";
+  }
+}
 
 /** True during NY regular + extended hours on a weekday (holidays not handled). */
 function marketActive(now = new Date()): boolean {
@@ -277,18 +315,59 @@ export class BrokerService {
       updated.push("agentic_orders");
 
       bus.emitEvent("broker:updated", { keys: updated });
+      this.notePollRecovered();
       this.noteOnline();
     } catch (err) {
-      console.error("[broker] poll failed", err);
+      // `console.error` here went to the detached host's stdout, i.e. nowhere: the log
+      // file had no record of a poll failure at all. hostLog is the only durable sink.
+      this.logPollFailure(describeError(err));
       // A poll that was in flight when disconnect() ran fails by design (its client was
       // closed under it) — nothing to report, and it must not reopen outage tracking.
       if (this.status !== "connected") return;
       // Network outage (laptop sleep/wake, Wi‑Fi blip) → broker_offline; else app_error.
       if (isTransientNetworkError(err)) this.noteOffline(err);
-      else analytics.trackError("broker", err, "caught");
+      else analytics.trackError("broker", err, "caught", brokerErrorCode(err));
     } finally {
       this.polling = false;
     }
+  }
+
+  // ---- poll-failure logging (deduped) ----
+
+  /** The last failure written to host.log, and how many identical ones followed it. */
+  private lastFailureLog: string | null = null;
+  private suppressedFailures = 0;
+
+  /**
+   * Log a poll failure once per *run* of identical failures. `host.log` is append-only
+   * and never rotated, and the poll runs every 5–10 s, so logging every failure would
+   * let one persistent fault (a revoked grant, a laptop offline overnight) grow the file
+   * unboundedly — megabytes a day. A change in the failure is always logged; a repeat is
+   * counted and reported once on recovery. This mirrors the dedup `broker_offline`
+   * already applies to telemetry.
+   */
+  private logPollFailure(description: string): void {
+    if (description === this.lastFailureLog) {
+      this.suppressedFailures++;
+      return;
+    }
+    if (this.lastFailureLog !== null) this.flushSuppressedFailures();
+    this.lastFailureLog = description;
+    hostLog.warn(`broker poll failed: ${description}`);
+  }
+
+  /** First success after failures: close the books so the next failure logs again. */
+  private notePollRecovered(): void {
+    if (this.lastFailureLog === null) return;
+    this.flushSuppressedFailures();
+    this.lastFailureLog = null;
+  }
+
+  private flushSuppressedFailures(): void {
+    if (this.suppressedFailures > 0) {
+      hostLog.info(`broker poll: ${this.suppressedFailures} further identical failure(s)`);
+    }
+    this.suppressedFailures = 0;
   }
 
   // ---- outage tracking (poll loop) ----

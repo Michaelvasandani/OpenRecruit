@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import {
+  asErrorCode,
   type ErrorSource,
   type ErrorSubsystem,
   errorCodeOf,
@@ -172,10 +173,21 @@ export class AnalyticsService {
    * The code matters most for async Node system errors: their stack is entirely
    * `node:internal` frames (so `frames` is empty) and their class is plain `Error`,
    * leaving `error_code` as the only thing that says what actually went wrong.
+   *
+   * `codeOverride` is for a subsystem that knows the code by a route `errorCodeOf`
+   * cannot take — the broker's `brokerErrorCode`, which resolves an `McpError`'s
+   * *numeric* code (`-32001`) to its enum name. Without it those errors reach us as a
+   * bare class name with no code at all. It is re-gated through `asErrorCode`, so an
+   * override can only ever narrow to what the allowlist already accepts.
    */
-  trackError(subsystem: ErrorSubsystem, err: unknown, source: ErrorSource = "caught"): void {
+  trackError(
+    subsystem: ErrorSubsystem,
+    err: unknown,
+    source: ErrorSource = "caught",
+    codeOverride?: string,
+  ): void {
     const frames = sanitizeStack(err);
-    const code = errorCodeOf(err);
+    const code = asErrorCode(codeOverride) ?? errorCodeOf(err);
     this.track("app_error", {
       subsystem,
       error_name: errorNameOf(err),

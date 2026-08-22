@@ -385,6 +385,37 @@ describe("BrokerService poll loop — network outages are not app errors", () =>
     });
   });
 
+  test("an unprintable thrown value still reports — logging must not eat the telemetry", async () => {
+    const { svc, adapter, client } = await connectedWithAccount();
+    // A null-prototype object makes `String()` throw. The failure description is built
+    // first in the catch, so an unguarded throw there would skip trackError entirely and
+    // turn a handled poll failure into an unhandled rejection.
+    adapter.pollScript = async () => {
+      throw Object.create(null);
+    };
+    await poll(svc);
+    expect(events(client)).toEqual(["app_error"]);
+    expect(client.events[0].properties).toMatchObject({ subsystem: "broker", source: "caught" });
+  });
+
+  test("a server-side McpError app_error is labelled by enum name, not left bare", async () => {
+    const { svc, adapter, client } = await connectedWithAccount();
+    // Not one of the transient MCP codes, so it stays an app_error — the bucket that in
+    // production arrived as `McpError` with no code at all, because an McpError's `code`
+    // is numeric (-32603) and the allowlist drops numbers. The broker resolves it.
+    adapter.pollScript = async () => {
+      throw new McpError(ErrorCode.InternalError, "Internal error");
+    };
+    await poll(svc);
+    expect(events(client)).toEqual(["app_error"]);
+    expect(client.events[0].properties).toMatchObject({
+      subsystem: "broker",
+      error_name: "McpError",
+      error_code: "InternalError",
+      source: "caught",
+    });
+  });
+
   test("disconnect closes the books: no broker_online spanning a deliberate disconnect", async () => {
     const { svc, adapter, client } = await connectedWithAccount();
     adapter.pollScript = async () => {

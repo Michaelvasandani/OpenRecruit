@@ -41,10 +41,16 @@ const errorCode = z.string().regex(/^[A-Za-z0-9_]{1,48}$/);
 const version = z.string().regex(/^\d+\.\d+\.\d+(?:-[\w.]+)?$/);
 
 /**
- * A sanitized stack frame: `<bundle>.js:line[:col]` — bundle basename only, so it
- * points at our code without carrying a directory (no user path) or a message.
+ * A sanitized stack frame: `<bundle>.js:line[:col]` for our own bundles, or
+ * `<pkg>/<file>.js:line[:col]` for a frame inside a dependency. Never more than a
+ * package name plus a basename, so it points at code without carrying a directory
+ * (no user path) or a message.
  */
-const stackFrame = z.string().regex(/^[\w.-]+\.js:\d+(?::\d+)?$/);
+const MAX_STACK_FRAME = 128;
+const stackFrame = z
+  .string()
+  .max(MAX_STACK_FRAME)
+  .regex(/^(?:(?:@[\w.-]+\/)?[\w.-]+\/)?[\w.-]+\.js:\d+(?::\d+)?$/);
 const frames = z.array(stackFrame).max(10);
 
 const assetType = z.enum(["equity", "option", "other"]);
@@ -284,10 +290,19 @@ export function templateOf(template: string | null | undefined): z.infer<typeof 
 }
 
 /**
- * Extract a sanitized stack fingerprint from an error: `<bundle>.js:line[:col]`
- * frames pointing into our own bundles, node internals / node_modules dropped, at
- * most 10. Taking only the file **basename** structurally strips any directory, so
- * no user path or message can ride along.
+ * Extract a sanitized stack fingerprint from an error: at most 10 frames, each
+ * `<bundle>.js:line[:col]` for our own bundles or `<pkg>/<file>.js:line[:col]` for a
+ * frame inside a dependency. Node internals are dropped — their line numbers move with
+ * the runtime, and the error's class plus `error_code` already say what happened.
+ *
+ * Dependency frames are deliberately **kept**: host-process errors are overwhelmingly
+ * thrown inside one (the broker's inside `@modelcontextprotocol/sdk`, the updater's
+ * inside `electron-updater`), so dropping them left every backend `app_error` with no
+ * stack at all, while renderer errors — thrown in our own bundle — kept theirs.
+ *
+ * Taking only the file **basename**, plus for a dependency the package name resolved
+ * from after the last `node_modules/`, structurally strips any directory, so no user
+ * path or message can ride along.
  */
 export function sanitizeStack(err: unknown): string[] {
   const stack = err instanceof Error && typeof err.stack === "string" ? err.stack : "";
@@ -295,13 +310,49 @@ export function sanitizeStack(err: unknown): string[] {
   const out: string[] = [];
   const re = /([\w.-]+\.js):(\d+)(?::(\d+))?/;
   for (const line of stack.split("\n")) {
-    if (/node:internal|node_modules/.test(line)) continue;
+    // Only real frames. The first line of a stack is `<Class>: <message>` — free text,
+    // and on an `McpError` server-influenced — so mining it for a `file.js:line` would
+    // turn a message into telemetry. It also bounds the work `re` does per line.
+    if (!/^\s+at /.test(line)) continue;
+    if (/node:internal/.test(line)) continue;
     const m = line.match(re);
     if (!m) continue;
-    out.push(m[3] ? `${m[1]}:${m[2]}:${m[3]}` : `${m[1]}:${m[2]}`);
+    const at = m[3] ? `${m[1]}:${m[2]}:${m[3]}` : `${m[1]}:${m[2]}`;
+    const pkg = packageOf(line);
+    // Length is enforced here, not only in the schema: a frame over the cap would fail
+    // validation and drop the **whole** event, losing the other nine good frames with
+    // it. Degrade instead — shed the package prefix, then the frame itself.
+    const frame = pkg ? `${pkg}/${at}` : at;
+    if (frame.length <= MAX_STACK_FRAME) out.push(frame);
+    else if (at.length <= MAX_STACK_FRAME) out.push(at);
+    else continue;
     if (out.length >= 10) break;
   }
   return out;
+}
+
+/**
+ * The npm package a stack line points into — `name` or `@scope/name` — read from after
+ * the **last** `node_modules/`, so a nested dependency resolves to the package that
+ * actually owns the frame. Null when the line is not inside a dependency, or when the
+ * segment does not look like a package name; the frame then degrades to its bare
+ * basename rather than carrying through anything unexpected.
+ */
+function packageOf(line: string): string | null {
+  // The marker must be a whole path segment. A bare `indexOf("node_modules/")` also
+  // fires on a *user* directory merely ending in it (`~/my-node_modules/Acme-Client/`),
+  // which would publish that directory's name as if it were a package. Both separators
+  // are accepted so the labelling works on Windows too.
+  let after = -1;
+  for (const m of line.matchAll(/(?:^|[/\\(\s])node_modules[/\\]/g)) {
+    after = (m.index ?? 0) + m[0].length;
+  }
+  if (after === -1) return null;
+  const seg = line.slice(after).split(/[/\\]/);
+  const name = seg[0]?.startsWith("@") ? `${seg[0]}/${seg[1] ?? ""}` : (seg[0] ?? "");
+  if (!/^(?:@[\w.-]+\/)?[\w.-]+$/.test(name)) return null;
+  // `.`/`..` satisfy the charset but are traversal, not a package.
+  return /(?:^|\/)\.\.?$/.test(name) ? null : name;
 }
 
 /** The constructor name of a thrown value, normalized to the `error_name` shape. */
@@ -333,6 +384,17 @@ export function errorNameOf(err: unknown): string {
 export function errorCodeOf(err: unknown): string | undefined {
   const codeOn = (v: unknown) =>
     typeof v === "object" && v !== null ? (v as { code?: unknown }).code : undefined;
-  const code = codeOn(err) ?? codeOn((err as { cause?: unknown } | null)?.cause);
-  return errorCode.safeParse(code).success ? (code as string) : undefined;
+  return asErrorCode(codeOn(err) ?? codeOn((err as { cause?: unknown } | null)?.cause));
+}
+
+/**
+ * A value as an `error_code`, or undefined — nothing is coerced or truncated into one.
+ * The single gate for the field, used both by `errorCodeOf`'s discovery and by a caller
+ * that already knows the code by another route (see `brokerErrorCode`, which resolves an
+ * `McpError`'s *numeric* code to its enum name). Keeping the check here means a
+ * caller-supplied code can never widen what the allowlist accepts — and, since a prop
+ * that fails validation drops the **whole** event, can never cost us an `app_error`.
+ */
+export function asErrorCode(value: unknown): string | undefined {
+  return errorCode.safeParse(value).success ? (value as string) : undefined;
 }
