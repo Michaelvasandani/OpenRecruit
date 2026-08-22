@@ -34,7 +34,7 @@ export interface MigrationDb {
 }
 
 /** Bump on every schema change, with a matching entry in MIGRATIONS. */
-export const SCHEMA_VERSION = 4;
+export const SCHEMA_VERSION = 5;
 
 const MIGRATIONS: Record<number, (db: MigrationDb) => void> = {
   // v2 — headless turn limit: per-agent unattended-turn counter + on/off toggle.
@@ -51,6 +51,12 @@ const MIGRATIONS: Record<number, (db: MigrationDb) => void> = {
   // Nullable: pre-v4 wakes read NULL rather than a bogus id.
   4: (db) => {
     addColumnIfMissing(db, "wakes", "source_id", "TEXT");
+  },
+  // v5 — when the agent last spoke, feeding the menu bar item's "last active"
+  // (§12.6). Nullable: existing agents read NULL until their next turn, and fall
+  // back to their wake/audit history in the meantime.
+  5: (db) => {
+    addColumnIfMissing(db, "agents", "last_turn_at", "INTEGER");
   },
 };
 

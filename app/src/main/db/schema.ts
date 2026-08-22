@@ -15,6 +15,10 @@ export const agents = sqliteTable("agents", {
   headlessTurnsUsed: integer("headless_turns_used").notNull().default(0),
   /** Whether the global headless turn limit applies to this agent. */
   turnLimitEnabled: integer("turn_limit_enabled", { mode: "boolean" }).notNull().default(true),
+  /** Last time the AGENT spoke — its turn ended, or it asked for input (§6.7 status
+   *  hook). Feeds `Agent.lastActiveAt` (§12.6). Persisted rather than held in memory so
+   *  it survives a host restart, which every app update forces. Null = never. */
+  lastTurnAt: integer("last_turn_at"),
   createdAt: integer("created_at").notNull(),
   archivedAt: integer("archived_at"),
 });
@@ -123,3 +127,19 @@ export const wakes = sqliteTable(
   },
   (t) => [index("wakes_agent_fired").on(t.agentId, t.firedAt)],
 );
+
+/**
+ * Durable **ring buffer** of the last N notify events — deliberately NOT a
+ * notification log: rows beyond the cap are pruned on every insert and gone for
+ * good. Sole consumer is the tray's Recent submenu (§12.6), which needs the list to
+ * survive launcher *and* host restarts. Ordered/pruned by the autoincrement `id`
+ * (monotonic, never reused), so same-millisecond `at` ties can't misorder.
+ */
+export const recentNotifications = sqliteTable("recent_notifications", {
+  id: integer("id").primaryKey({ autoIncrement: true }),
+  kind: text("kind").notNull(),
+  title: text("title").notNull(),
+  body: text("body").notNull(),
+  agentId: text("agent_id"),
+  at: integer("at").notNull(),
+});

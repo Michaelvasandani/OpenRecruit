@@ -459,6 +459,9 @@ export class Scheduler {
       source: sourceKind,
       path: background ? "headless" : "warm",
     });
+    // Stamp `last_turn_at` at wake START, not just at the Stop hook: a run that dies
+    // mid-flight (API error — Stop never fires) still moves the tray's "last active".
+    this.registry.markAgentTurn(agentId);
     this.wake.enqueue(agentId, prompt);
     // Surface the new wake + updated last/next-fire times in the Monitor tab live.
     bus.emitEvent("scheduler:changed", { agentId });

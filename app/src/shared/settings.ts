@@ -54,6 +54,12 @@ export const AppSettings = z.object({
   notifyUpdates: z.boolean(),
   /** Agent ids whose notifications are muted entirely (a coarse per-agent switch). */
   notifyMutedAgents: z.array(z.string()),
+
+  // ---- menu bar (§12.6) ----
+  /** Show the OpenTrade status item in the macOS menu bar and keep the launcher alive
+   *  there when the window is closed / ⌘Q'd, so agent status + notifications keep
+   *  flowing while the app is "closed". On by default; off restores plain quit. */
+  showInMenuBar: z.boolean(),
 });
 export type AppSettings = z.infer<typeof AppSettings>;
 
@@ -74,6 +80,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
   notifyRestricted: true,
   notifyUpdates: true,
   notifyMutedAgents: [],
+  showInMenuBar: true,
 };
 
 /** A partial update of the editable settings. */

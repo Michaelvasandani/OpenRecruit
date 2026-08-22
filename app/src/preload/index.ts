@@ -1,3 +1,4 @@
+import { SHELL_IPC } from "@shared/shell";
 import { UPDATER_IPC, type UpdaterState } from "@shared/updater";
 import { contextBridge, ipcRenderer } from "electron";
 
@@ -33,4 +34,21 @@ contextBridge.exposeInMainWorld("__opentradeUpdater", {
     ipcRenderer.on(UPDATER_IPC.state, listener);
     return () => ipcRenderer.removeListener(UPDATER_IPC.state, listener);
   },
+});
+
+/**
+ * Shell bridge from the MAIN process (menu bar item, §12.6): lets the launcher steer
+ * the renderer — today, "select this agent" after a tray-menu click. See shared/shell.ts.
+ */
+contextBridge.exposeInMainWorld("__opentradeShell", {
+  /** The agent selection requested before this renderer mounted, if any (consumed). */
+  takePendingAgent: (): Promise<string | null> => ipcRenderer.invoke(SHELL_IPC.takePendingAgent),
+  /** Subscribe to pushed "select agent" requests; returns an unsubscribe fn. */
+  onSelectAgent: (cb: (agentId: string) => void): (() => void) => {
+    const listener = (_e: unknown, agentId: string) => cb(agentId);
+    ipcRenderer.on(SHELL_IPC.selectAgent, listener);
+    return () => ipcRenderer.removeListener(SHELL_IPC.selectAgent, listener);
+  },
+  /** Full quit: stop the backend host, then exit the launcher (Settings → General). */
+  quitCompletely: (): Promise<void> => ipcRenderer.invoke(SHELL_IPC.quitCompletely),
 });

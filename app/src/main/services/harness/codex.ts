@@ -236,7 +236,11 @@ export function createCodexHarness(manager: CodexAppServerManager): Harness {
 
       // hooks.json — the claude-compatible format codex reads from CODEX_HOME
       // (which is OUTSIDE the agent dir; the agent only sees its effects).
-      // PreToolUse = the redundant gate layer; PostToolUse = order-outcome capture.
+      // PreToolUse = the redundant gate layer; PostToolUse = order-outcome capture;
+      // Stop = the turn-ended stamp (→ `last_turn_at`, §6.7 — codex has no
+      // Notification event, so Stop is its only status hook). Hooks execute on
+      // BOTH transports: the supervised app-server runs turns (and hooks) for
+      // background wakes and the TUI's threads alike.
       // Hook commands are shell strings; codex runs hooks with a CLEANED env, so
       // the non-secret identifiers ride the command itself and the scripts
       // recover port/token from the host manifest ($OPENTRADE_HOME/host.json).
@@ -263,6 +267,17 @@ export function createCodexHarness(manager: CodexAppServerManager): Harness {
                   type: "command",
                   command: `${hookEnv} '${join(hooksDir, "order-result.sh")}'`,
                   timeout: 30,
+                },
+              ],
+            },
+          ],
+          Stop: [
+            {
+              hooks: [
+                {
+                  type: "command",
+                  command: `${hookEnv} '${join(hooksDir, "status-notify.sh")}'`,
+                  timeout: 10,
                 },
               ],
             },

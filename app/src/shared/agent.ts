@@ -43,6 +43,11 @@ export const Agent = z.object({
   /** Whether the global headless turn limit (`AppSettings.maxHeadlessTurns`) applies
    *  to this agent. There is no per-agent limit VALUE — only this on/off switch. */
   turnLimitEnabled: z.boolean(),
+  /** Last time the AGENT did something (epoch ms) = `agents.last_turn_at`, stamped
+   *  by the Stop hook (both harnesses, interactive + background) and at wake fire
+   *  (agent messages only — a user message alone never moves it). Null until the
+   *  agent's first turn after the column shipped. Powers the tray sublabel (§12.6). */
+  lastActiveAt: z.number().nullable(),
   createdAt: z.number(),
   archivedAt: z.number().nullable(),
 });

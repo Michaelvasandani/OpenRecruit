@@ -43,6 +43,7 @@ const REPORTABLE_SETTING_KEYS = [
   "notifyApprovals",
   "notifyRestricted",
   "notifyUpdates",
+  "showInMenuBar",
 ] as const;
 // `notifyMutedAgents` is intentionally excluded — it carries agent ids, not a
 // categorical/boolean value, so it isn't in the `settingKey` telemetry enum.

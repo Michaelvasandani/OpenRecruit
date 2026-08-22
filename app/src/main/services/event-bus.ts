@@ -2,7 +2,7 @@ import { EventEmitter } from "node:events";
 import type { Agent } from "@shared/agent";
 import type { Approval } from "@shared/approval";
 import type { BrokerConnectionStatus } from "@shared/broker";
-import type { HostNotification } from "@shared/notify";
+import type { HostNotification, RecentNotification } from "@shared/notify";
 import type { AppSettings } from "@shared/settings";
 
 /** Typed app-wide event bus bridged into tRPC observables. */
@@ -28,6 +28,8 @@ export interface AppEvents {
   /** A host-formatted macOS notification; the launcher relay gates it (per-kind
    *  toggle, per-agent mute, window focus for wakes) and displays it (§12.4). */
   notify: HostNotification;
+  /** The durable Recent ring buffer changed — full list, newest first (§12.6). */
+  "notifications:recent": RecentNotification[];
   /** The last renderer (GUI) disconnected (≥1→0, after a short grace). The host
    *  blanket-kills every interactive PTY so none are maintained outside the GUI. */
   "gui:gone": undefined;

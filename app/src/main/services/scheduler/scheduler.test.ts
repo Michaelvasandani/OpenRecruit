@@ -62,6 +62,7 @@ function stdDeps() {
     get: (id: string) => (id === AGENT.id ? AGENT : undefined),
     agentDir: () => tmpdir(),
     executionStateOf: () => "offline" as const,
+    markAgentTurn: () => {},
   } as unknown as AgentRegistry;
   const localApi = { port: 12345, token: "tok" } as unknown as LocalApiServer;
   return { wake, registry, localApi };
@@ -194,6 +195,7 @@ describe("Scheduler CRUD", () => {
       get: (id: string) => (id === AGENT.id ? AGENT : undefined),
       agentDir: () => tmpdir(),
       executionStateOf: () => "offline" as const,
+      markAgentTurn: () => {},
     } as unknown as AgentRegistry;
     const localApi = { port: 1, token: "t" } as unknown as LocalApiServer;
     scheduler = new Scheduler(db, wake, registry, localApi);
@@ -238,6 +240,7 @@ describe("Scheduler CRUD", () => {
         get: (id: string) => (id === AGENT.id ? AGENT : undefined),
         agentDir: () => tmpdir(),
         executionStateOf: () => execState,
+        markAgentTurn: () => {},
       } as unknown as AgentRegistry;
       const s = new Scheduler(db, wake, registry, {
         port: 1,
@@ -306,6 +309,7 @@ describe("Scheduler CRUD", () => {
       get: (id: string) => (id === AGENT.id ? AGENT : undefined),
       agentDir: () => tmpdir(),
       executionStateOf: () => "offline" as const,
+      markAgentTurn: () => {},
     } as unknown as AgentRegistry;
 
     const notifies: unknown[] = [];

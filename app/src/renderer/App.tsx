@@ -5,6 +5,7 @@ import { TerminalPane } from "./components/terminal/TerminalPane";
 import { useAgents } from "./hooks/useAgents";
 import { useSettings } from "./hooks/useSettings";
 import { useShortcuts } from "./hooks/useShortcuts";
+import { useShellSelection } from "./lib/shell";
 import { backendStarted } from "./lib/trpc";
 import { cn } from "./lib/utils";
 import { BackendFailed } from "./screens/BackendFailed";
@@ -26,6 +27,9 @@ export function App() {
   // ⌘T opens the New Agent configuration dialog (create happens from the form).
   // Gated off while the backend is down to match the disabled New Agent button.
   useShortcuts({ "create-agent": backendConnected ? openNewAgent : () => {} });
+
+  // A click on an agent in the macOS menu bar item (launcher-side) selects it here.
+  useShellSelection();
 
   // The launcher couldn't bring up the backend host (trpcPort===0), so nothing can
   // ever load — show the restart screen instead of hanging on a blank background.

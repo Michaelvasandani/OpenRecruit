@@ -43,6 +43,9 @@ interface UpdaterHooks {
    *  Returns whether a banner was actually shown (false if suppressed by the toggle
    *  or because the window was focused) — the caller only dedupes on a real show. */
   showNotification?: (title: string, body: string) => boolean;
+  /** Called immediately before `quitAndInstall()` relaunches the app. The launcher uses
+   *  it to lift its ⌘Q→menu-bar intercept (§12.6) so the updater's quit isn't swallowed. */
+  onWillRelaunch?: () => void;
 }
 
 let hooks: UpdaterHooks = {};
@@ -116,6 +119,7 @@ function wireEvents(): void {
     // version-aware ensureHost then retires the stale host.
     if (installOnDownloaded) {
       installOnDownloaded = false;
+      hooks.onWillRelaunch?.();
       autoUpdater.quitAndInstall();
     }
   });
@@ -171,6 +175,7 @@ export function checkForUpdatesNow(): UpdaterState {
 export function installNow(): void {
   if (!app.isPackaged) return;
   if (state.status === "downloaded") {
+    hooks.onWillRelaunch?.();
     autoUpdater.quitAndInstall();
     return;
   }

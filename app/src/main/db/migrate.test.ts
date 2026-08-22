@@ -36,6 +36,21 @@ describe("db migrations", () => {
     expect(columns(db, "agents")).toContain("turn_limit_enabled");
     expect(columns(db, "agents")).toContain("harness");
     expect(columns(db, "wakes")).toContain("source_id"); // v4
+    expect(columns(db, "agents")).toContain("last_turn_at"); // v5
+    // Whole new tables ride the DDL — no migration, no version bump (§6.3).
+    expect(columns(db, "recent_notifications")).toContain("at");
+  });
+
+  test("an existing DB picks up a whole new table from the DDL alone", () => {
+    const db = new Database(":memory:");
+    const m = wrap(db);
+    // A shipped DB predating recent_notifications: baseline agents, no version stamp.
+    db.exec(BASELINE_AGENTS);
+    expect(userVersion(m)).toBe(0);
+    db.exec(SCHEMA_DDL); // boot order: DDL first, then migrate
+    migrate(m, { fresh: false });
+    expect(columns(db, "recent_notifications")).toContain("kind");
+    expect(db.query("SELECT * FROM recent_notifications").all()).toEqual([]);
   });
 
   test("a v0.1.x production DB (user_version 0) migrates in place, preserving rows", () => {
@@ -57,6 +72,7 @@ describe("db migrations", () => {
     expect(row.headless_turns_used).toBe(0); // new columns arrived with their defaults
     expect(row.turn_limit_enabled).toBe(1);
     expect(row.harness).toBe("claude"); // v3: pre-harness agents default to claude
+    expect(row.last_turn_at).toBe(null); // v5: never spoke since the column shipped
   });
 
   test("replaying against an already-current table is a no-op (idempotent steps)", () => {
