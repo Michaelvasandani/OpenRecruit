@@ -97,6 +97,7 @@ const settingKey = z.enum([
   "notifyApprovals",
   "notifyRestricted",
   "notifyUpdates",
+  "showInMenuBar",
 ]);
 
 /** Onboarding step ids (mirrors renderer/screens/Onboarding.tsx). */

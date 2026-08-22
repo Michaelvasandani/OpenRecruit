@@ -28,6 +28,16 @@ export interface HostNotification {
 }
 
 /**
+ * A notify-bus event as persisted in the host's `recent_notifications` ring buffer
+ * (§12.6) and served to the tray's Recent submenu over `notifications.onRecent`.
+ * `at` is stamped by the host at record time — keep it a plain epoch-ms number so
+ * the wire shape stays superjson-trivial.
+ */
+export interface RecentNotification extends HostNotification {
+  at: number;
+}
+
+/**
  * First non-empty line of a prompt, trimmed and truncated — the body of a wake
  * notification. Keeps a multi-line prompt from spilling into the banner.
  */

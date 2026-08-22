@@ -23,6 +23,7 @@ export const SCHEMA_DDL = `
       status TEXT NOT NULL DEFAULT 'idle',
       headless_turns_used INTEGER NOT NULL DEFAULT 0,
       turn_limit_enabled INTEGER NOT NULL DEFAULT 1,
+      last_turn_at INTEGER,
       created_at INTEGER NOT NULL,
       archived_at INTEGER
     );
@@ -88,4 +89,12 @@ export const SCHEMA_DDL = `
       fired_at INTEGER NOT NULL
     );
     CREATE INDEX IF NOT EXISTS wakes_agent_fired ON wakes (agent_id, fired_at);
+    CREATE TABLE IF NOT EXISTS recent_notifications (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      kind TEXT NOT NULL,
+      title TEXT NOT NULL,
+      body TEXT NOT NULL,
+      agent_id TEXT,
+      at INTEGER NOT NULL
+    );
 `;

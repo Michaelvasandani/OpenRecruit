@@ -108,12 +108,27 @@ export function SettingsScreen() {
 }
 
 function GeneralPanel() {
+  const settings = useSettings();
   const update = useUpdateSettings();
   const setView = useUIStore((s) => s.setView);
+  const s = settings.data;
+  if (!s) return null;
 
   return (
     <div className="space-y-8">
-      <SettingsSection title="Setup" description="First-run onboarding.">
+      <SettingsSection
+        title="Menu bar"
+        description="Keep an eye on your agents from the macOS menu bar."
+      >
+        <SettingsRow label="Show OpenTrade in the menu bar">
+          <SettingToggle
+            checked={s.showInMenuBar}
+            onChange={(showInMenuBar) => update.mutate({ showInMenuBar })}
+          />
+        </SettingsRow>
+      </SettingsSection>
+
+      <SettingsSection title="Setup">
         <SettingsRow
           label="Re-run setup"
           hint="Reopen the onboarding wizard — agent CLI check, Robinhood, first agent."
@@ -129,6 +144,23 @@ function GeneralPanel() {
             Re-run setup
           </Button>
         </SettingsRow>
+        {/* Regular Quit keeps the background host (and any scheduled agents) running —
+            this is the way to actually stop everything. Launcher-owned, so it rides the
+            shell bridge (window.__opentradeShell), not tRPC; absent in a plain browser. */}
+        {window.__opentradeShell && (
+          <SettingsRow
+            label="Quit OpenTrade completely"
+            hint="Stops the OpenTrade host process. Agents will not run in the background until you reopen the app."
+          >
+            <Button
+              type="button"
+              variant="outline"
+              onClick={() => void window.__opentradeShell?.quitCompletely()}
+            >
+              Quit completely
+            </Button>
+          </SettingsRow>
+        )}
       </SettingsSection>
 
       {/* Not a titled section: this is an informational heads-up about the underlying

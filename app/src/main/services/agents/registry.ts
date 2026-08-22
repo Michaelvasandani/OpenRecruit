@@ -82,13 +82,36 @@ export class AgentRegistry {
       .select()
       .from(agentsTable)
       .all()
-      .map((r) => rowToAgent(r, this.executionStateOf(r.id)))
+      .map((r) => rowToAgent(r, this.executionStateOf(r.id), r.lastTurnAt))
       .filter((a) => a.archivedAt === null);
   }
 
   get(id: string): Agent | undefined {
     const row = this.db.select().from(agentsTable).where(eq(agentsTable.id, id)).get();
-    return row ? rowToAgent(row, this.executionStateOf(id)) : undefined;
+    if (!row) return undefined;
+    return rowToAgent(row, this.executionStateOf(id), row.lastTurnAt);
+  }
+
+  /**
+   * Record that the agent just did something: its turn ended (both harnesses' Stop
+   * hook, §6.7), or a background wake fired for it (the coordinator — a turn that
+   * dies mid-flight still leaves its start stamp). `last_turn_at` is the SINGLE
+   * source of `lastActiveAt`; deliberately NOT called for a user message — "last
+   * active" tracks the agent, not the person. Null until the agent's first turn
+   * after the column shipped (v5): the tray just omits the time part.
+   *
+   * Persisted, not in-memory: a host restart would otherwise wipe it and snap every
+   * agent back to its last wake/audit time — and an app update forces a host restart
+   * by design (`ensureHost` retires a version-mismatched host, §14).
+   *
+   * Broadcasts on its own: the status hook that calls this only produces an
+   * `agents:changed` when the arbiter's *winner* changes, and a turn ending with no
+   * status change (the common interactive case) would otherwise leave the tray showing
+   * a stale time until something unrelated moved.
+   */
+  markAgentTurn(id: string): void {
+    this.db.update(agentsTable).set({ lastTurnAt: Date.now() }).where(eq(agentsTable.id, id)).run();
+    this.broadcast();
   }
 
   executionStateOf(id: string): ExecutionState {
@@ -371,7 +394,11 @@ export class AgentRegistry {
   }
 }
 
-function rowToAgent(row: typeof agentsTable.$inferSelect, executionState: ExecutionState): Agent {
+function rowToAgent(
+  row: typeof agentsTable.$inferSelect,
+  executionState: ExecutionState,
+  lastActiveAt: number | null,
+): Agent {
   return {
     id: row.id,
     slug: row.slug,
@@ -382,6 +409,7 @@ function rowToAgent(row: typeof agentsTable.$inferSelect, executionState: Execut
     lastSessionId: row.lastSessionId,
     status: row.status as Agent["status"],
     executionState,
+    lastActiveAt,
     headlessTurnsUsed: row.headlessTurnsUsed,
     turnLimitEnabled: row.turnLimitEnabled,
     createdAt: row.createdAt,

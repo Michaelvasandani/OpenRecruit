@@ -97,13 +97,16 @@ export async function liveHost(): Promise<HostManifest | null> {
 const versionOf = (m: HostManifest): string => m.version ?? "0.0.0";
 
 /**
- * Retire a host whose code is stale (its version differs from the launcher's —
- * e.g. right after an auto-update, when the old detached host is still running).
- * SIGTERM it and wait for it to exit (it has a graceful handler that clears the
- * manifest), so the fresh build can reclaim the stable faucet port and spawn a
- * host running the new code.
+ * SIGTERM the host and wait for it to exit — its graceful handler tears down
+ * everything it owns (scheduler, in-flight headless wakes + their spawn markers,
+ * codex app-servers, PTYs, servers) and clears the manifest. A host still alive
+ * after the grace window gets SIGKILL — and the manifest is only cleared once the
+ * pid is actually dead: erasing it while a wedged host lives would let the next
+ * launch spawn a second host that fights the orphan over the stable faucet port.
+ * Two callers: `ensureHost` retiring a stale-version host after an auto-update,
+ * and the launcher's "Quit OpenTrade Completely" (§12.6).
  */
-async function terminateStaleHost(m: HostManifest): Promise<void> {
+export async function terminateHost(m: HostManifest): Promise<void> {
   try {
     process.kill(m.pid, "SIGTERM");
   } catch {
@@ -113,7 +116,15 @@ async function terminateStaleHost(m: HostManifest): Promise<void> {
     if (!isAlive(m.pid)) break;
     await delay(100);
   }
-  clearManifest();
+  if (isAlive(m.pid)) {
+    try {
+      process.kill(m.pid, "SIGKILL");
+    } catch {
+      // died between the check and the kill
+    }
+    for (let i = 0; i < 20 && isAlive(m.pid); i++) await delay(100);
+  }
+  if (!isAlive(m.pid)) clearManifest();
 }
 
 /**
@@ -177,7 +188,7 @@ export async function ensureHost(
     const m = await liveHost();
     if (!m) return null;
     if (versionOf(m) === expectedVersion) return m;
-    await terminateStaleHost(m);
+    await terminateHost(m); // stale version (post-update) — retire before respawning
     return null;
   };
 

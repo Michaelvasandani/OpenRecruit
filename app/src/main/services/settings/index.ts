@@ -24,6 +24,7 @@ const KEYS: Record<keyof AppSettings, string> = {
   notifyRestricted: "notify_restricted",
   notifyUpdates: "notify_updates",
   notifyMutedAgents: "notify_muted_agents",
+  showInMenuBar: "show_in_menu_bar",
 };
 
 /**
@@ -80,6 +81,7 @@ export class SettingsService {
         KEYS.notifyMutedAgents,
         DEFAULT_SETTINGS.notifyMutedAgents,
       ),
+      showInMenuBar: this.readBool(KEYS.showInMenuBar, DEFAULT_SETTINGS.showInMenuBar),
     };
   }
 

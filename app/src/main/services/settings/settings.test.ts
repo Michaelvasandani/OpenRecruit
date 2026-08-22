@@ -54,6 +54,13 @@ describe("SettingsService", () => {
     expect(s.get().telemetryEnabled).toBe(false);
   });
 
+  test("showInMenuBar defaults on (menu bar item + ⌘Q→menu bar) and round-trips off", () => {
+    const s = new SettingsService(memDb());
+    expect(s.get().showInMenuBar).toBe(true);
+    expect(s.update({ showInMenuBar: false }).showInMenuBar).toBe(false);
+    expect(s.get().showInMenuBar).toBe(false);
+  });
+
   test("ms convenience getters convert seconds", () => {
     const s = new SettingsService(memDb());
     s.update({ pollIntervalFocusedSec: 7, pollIntervalBlurredSec: 12 });

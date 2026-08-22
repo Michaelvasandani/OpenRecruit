@@ -27,6 +27,7 @@ import { CodexAppServerManager } from "../services/harness/codex-app-server";
 import { buildCodexAnswerer, buildInteractivePushFactory } from "../services/harness/codex-gate";
 import { LocalApiServer } from "../services/local-api";
 import { derivePort } from "../services/local-api/endpoint";
+import { RecentNotificationsService } from "../services/notifications/recent";
 import { Scheduler } from "../services/scheduler";
 import {
   CodexHeadlessStrategy,
@@ -71,6 +72,11 @@ async function main() {
   registry.resetStatusesOnBoot();
 
   const settings = new SettingsService(db);
+  // Durable Recent ring buffer for the tray (§12.6). Subscribed HERE, before anything
+  // that can emit `notify` — the scheduler's boot catch-up sweep (scheduler.start()
+  // below) fires wake notifications synchronously, and the broker auto-connect can too.
+  const recent = new RecentNotificationsService(db);
+  recent.start();
   // Single telemetry funnel — wired early so the gui:present / settings:changed
   // listeners are live before the GUI connects. Inert without a build-time key
   // and in dev (unless OPENTRADE_ANALYTICS_DEV=1).
@@ -198,6 +204,7 @@ async function main() {
     settings,
     scheduler,
     wake,
+    recent,
   };
   const trpc = new HostTrpcServer(ctx, token);
   await trpc.listen();

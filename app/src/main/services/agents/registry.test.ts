@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { drizzle } from "drizzle-orm/bun-sqlite";
 import type { Db } from "../../db/client";
+import { SCHEMA_DDL } from "../../db/ddl";
 import * as schema from "../../db/schema";
 
 // Isolate OPENTRADE_HOME to a throwaway dir before the registry module (which derives
@@ -18,16 +19,16 @@ beforeAll(async () => {
 });
 afterAll(() => rmSync(HOME, { recursive: true, force: true }));
 
-function memRegistry() {
+/** Build the real schema instead of a hand-maintained subset — SCHEMA_DDL is
+ *  dependency-free precisely so tests can do this, and it can't drift from production. */
+function memDb(): { db: Db; sqlite: Database } {
   const sqlite = new Database(":memory:");
-  sqlite.exec(`CREATE TABLE agents (
-    id TEXT PRIMARY KEY, slug TEXT NOT NULL, name TEXT NOT NULL, template TEXT NOT NULL,
-    harness TEXT NOT NULL DEFAULT 'claude',
-    approval_mode TEXT NOT NULL, last_session_id TEXT, status TEXT NOT NULL,
-    headless_turns_used INTEGER NOT NULL DEFAULT 0,
-    turn_limit_enabled INTEGER NOT NULL DEFAULT 1,
-    created_at INTEGER NOT NULL, archived_at INTEGER);`);
-  return new AgentRegistry(drizzle(sqlite, { schema }) as unknown as Db);
+  sqlite.exec(SCHEMA_DDL);
+  return { db: drizzle(sqlite, { schema }) as unknown as Db, sqlite };
+}
+
+function memRegistry() {
+  return new AgentRegistry(memDb().db);
 }
 
 describe("AgentRegistry — executionState", () => {
@@ -197,6 +198,13 @@ describe("AgentRegistry — codex scaffold divergence", () => {
     expect(pre.hooks[0].timeout).toBe(600);
     expect(existsSync(join(codexHome, "hooks", "approval-gate.sh"))).toBe(true);
     expect(existsSync(join(codexHome, "hooks", "order-result.sh"))).toBe(true);
+    // Stop = the turn-ended stamp (codex's only status hook — it has no
+    // Notification event). No matcher: fires on every turn end.
+    const stop = hooks.hooks.Stop[0];
+    expect(stop.matcher).toBeUndefined();
+    expect(stop.hooks[0].command).toContain(join(codexHome, "hooks", "status-notify.sh"));
+    expect(stop.hooks[0].command).toContain("OPENTRADE_AGENT_ID=");
+    expect(existsSync(join(codexHome, "hooks", "status-notify.sh"))).toBe(true);
 
     // codexHomeFor resolves under the REAL ~/.opentrade/cx (keyed by a hash, not
     // OPENTRADE_HOME — the socket-path length constraint), so this test writes outside
@@ -250,5 +258,63 @@ describe("AgentRegistry — codex scaffold divergence", () => {
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
+  });
+});
+
+describe("AgentRegistry — lastActiveAt (= last_turn_at)", () => {
+  /** Insert an agent row directly — create() would scaffold a real folder. */
+  function seedAgent(sqlite: Database, id: string) {
+    sqlite.exec(
+      `INSERT INTO agents (id, slug, name, template, approval_mode, status, created_at)
+       VALUES ('${id}', '${id}', '${id}', 'default', 'approve', 'idle', 1)`,
+    );
+  }
+
+  test("null until the agent's first turn; markAgentTurn is the only writer", () => {
+    const { db, sqlite } = memDb();
+    const r = new AgentRegistry(db);
+    seedAgent(sqlite, "a");
+    expect(r.get("a")?.lastActiveAt).toBe(null);
+
+    // Wake/audit history alone does NOT move it — `lastActiveAt` is the stamp
+    // column, not a derivation (the scheduler stamps via markAgentTurn at fire).
+    sqlite.exec(
+      `INSERT INTO wakes (id, agent_id, source_kind, prompt, background, fired_at)
+       VALUES ('w1', 'a', 'cron', 'go', 1, 1000)`,
+    );
+    sqlite.exec(
+      `INSERT INTO audit_log (agent_id, kind, payload, at) VALUES ('a', 'order_intent', '{}', 500)`,
+    );
+    expect(r.get("a")?.lastActiveAt).toBe(null);
+
+    const before = Date.now();
+    r.markAgentTurn("a");
+    const at = r.get("a")?.lastActiveAt;
+    expect(at).toBeGreaterThanOrEqual(before);
+  });
+
+  test("the agent-turn stamp is durable — it survives losing the registry instance", () => {
+    // The host restarts on every app update, so an in-memory stamp would snap every
+    // agent back to its last wake/audit time. Same DB, fresh registry = that restart.
+    const { db, sqlite } = memDb();
+    seedAgent(sqlite, "a");
+    new AgentRegistry(db).markAgentTurn("a");
+
+    const afterRestart = new AgentRegistry(db).get("a")?.lastActiveAt;
+    expect(afterRestart).toBeGreaterThan(0);
+    expect(sqlite.query("SELECT last_turn_at FROM agents WHERE id='a'").get()).toEqual({
+      last_turn_at: afterRestart,
+    });
+  });
+
+  test("is per-agent and rides list()", () => {
+    const { db, sqlite } = memDb();
+    const r = new AgentRegistry(db);
+    seedAgent(sqlite, "a");
+    seedAgent(sqlite, "b");
+    r.markAgentTurn("a");
+    const list = r.list();
+    expect(list.find((x) => x.id === "a")?.lastActiveAt).toBeGreaterThan(0);
+    expect(list.find((x) => x.id === "b")?.lastActiveAt).toBe(null);
   });
 });

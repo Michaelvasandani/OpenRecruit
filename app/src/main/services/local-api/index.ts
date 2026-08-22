@@ -218,13 +218,25 @@ export class LocalApiServer {
     const agentId = header(req, "x-opentrade-agent");
     const body = await readJson(req);
     const event = String(body?.hook_event_name ?? "");
-    if (agentId && this.registry.get(agentId)) {
+    const agent = agentId ? this.registry.get(agentId) : undefined;
+    if (agentId && agent) {
+      // Both events are the AGENT speaking (it asked for input / finished its turn),
+      // which is exactly what "last active" should track — a user message produces
+      // neither, so typing at an agent never moves its timestamp (§12.6). Codex
+      // fires Stop only (it has no Notification event); claude fires both.
+      if (event === "Notification" || event === "Stop") {
+        this.registry.markAgentTurn(agentId);
+      }
       if (event === "Notification") {
         this.deps.arbiter.setNeedsInput(agentId, true);
       } else if (event === "Stop") {
         this.deps.arbiter.setNeedsInput(agentId, false);
+        // Session capture is claude-only: for codex, `lastSessionId` is the
+        // app-server THREAD id (minted by thread/start and adopted from the TUI,
+        // §13) — codex's hook `session_id` is not verified to match it, and an
+        // overwrite here would break `thread/resume` for every later wake.
         const sessionId = body?.session_id;
-        if (typeof sessionId === "string" && sessionId) {
+        if (agent.harness === "claude" && typeof sessionId === "string" && sessionId) {
           this.registry.setLastSessionId(agentId, sessionId);
         }
       }
