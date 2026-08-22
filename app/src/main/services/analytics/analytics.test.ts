@@ -227,6 +227,39 @@ describe("AnalyticsService", () => {
     expect(fake.events[0].properties).not.toHaveProperty("frames");
     expect(JSON.stringify(fake.events[0].properties)).not.toContain("127.0.0.1");
   });
+
+  test("trackError takes a codeOverride for a code errorCodeOf cannot see", () => {
+    const fake = new FakeClient();
+    const svc = makeService(new SettingsService(memDb()), fake);
+    // An McpError's `code` is numeric (-32603), which the allowlist drops — so the
+    // broker resolves it to its enum name and passes that in. Without the override
+    // these arrive as a bare class name with nothing saying which failure it was.
+    const err = Object.assign(new Error("MCP error -32603: Internal error"), { code: -32603 });
+    svc.trackError("broker", err, "caught", "InternalError");
+    expect(fake.events[0].properties).toMatchObject({
+      subsystem: "broker",
+      error_name: "Error",
+      error_code: "InternalError",
+    });
+  });
+
+  test("trackError ignores a codeOverride that isn't allowlist-shaped", () => {
+    const fake = new FakeClient();
+    const svc = makeService(new SettingsService(memDb()), fake);
+    // An override is re-gated, so a caller can never widen the field — and, since an
+    // invalid prop drops the whole event, can never cost us the app_error either.
+    svc.trackError("broker", new Error("x"), "caught", "not a code /Users/alice");
+    expect(fake.events).toHaveLength(1);
+    expect(fake.events[0].properties).not.toHaveProperty("error_code");
+  });
+
+  test("trackError prefers a real err.code over an unusable override", () => {
+    const fake = new FakeClient();
+    const svc = makeService(new SettingsService(memDb()), fake);
+    const err = Object.assign(new Error("x"), { code: "ECONNRESET" });
+    svc.trackError("broker", err, "caught", undefined);
+    expect(fake.events[0].properties).toMatchObject({ error_code: "ECONNRESET" });
+  });
 });
 
 describe("analytics allowlist + normalizers", () => {
@@ -374,7 +407,7 @@ describe("analytics allowlist + normalizers", () => {
     ).toBe(true);
   });
 
-  test("sanitizeStack keeps bundle frames only, drops internals + node_modules", () => {
+  test("sanitizeStack keeps bundle + dependency frames, drops node internals", () => {
     const err = new Error("boom");
     err.stack = [
       "Error: boom",
@@ -383,7 +416,112 @@ describe("analytics allowlist + normalizers", () => {
       "    at ws (/Users/a/node_modules/ws/lib/index.js:10:2)",
       "    at main (/Users/a/out/main/index.js:5:9)",
     ].join("\n");
-    expect(sanitizeStack(err)).toEqual(["host.js:41231:17", "index.js:5:9"]);
+    expect(sanitizeStack(err)).toEqual(["host.js:41231:17", "ws/index.js:10:2", "index.js:5:9"]);
+  });
+
+  test("sanitizeStack labels a dependency frame with its package, scope included", () => {
+    // The shape that made every backend app_error frameless: the whole stack sits in
+    // the MCP SDK, so dropping node_modules frames left nothing at all.
+    const err = new Error("boom");
+    err.stack = [
+      "McpError: MCP error -32603",
+      "    at Client._onresponse (/Applications/OpenTrade.app/Contents/Resources/app.asar/node_modules/@modelcontextprotocol/sdk/dist/cjs/shared/protocol.js:301:31)",
+      "    at process.processTicksAndRejections (node:internal/process/task_queues:105:5)",
+    ].join("\n");
+    expect(sanitizeStack(err)).toEqual(["@modelcontextprotocol/sdk/protocol.js:301:31"]);
+  });
+
+  test("sanitizeStack resolves a nested dependency to the package that owns the frame", () => {
+    const err = new Error("boom");
+    err.stack = [
+      "Error: boom",
+      "    at f (/Users/a/node_modules/.bun/ws@8/node_modules/ws/lib/sender.js:7:3)",
+    ].join("\n");
+    expect(sanitizeStack(err)).toEqual(["ws/sender.js:7:3"]);
+  });
+
+  test("sanitizeStack frames carry no directory, and stay inside the allowlist shape", () => {
+    // The privacy guarantee: whatever the user's install path, only a package name and
+    // a basename survive — so a home directory can never ride along in `frames`.
+    const err = new Error("boom");
+    err.stack = [
+      "Error: boom",
+      "    at a (/Users/somebody/secret-dir/out/main/host.js:1:2)",
+      "    at b (/Users/somebody/secret-dir/node_modules/@scope/pkg/deep/nested/file.js:3:4)",
+    ].join("\n");
+    const frames = sanitizeStack(err);
+    expect(frames).toEqual(["host.js:1:2", "@scope/pkg/file.js:3:4"]);
+    for (const f of frames) expect(f).not.toContain("somebody");
+    // Must survive the strict allowlist — a frame that fails it drops the whole event.
+    expect(
+      TELEMETRY_EVENTS.app_error.safeParse({
+        subsystem: "broker",
+        error_name: "McpError",
+        frames,
+      }).success,
+    ).toBe(true);
+  });
+
+  test("sanitizeStack does not treat a directory merely ending in node_modules as one", () => {
+    // `indexOf("node_modules/")` without a path boundary would publish the user's own
+    // next directory as if it were a package name.
+    const err = new Error("boom");
+    err.stack = [
+      "Error: boom",
+      "    at f (/Users/alice/my-node_modules/Acme-Client-Trades/lib/x.js:1:2)",
+    ].join("\n");
+    const frames = sanitizeStack(err);
+    expect(frames).toEqual(["x.js:1:2"]);
+    expect(JSON.stringify(frames)).not.toContain("Acme");
+  });
+
+  test("sanitizeStack ignores the message line, which is free text", () => {
+    // The `<Class>: <message>` line is server-influenceable (an McpError's message), so
+    // mining it for a `file.js:line` would turn message text into telemetry.
+    const err = new Error("boom");
+    err.stack = [
+      "Error: request to /srv/node_modules/AAPL-strategy/buy-500-shares.js:42 failed",
+      "    at g (/app/out/main/main.js:1:1)",
+    ].join("\n");
+    const frames = sanitizeStack(err);
+    expect(frames).toEqual(["main.js:1:1"]);
+    expect(JSON.stringify(frames)).not.toContain("AAPL");
+  });
+
+  test("sanitizeStack rejects traversal segments as package names", () => {
+    const err = new Error("boom");
+    err.stack = ["Error: boom", "    at f (/a/node_modules/../../../Users/alice/x.js:9:9)"].join(
+      "\n",
+    );
+    expect(sanitizeStack(err)).toEqual(["x.js:9:9"]);
+  });
+
+  test("sanitizeStack labels dependency frames on Windows paths too", () => {
+    const err = new Error("boom");
+    err.stack = ["Error: boom", "    at f (C:\\p\\node_modules\\ws\\lib\\index.js:10:2)"].join(
+      "\n",
+    );
+    expect(sanitizeStack(err)).toEqual(["ws/index.js:10:2"]);
+  });
+
+  test("one over-long frame is shed, never allowed to drop the whole event", () => {
+    // frames are `.max(128)`; a frame past it fails validation, and an invalid prop
+    // drops the entire app_error — so the length has to be enforced while building.
+    const err = new Error("boom");
+    err.stack = [
+      "Error: boom",
+      `    at f (/app/out/${"a".repeat(200)}.js:1:1)`,
+      "    at g (/app/out/main.js:2:2)",
+    ].join("\n");
+    const frames = sanitizeStack(err);
+    expect(frames).toEqual(["main.js:2:2"]);
+    expect(
+      TELEMETRY_EVENTS.app_error.safeParse({
+        subsystem: "broker",
+        error_name: "Error",
+        frames,
+      }).success,
+    ).toBe(true);
   });
 
   test("sanitizeStack caps at 10 frames", () => {

@@ -18,6 +18,7 @@ import { analytics } from "../services/analytics";
 import { ApprovalService } from "../services/approvals";
 import { AuditLog } from "../services/audit";
 import { BrokerService } from "../services/broker";
+import { brokerErrorCode } from "../services/broker/network-error";
 import { RobinhoodAdapter } from "../services/broker/robinhood/client";
 import { bus } from "../services/event-bus";
 import { registerHarness } from "../services/harness";
@@ -55,7 +56,7 @@ function openExternal(url: string): void {
   execFile(cmd, [url], (err) => {
     if (!err) return;
     hostLog.error("openExternal failed", String(err));
-    analytics.trackError("broker", err, "caught");
+    analytics.trackError("broker", err, "caught", brokerErrorCode(err));
   });
 }
 

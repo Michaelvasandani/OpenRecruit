@@ -1,0 +1,5 @@
+[test]
+# Bun reads bunfig.toml from the cwd and does NOT search upward, so the root config
+# alone leaves `bun test` run from this directory — the natural place, since every test
+# lives under app/src — writing into the user's real ~/.opentrade. See ../test-setup.ts.
+preload = ["../test-setup.ts"]
