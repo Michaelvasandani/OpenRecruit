@@ -12,7 +12,9 @@
     "typecheck": "bun run --cwd app typecheck",
     "test": "bun test",
     "lint": "bunx @biomejs/biome check .",
-    "format": "bunx @biomejs/biome format --write ."
+    "format": "bunx @biomejs/biome format --write .",
+    "prototype:candidate-review": "python3 -m http.server 4174 --bind 127.0.0.1 --directory prototypes/candidate-review",
+    "prototype:candidate-review-adapted": "python3 -m http.server 4175 --bind 127.0.0.1 --directory prototypes/candidate-review-adapted"
   },
   "devDependencies": {
     "@biomejs/biome": "2.4.2",

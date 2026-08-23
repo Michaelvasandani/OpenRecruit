@@ -1,0 +1,612 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>OpenRecruit · Candidate review workspace prototype</title>
+    <style>
+      :root {
+        color-scheme: dark;
+        --ink: #f3f5f3;
+        --muted: #89938f;
+        --faint: #5e6864;
+        --line: rgba(255, 255, 255, 0.08);
+        --line-strong: rgba(255, 255, 255, 0.14);
+        --canvas: #0c0f0e;
+        --surface: #121715;
+        --surface-2: #181e1b;
+        --surface-3: #202823;
+        --lime: #d7f26b;
+        --lime-dim: rgba(215, 242, 107, 0.14);
+        --mint: #72e0b2;
+        --mint-dim: rgba(114, 224, 178, 0.13);
+        --amber: #f3bc69;
+        --amber-dim: rgba(243, 188, 105, 0.14);
+        --red: #ef8a8a;
+        --red-dim: rgba(239, 138, 138, 0.14);
+        --blue: #89c9f5;
+        --blue-dim: rgba(137, 201, 245, 0.13);
+        --shadow: 0 24px 70px rgba(0, 0, 0, 0.28);
+        font-family: Inter, ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      }
+
+      * { box-sizing: border-box; }
+      html, body { min-width: 1100px; min-height: 100%; margin: 0; background: var(--canvas); color: var(--ink); }
+      body { font-size: 13px; letter-spacing: -0.01em; }
+      button { border: 0; font: inherit; color: inherit; cursor: pointer; }
+      button:focus-visible { outline: 2px solid var(--lime); outline-offset: 2px; }
+      svg { display: block; }
+      .prototype-watermark {
+        position: fixed; top: 12px; right: 16px; z-index: 50; padding: 5px 9px;
+        border: 1px solid rgba(215, 242, 107, 0.25); border-radius: 999px;
+        color: var(--lime); background: rgba(12, 15, 14, 0.78); font-size: 10px;
+        font-weight: 800; letter-spacing: 0.12em; text-transform: uppercase;
+        backdrop-filter: blur(12px);
+      }
+      .app { min-height: 100vh; padding-bottom: 78px; }
+      .mono { font-family: "SFMono-Regular", ui-monospace, Menlo, monospace; letter-spacing: 0; }
+      .eyebrow { color: var(--muted); font-size: 10px; font-weight: 800; letter-spacing: 0.16em; text-transform: uppercase; }
+      .muted { color: var(--muted); }
+      .faint { color: var(--faint); }
+      .positive { color: var(--mint); }
+      .attention { color: var(--amber); }
+      .danger { color: var(--red); }
+      .lime { color: var(--lime); }
+
+      /* Shared chrome */
+      .brand { display: flex; align-items: center; gap: 10px; font-size: 15px; font-weight: 750; letter-spacing: -0.03em; }
+      .brand-mark { display: grid; width: 26px; height: 26px; place-items: center; border-radius: 8px; color: #10140e; background: var(--lime); font-weight: 950; }
+      .pill { display: inline-flex; align-items: center; gap: 6px; min-height: 22px; padding: 0 8px; border-radius: 999px; font-size: 11px; font-weight: 700; }
+      .pill.lime { color: var(--lime); background: var(--lime-dim); }
+      .pill.mint { color: var(--mint); background: var(--mint-dim); }
+      .pill.amber { color: var(--amber); background: var(--amber-dim); }
+      .pill.red { color: var(--red); background: var(--red-dim); }
+      .pill.blue { color: var(--blue); background: var(--blue-dim); }
+      .dot { display: inline-block; width: 6px; height: 6px; border-radius: 50%; background: currentColor; }
+      .button { display: inline-flex; align-items: center; justify-content: center; gap: 7px; min-height: 32px; padding: 0 11px; border: 1px solid var(--line-strong); border-radius: 8px; color: var(--ink); background: var(--surface-2); font-size: 12px; font-weight: 750; transition: 140ms ease; }
+      .button:hover { border-color: rgba(215, 242, 107, 0.45); background: var(--surface-3); }
+      .button.primary { border-color: var(--lime); color: #10140e; background: var(--lime); }
+      .button.primary:hover { background: #e3f995; }
+      .button.ghost { border-color: transparent; background: transparent; color: var(--muted); }
+      .button.ghost:hover { border-color: var(--line); color: var(--ink); background: var(--surface-2); }
+      .icon-button { display: grid; width: 30px; height: 30px; place-items: center; border: 1px solid var(--line); border-radius: 8px; color: var(--muted); background: var(--surface); }
+      .icon-button:hover { color: var(--ink); border-color: var(--line-strong); }
+      .topline { display: flex; align-items: center; justify-content: space-between; min-height: 64px; padding: 0 32px; border-bottom: 1px solid var(--line); background: rgba(12, 15, 14, 0.86); }
+      .topline-actions { display: flex; align-items: center; gap: 9px; }
+      .avatar { display: grid; width: 28px; height: 28px; place-items: center; border: 1px solid rgba(215, 242, 107, 0.25); border-radius: 50%; color: var(--lime); background: var(--lime-dim); font-size: 11px; font-weight: 800; }
+      .status-line { display: flex; align-items: center; gap: 7px; color: var(--muted); font-size: 11px; }
+      .status-line .dot { color: var(--mint); }
+      .page-wrap { width: min(1500px, calc(100vw - 64px)); margin: 0 auto; }
+      .section-header { display: flex; align-items: end; justify-content: space-between; gap: 20px; margin-bottom: 18px; }
+      .section-header h1, .section-header h2, .section-header h3 { margin: 0; letter-spacing: -0.045em; }
+      .section-header h1 { font-size: 27px; }
+      .section-header h2 { font-size: 18px; }
+      .section-header p { max-width: 620px; margin: 7px 0 0; color: var(--muted); line-height: 1.5; }
+      .surface { border: 1px solid var(--line); border-radius: 12px; background: var(--surface); box-shadow: var(--shadow); }
+      .surface-flat { border: 1px solid var(--line); background: var(--surface); }
+      .rule { height: 1px; background: var(--line); }
+      .mini-label { color: var(--faint); font-size: 10px; font-weight: 800; letter-spacing: 0.13em; text-transform: uppercase; }
+      .source-badge { display: inline-flex; align-items: center; gap: 5px; color: var(--muted); font-size: 11px; }
+      .source-badge strong { color: var(--ink); font-weight: 650; }
+      .source-icon { display: grid; width: 18px; height: 18px; place-items: center; border: 1px solid var(--line-strong); border-radius: 5px; color: var(--lime); background: var(--surface-2); font-size: 9px; font-weight: 900; }
+      .progress { height: 5px; overflow: hidden; border-radius: 999px; background: var(--surface-3); }
+      .progress > span { display: block; height: 100%; border-radius: inherit; background: var(--lime); }
+
+      /* Variant A: command center */
+      .command-shell { display: grid; grid-template-columns: 216px minmax(0, 1fr); min-height: calc(100vh - 64px); }
+      .rail { display: flex; flex-direction: column; gap: 26px; padding: 24px 14px; border-right: 1px solid var(--line); background: #0f1311; }
+      .rail .brand { padding: 0 11px; }
+      .rail-section { display: grid; gap: 5px; }
+      .rail-title { padding: 0 12px 5px; color: var(--faint); font-size: 10px; font-weight: 800; letter-spacing: 0.14em; text-transform: uppercase; }
+      .rail-button { display: flex; align-items: center; gap: 10px; min-height: 35px; padding: 0 11px; border-radius: 8px; color: var(--muted); background: transparent; text-align: left; font-size: 12px; font-weight: 650; }
+      .rail-button:hover, .rail-button.active { color: var(--ink); background: var(--surface-2); }
+      .rail-button.active { box-shadow: inset 2px 0 var(--lime); }
+      .rail-icon { width: 17px; color: var(--faint); font-size: 14px; text-align: center; }
+      .rail-button.active .rail-icon { color: var(--lime); }
+      .rail-spacer { flex: 1; }
+      .readiness-card { padding: 12px; border: 1px solid var(--line); border-radius: 10px; background: rgba(215, 242, 107, 0.04); }
+      .readiness-card .row { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+      .readiness-card strong { font-size: 12px; }
+      .readiness-card p { margin: 8px 0 11px; color: var(--muted); font-size: 11px; line-height: 1.4; }
+      .command-main { min-width: 0; padding: 30px 34px 100px; }
+      .command-heading { display: flex; align-items: start; justify-content: space-between; gap: 20px; margin-bottom: 26px; }
+      .command-heading h1 { margin: 0; font-size: 27px; letter-spacing: -0.05em; }
+      .command-heading p { margin: 7px 0 0; color: var(--muted); }
+      .command-heading .topline-actions { padding-top: 2px; }
+      .metric-row { display: grid; grid-template-columns: repeat(4, 1fr); gap: 10px; margin-bottom: 20px; }
+      .metric { padding: 15px 16px; border: 1px solid var(--line); border-radius: 10px; background: var(--surface); }
+      .metric .value { margin: 8px 0 2px; font-size: 23px; font-weight: 760; letter-spacing: -0.06em; }
+      .metric .caption { color: var(--muted); font-size: 11px; }
+      .metric .trend { float: right; margin-top: 10px; color: var(--mint); font-size: 11px; }
+      .command-grid { display: grid; grid-template-columns: 316px minmax(0, 1fr); min-height: 560px; overflow: hidden; border: 1px solid var(--line); border-radius: 12px; background: var(--surface); }
+      .inbox { border-right: 1px solid var(--line); }
+      .inbox-head { padding: 17px 17px 12px; }
+      .inbox-head-row { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+      .inbox-head h2 { margin: 0; font-size: 14px; }
+      .filter-row { display: flex; gap: 5px; margin-top: 14px; }
+      .filter { padding: 5px 8px; border: 1px solid transparent; border-radius: 999px; color: var(--muted); background: var(--surface-2); font-size: 10px; font-weight: 750; }
+      .filter:hover, .filter.active { border-color: rgba(215,242,107,.25); color: var(--lime); background: var(--lime-dim); }
+      .lead-list { display: grid; }
+      .lead-row { position: relative; display: block; width: 100%; padding: 15px 17px; border-top: 1px solid var(--line); background: transparent; text-align: left; }
+      .lead-row:hover { background: rgba(255, 255, 255, 0.025); }
+      .lead-row.selected { background: var(--surface-2); box-shadow: inset 2px 0 var(--lime); }
+      .lead-row-top, .lead-row-meta { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+      .lead-row-title { max-width: 208px; overflow: hidden; color: var(--ink); font-weight: 750; text-overflow: ellipsis; white-space: nowrap; }
+      .lead-row-company { margin-top: 4px; color: var(--muted); font-size: 11px; }
+      .lead-row-meta { margin-top: 11px; color: var(--faint); font-size: 10px; }
+      .lead-row-meta .fit { color: var(--mint); font-weight: 750; }
+      .detail-pane { min-width: 0; padding: 25px 28px 28px; }
+      .detail-top { display: flex; align-items: start; justify-content: space-between; gap: 20px; }
+      .detail-top h2 { margin: 7px 0 4px; font-size: 22px; letter-spacing: -0.045em; }
+      .detail-top p { margin: 0; color: var(--muted); }
+      .detail-actions { display: flex; gap: 7px; }
+      .detail-actions .button { min-width: 84px; }
+      .detail-actions .button.dismiss { color: var(--red); }
+      .identity-row { display: flex; align-items: center; gap: 12px; margin: 22px 0 23px; }
+      .company-mark { display: grid; width: 42px; height: 42px; place-items: center; border: 1px solid rgba(215,242,107,.2); border-radius: 12px; color: var(--lime); background: var(--lime-dim); font-size: 15px; font-weight: 850; }
+      .identity-row strong { display: block; font-size: 13px; }
+      .identity-row span { display: block; margin-top: 4px; color: var(--muted); font-size: 11px; }
+      .detail-tabs { display: flex; gap: 21px; border-bottom: 1px solid var(--line); }
+      .detail-tab { position: relative; padding: 0 0 11px; color: var(--muted); background: transparent; font-size: 11px; font-weight: 750; }
+      .detail-tab.active { color: var(--ink); }
+      .detail-tab.active::after { position: absolute; right: 0; bottom: -1px; left: 0; height: 2px; border-radius: 2px; background: var(--lime); content: ""; }
+      .detail-body { display: grid; grid-template-columns: minmax(0, 1fr) 220px; gap: 27px; padding-top: 22px; }
+      .evidence-stack { display: grid; gap: 15px; }
+      .evidence-card { padding: 15px; border: 1px solid var(--line); border-radius: 10px; background: rgba(255,255,255,.018); }
+      .evidence-card h3 { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin: 0; font-size: 12px; }
+      .evidence-card p { margin: 9px 0 0; color: var(--muted); line-height: 1.55; }
+      .evidence-card blockquote { margin: 11px 0 0; padding-left: 11px; border-left: 2px solid var(--lime); color: #d9dfd9; font-size: 12px; line-height: 1.5; }
+      .evidence-footer { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-top: 13px; }
+      .side-stack { display: grid; align-content: start; gap: 18px; }
+      .side-box { padding-bottom: 17px; border-bottom: 1px solid var(--line); }
+      .side-box:last-child { padding-bottom: 0; border: 0; }
+      .side-box h3 { margin: 0 0 11px; font-size: 11px; }
+      .score { display: flex; align-items: end; gap: 7px; }
+      .score strong { color: var(--lime); font-size: 33px; line-height: 0.9; letter-spacing: -0.08em; }
+      .score span { color: var(--muted); font-size: 11px; }
+      .reason-list { display: grid; gap: 9px; margin-top: 14px; }
+      .reason { display: grid; grid-template-columns: 12px minmax(0, 1fr); gap: 7px; color: var(--muted); font-size: 11px; line-height: 1.4; }
+      .reason::before { width: 6px; height: 6px; margin-top: 4px; border-radius: 50%; background: var(--mint); content: ""; }
+      .reason.unknown::before { background: var(--amber); }
+      .revisit { display: flex; align-items: start; gap: 8px; color: var(--muted); font-size: 11px; line-height: 1.4; }
+      .revisit .calendar { color: var(--blue); }
+
+      /* Variant B: review queue */
+      .queue-page { padding: 34px 42px 100px; }
+      .queue-header { display: flex; align-items: end; justify-content: space-between; gap: 24px; margin-bottom: 27px; }
+      .queue-header h1 { margin: 0; font-size: 28px; letter-spacing: -0.06em; }
+      .queue-header p { margin: 7px 0 0; color: var(--muted); }
+      .queue-layout { display: grid; grid-template-columns: 180px minmax(480px, 1fr) 265px; gap: 18px; align-items: start; }
+      .queue-nav { display: grid; gap: 4px; padding: 7px; border: 1px solid var(--line); border-radius: 12px; background: var(--surface); }
+      .queue-nav-title { padding: 8px 10px 7px; }
+      .queue-nav-btn { display: flex; align-items: center; justify-content: space-between; gap: 7px; width: 100%; min-height: 36px; padding: 0 10px; border-radius: 8px; color: var(--muted); background: transparent; text-align: left; font-size: 11px; font-weight: 700; }
+      .queue-nav-btn:hover, .queue-nav-btn.active { color: var(--ink); background: var(--surface-2); }
+      .queue-nav-btn.active { box-shadow: inset 2px 0 var(--lime); }
+      .count { min-width: 20px; padding: 2px 5px; border-radius: 999px; color: var(--faint); background: var(--surface-3); font-size: 10px; text-align: center; }
+      .queue-nav-btn.active .count { color: var(--lime); background: var(--lime-dim); }
+      .queue-card { min-height: 650px; overflow: hidden; border: 1px solid var(--line); border-radius: 14px; background: var(--surface); box-shadow: var(--shadow); }
+      .queue-card-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 17px 20px; border-bottom: 1px solid var(--line); }
+      .queue-card-head strong { font-size: 12px; }
+      .queue-card-head span { color: var(--muted); font-size: 11px; }
+      .review-hero { padding: 27px 27px 25px; background: linear-gradient(135deg, rgba(215,242,107,.08), rgba(18,23,21,0) 50%); }
+      .review-hero .kicker { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+      .review-hero h2 { max-width: 550px; margin: 15px 0 6px; font-size: 29px; line-height: 1.04; letter-spacing: -0.065em; }
+      .review-hero .subtitle { color: var(--muted); font-size: 13px; }
+      .review-company { display: flex; align-items: center; gap: 10px; margin-top: 22px; }
+      .review-company .company-mark { width: 34px; height: 34px; border-radius: 9px; font-size: 12px; }
+      .review-company strong { font-size: 12px; }
+      .review-company span { display: block; margin-top: 3px; color: var(--muted); font-size: 11px; }
+      .queue-score { display: grid; grid-template-columns: 120px minmax(0, 1fr); gap: 21px; align-items: center; margin: 0 27px 25px; padding: 18px; border: 1px solid var(--line); border-radius: 10px; background: rgba(255,255,255,.018); }
+      .score-ring { display: grid; width: 84px; height: 84px; place-items: center; border: 6px solid var(--lime); border-left-color: rgba(215,242,107,.18); border-radius: 50%; transform: rotate(-35deg); }
+      .score-ring span { color: var(--lime); font-size: 22px; font-weight: 850; letter-spacing: -0.08em; transform: rotate(35deg); }
+      .queue-score h3 { margin: 0 0 6px; font-size: 12px; }
+      .queue-score p { margin: 0; color: var(--muted); font-size: 11px; line-height: 1.45; }
+      .queue-score .progress { margin-top: 11px; }
+      .signal-list { display: grid; gap: 0; margin: 0 27px; border-top: 1px solid var(--line); }
+      .signal-row { display: grid; grid-template-columns: 25px minmax(0, 1fr) auto; gap: 10px; align-items: start; padding: 15px 0; border-bottom: 1px solid var(--line); }
+      .signal-marker { display: grid; width: 22px; height: 22px; place-items: center; border: 1px solid var(--line-strong); border-radius: 6px; color: var(--lime); background: var(--surface-2); font-size: 9px; font-weight: 900; }
+      .signal-row strong { display: block; font-size: 11px; }
+      .signal-row p { margin: 5px 0 0; color: var(--muted); font-size: 11px; line-height: 1.4; }
+      .signal-row .date { color: var(--faint); font-size: 10px; white-space: nowrap; }
+      .review-actions { display: flex; gap: 7px; padding: 22px 27px 27px; }
+      .review-actions .button { flex: 1; }
+      .review-actions .button.primary { flex: 1.5; }
+      .side-column { display: grid; gap: 14px; }
+      .side-column .surface { padding: 17px; box-shadow: none; }
+      .side-column h3 { margin: 0 0 14px; font-size: 12px; }
+      .next-row { display: flex; align-items: start; gap: 9px; padding: 11px 0; border-top: 1px solid var(--line); }
+      .next-row:first-of-type { padding-top: 0; border-top: 0; }
+      .next-row .number { display: grid; width: 20px; height: 20px; place-items: center; border-radius: 50%; color: var(--lime); background: var(--lime-dim); font-size: 10px; font-weight: 850; }
+      .next-row strong { display: block; font-size: 11px; }
+      .next-row p { margin: 4px 0 0; color: var(--muted); font-size: 10px; line-height: 1.4; }
+      .scout-run { display: flex; align-items: center; gap: 10px; padding: 10px 0; border-top: 1px solid var(--line); }
+      .scout-run:first-of-type { padding-top: 0; border-top: 0; }
+      .scout-orb { display: grid; width: 25px; height: 25px; place-items: center; border-radius: 8px; color: var(--mint); background: var(--mint-dim); font-size: 11px; }
+      .scout-run strong { display: block; font-size: 11px; }
+      .scout-run span { display: block; margin-top: 3px; color: var(--muted); font-size: 10px; }
+      .queue-foot { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-top: 21px; color: var(--muted); font-size: 11px; }
+
+      /* Variant C: evidence map */
+      .map-page { padding: 30px 34px 100px; }
+      .map-header { display: flex; align-items: start; justify-content: space-between; gap: 20px; margin-bottom: 22px; }
+      .map-header h1 { margin: 0; font-size: 26px; letter-spacing: -0.055em; }
+      .map-header p { margin: 7px 0 0; color: var(--muted); }
+      .map-header .topline-actions { display: flex; gap: 7px; }
+      .map-layout { display: grid; grid-template-columns: minmax(0, 1fr) 265px; gap: 18px; }
+      .map-canvas { min-height: 650px; padding: 21px; overflow: hidden; border: 1px solid var(--line); border-radius: 14px; background: radial-gradient(circle at 52% 15%, rgba(215,242,107,.06), transparent 33%), var(--surface); box-shadow: var(--shadow); }
+      .map-toolbar { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding-bottom: 20px; border-bottom: 1px solid var(--line); }
+      .map-toolbar strong { font-size: 12px; }
+      .map-toolbar span { color: var(--muted); font-size: 11px; }
+      .flow-head { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 12px; padding: 21px 12px 10px; }
+      .flow-head div { color: var(--faint); font-size: 10px; font-weight: 800; letter-spacing: .13em; text-transform: uppercase; }
+      .flow { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 12px; min-height: 455px; padding: 0 12px 14px; }
+      .flow-column { position: relative; display: grid; align-content: start; gap: 11px; padding: 12px 0; }
+      .flow-column:not(:last-child)::after { position: absolute; top: 0; right: -7px; bottom: 0; border-right: 1px dashed rgba(255,255,255,.13); content: ""; }
+      .flow-card { position: relative; padding: 13px; border: 1px solid var(--line-strong); border-radius: 10px; background: rgba(255,255,255,.025); transition: 140ms ease; }
+      .flow-card:hover, .flow-card.selected { border-color: rgba(215,242,107,.55); background: rgba(215,242,107,.07); transform: translateY(-1px); }
+      .flow-card::after { position: absolute; top: 50%; right: -18px; width: 18px; border-top: 1px solid rgba(215,242,107,.32); content: ""; }
+      .flow-column:last-child .flow-card::after { display: none; }
+      .flow-card h3 { margin: 0; font-size: 11px; line-height: 1.3; }
+      .flow-card p { margin: 6px 0 0; color: var(--muted); font-size: 10px; line-height: 1.4; }
+      .flow-card .flow-meta { display: flex; align-items: center; justify-content: space-between; gap: 7px; margin-top: 12px; color: var(--faint); font-size: 10px; }
+      .flow-card .flow-meta strong { color: var(--mint); font-weight: 750; }
+      .flow-signal { border-left: 3px solid var(--blue); }
+      .flow-lead { border-left: 3px solid var(--amber); }
+      .flow-opportunity { border-left: 3px solid var(--lime); }
+      .map-annotation { display: flex; align-items: center; gap: 9px; margin: 0 12px; padding: 12px 13px; border: 1px solid rgba(137,201,245,.2); border-radius: 9px; color: var(--muted); background: var(--blue-dim); font-size: 11px; line-height: 1.4; }
+      .map-annotation strong { color: var(--blue); }
+      .map-side { display: grid; align-content: start; gap: 14px; }
+      .map-side .surface { padding: 17px; box-shadow: none; }
+      .map-side h3 { margin: 0 0 13px; font-size: 12px; }
+      .run-status { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-bottom: 15px; }
+      .run-status strong { font-size: 12px; }
+      .run-status span { color: var(--mint); font-size: 10px; }
+      .run-item { display: flex; align-items: start; gap: 9px; padding: 11px 0; border-top: 1px solid var(--line); }
+      .run-item:first-of-type { padding-top: 0; border-top: 0; }
+      .run-item .run-icon { display: grid; width: 21px; height: 21px; place-items: center; border-radius: 6px; color: var(--lime); background: var(--lime-dim); font-size: 10px; }
+      .run-item strong { display: block; font-size: 11px; }
+      .run-item p { margin: 4px 0 0; color: var(--muted); font-size: 10px; line-height: 1.4; }
+      .readiness-row { display: grid; grid-template-columns: 9px minmax(0,1fr) auto; gap: 8px; align-items: center; padding: 10px 0; border-top: 1px solid var(--line); }
+      .readiness-row:first-of-type { padding-top: 0; border-top: 0; }
+      .readiness-row .dot { width: 7px; height: 7px; color: var(--mint); }
+      .readiness-row.warning .dot { color: var(--amber); }
+      .readiness-row strong { font-size: 11px; }
+      .readiness-row span { color: var(--muted); font-size: 10px; }
+      .readiness-row > span:last-child { color: var(--faint); white-space: nowrap; }
+      .map-decision { display: grid; gap: 10px; padding: 15px; border: 1px solid rgba(215,242,107,.21); border-radius: 10px; background: var(--lime-dim); }
+      .map-decision p { margin: 0; color: var(--muted); font-size: 11px; line-height: 1.45; }
+      .map-decision .button { width: 100%; }
+
+      /* Shared prototype switcher + feedback */
+      .switcher { position: fixed; right: 50%; bottom: 18px; z-index: 40; display: flex; align-items: center; gap: 9px; min-height: 44px; padding: 5px 7px; border: 1px solid rgba(255,255,255,.17); border-radius: 999px; background: rgba(18, 23, 21, .94); box-shadow: 0 10px 35px rgba(0,0,0,.38); transform: translateX(50%); backdrop-filter: blur(16px); }
+      .switcher button { display: grid; width: 30px; height: 30px; place-items: center; border-radius: 50%; color: var(--muted); background: transparent; }
+      .switcher button:hover { color: var(--ink); background: var(--surface-3); }
+      .switcher-label { min-width: 172px; color: var(--ink); font-size: 11px; font-weight: 750; text-align: center; }
+      .switcher-label span { color: var(--lime); }
+      .toast { position: fixed; right: 24px; bottom: 79px; z-index: 45; max-width: 320px; padding: 12px 14px; border: 1px solid rgba(215,242,107,.34); border-radius: 9px; color: var(--ink); background: rgba(18,23,21,.96); box-shadow: var(--shadow); font-size: 11px; line-height: 1.4; animation: toast-in 180ms ease-out; }
+      @keyframes toast-in { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: translateY(0); } }
+      .empty-note { padding: 30px 0; color: var(--muted); text-align: center; }
+
+      @media (max-width: 1200px) {
+        .page-wrap { width: calc(100vw - 42px); }
+        .command-main { padding-right: 22px; padding-left: 22px; }
+        .detail-body { grid-template-columns: minmax(0, 1fr) 190px; gap: 18px; }
+        .queue-page, .map-page { padding-right: 22px; padding-left: 22px; }
+      }
+    </style>
+  </head>
+  <body>
+    <div class="prototype-watermark">Throwaway prototype · mock data</div>
+    <div id="app"></div>
+    <script>
+      /*
+       * Candidate review workspace prototype.
+       * Three variants of a new top-level OpenRecruit control surface,
+       * switchable via ?variant=A|B|C. No persistence; all actions are in memory.
+       */
+      const variants = {
+        A: "Command center",
+        B: "Review queue",
+        C: "Evidence map",
+      };
+
+      const leads = [
+        {
+          id: "latticeflow",
+          initials: "LF",
+          company: "LatticeFlow",
+          title: "Founding Product Engineer",
+          location: "San Francisco · Hybrid",
+          scout: "Founder-led teams",
+          score: 87,
+          status: "Needs your review",
+          statusTone: "lime",
+          signals: 5,
+          updated: "8m ago",
+          tags: ["Early stage", "Product craft", "AI infra"],
+          fitSummary: "Strong fit with one unknown: compensation band is not published.",
+          evidence: [
+            { source: "GitHub", icon: "GH", age: "8m ago", title: "Team is hiring around an active open-source product", body: "The company opened three repositories and published a contributor roadmap this week.", quote: "We are looking for a product-minded engineer to make infra feel simple." },
+            { source: "Company site", icon: "↗", age: "2d ago", title: "Founding Product Engineer · San Francisco", body: "Role language matches the Candidate Profile's preference for small teams with direct product ownership." },
+            { source: "Founder signal", icon: "◌", age: "4d ago", title: "Founder described the first product hire", body: "A public post calls out systems thinking, customer empathy, and comfort with ambiguity." },
+          ],
+          reasoning: [
+            ["Preference", "Small team with direct product ownership", "positive"],
+            ["Preference", "Developer tools / AI infrastructure", "positive"],
+            ["Hard constraint", "Remote or Bay Area hybrid", "positive"],
+            ["Unknown", "Compensation band", "unknown"],
+          ],
+          revisit: "Revisit in 5 days · or when the role page changes",
+        },
+        {
+          id: "northstar",
+          initials: "NS",
+          company: "Northstar Robotics",
+          title: "Staff Software Engineer, Autonomy",
+          location: "Pittsburgh · On-site",
+          scout: "Technical frontier",
+          score: 74,
+          status: "Fresh lead",
+          statusTone: "blue",
+          signals: 3,
+          updated: "32m ago",
+          tags: ["Robotics", "Staff", "Systems"],
+          fitSummary: "Interesting technical match, but location is an explicit constraint conflict.",
+          evidence: [
+            { source: "RSS feed", icon: "RSS", age: "32m ago", title: "Northstar posted a new autonomy role", body: "The role emphasizes distributed systems, realtime data, and hands-on technical leadership." },
+            { source: "GitHub", icon: "GH", age: "3h ago", title: "Active work in the perception stack", body: "Recent commits suggest the team is expanding the platform rather than maintaining a legacy system." },
+          ],
+          reasoning: [
+            ["Preference", "Systems-heavy engineering", "positive"],
+            ["Hard constraint", "Remote or Bay Area hybrid", "negative"],
+            ["Unknown", "Willingness to support relocation", "unknown"],
+          ],
+          revisit: "Revisit in 2 days · location policy may change",
+        },
+        {
+          id: "signalworks",
+          initials: "SW",
+          company: "SignalWorks",
+          title: "Product Engineer · Developer Experience",
+          location: "Remote · US time zones",
+          scout: "Founder-led teams",
+          score: 81,
+          status: "Revisit due",
+          statusTone: "amber",
+          signals: 4,
+          updated: "Yesterday",
+          tags: ["Remote", "DevEx", "Seed"],
+          fitSummary: "Previously dismissed as too early; new hiring evidence warrants reconsideration.",
+          evidence: [
+            { source: "Founder post", icon: "◌", age: "Yesterday", title: "New product engineering hire is now a priority", body: "A new public note changes the hiring posture from exploratory to immediate." },
+            { source: "Company site", icon: "↗", age: "3d ago", title: "Product roadmap names an engineering partner", body: "The roadmap creates a plausible opening even though a formal role is not listed." },
+          ],
+          reasoning: [
+            ["Preference", "Remote by default", "positive"],
+            ["Preference", "Product-facing engineering", "positive"],
+            ["Candidate decision", "Previously dismissed: too early", "unknown"],
+          ],
+          revisit: "Due now · last checked 14 days ago",
+        },
+      ];
+
+      const state = {
+        selectedLead: "latticeflow",
+        detailTab: "evidence",
+        activeNav: "review",
+        queue: "review",
+        decisions: {},
+        runStarted: false,
+        toast: "",
+      };
+
+      function currentVariant() {
+        const value = new URLSearchParams(window.location.search).get("variant");
+        return variants[value] ? value : "A";
+      }
+
+      function selectedLead() {
+        return leads.find((lead) => lead.id === state.selectedLead) || leads[0];
+      }
+
+      function decisionFor(lead) {
+        return state.decisions[lead.id];
+      }
+
+      function escapeHtml(value) {
+        return String(value).replace(/[&<>'"]/g, (char) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", "'": "&#39;", '"': "&quot;" })[char]);
+      }
+
+      function icon(name, size = 15) {
+        const paths = {
+          arrowLeft: `<path d="m14 18-6-6 6-6"/><path d="M8 12h12"/>`,
+          arrowRight: `<path d="m10 18 6-6-6-6"/><path d="M4 12h12"/>`,
+          play: `<path d="m8 5 11 7-11 7Z"/>`,
+          check: `<path d="m5 12 4 4L19 6"/>`,
+          x: `<path d="m6 6 12 12M18 6 6 18"/>`,
+          clock: `<circle cx="12" cy="12" r="8"/><path d="M12 7v5l3 2"/>`,
+          spark: `<path d="m12 3 1.7 5.3L19 10l-5.3 1.7L12 17l-1.7-5.3L5 10l5.3-1.7Z"/>`,
+          list: `<path d="M8 6h11M8 12h11M8 18h11"/><path d="M4 6h.01M4 12h.01M4 18h.01"/>`,
+          compass: `<circle cx="12" cy="12" r="8"/><path d="m15 9-2 4-4 2 2-4Z"/>`,
+          layers: `<path d="m12 4 8 4-8 4-8-4Z"/><path d="m4 12 8 4 8-4M4 16l8 4 8-4"/>`,
+          shield: `<path d="M12 3 19 6v5c0 4-2.8 7-7 10-4.2-3-7-6-7-10V6Z"/><path d="m9 12 2 2 4-4"/>`,
+          target: `<circle cx="12" cy="12" r="8"/><circle cx="12" cy="12" r="3"/>`,
+          calendar: `<rect x="4" y="5" width="16" height="15" rx="2"/><path d="M8 3v4M16 3v4M4 10h16"/>`,
+          external: `<path d="M14 5h5v5M19 5l-8 8"/><path d="M18 13v5a1 1 0 0 1-1 1H6a1 1 0 0 1-1-1V7a1 1 0 0 1 1-1h5"/>`,
+          filter: `<path d="M4 6h16M7 12h10M10 18h4"/>`,
+        };
+        return `<svg width="${size}" height="${size}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${paths[name] || ""}</svg>`;
+      }
+
+      function pill(label, tone = "lime") {
+        return `<span class="pill ${tone}"><span class="dot"></span>${escapeHtml(label)}</span>`;
+      }
+
+      function sourceBadge(source, sourceIcon, age) {
+        return `<span class="source-badge"><span class="source-icon">${escapeHtml(sourceIcon)}</span><strong>${escapeHtml(source)}</strong><span>· ${escapeHtml(age)}</span></span>`;
+      }
+
+      function leadRows() {
+        return leads.map((lead) => {
+          const decision = decisionFor(lead);
+          const status = decision ? decision.label : lead.status;
+          const tone = decision ? decision.tone : lead.statusTone;
+          return `<button class="lead-row ${lead.id === state.selectedLead ? "selected" : ""}" data-lead="${lead.id}">
+            <span class="lead-row-top"><span class="lead-row-title">${escapeHtml(lead.title)}</span>${pill(status, tone)}</span>
+            <span class="lead-row-company">${escapeHtml(lead.company)} · ${escapeHtml(lead.location)}</span>
+            <span class="lead-row-meta"><span>${escapeHtml(lead.scout)}</span><span class="fit">${lead.score}% fit · ${lead.updated}</span></span>
+          </button>`;
+        }).join("");
+      }
+
+      function detailTabs() {
+        return [
+          ["evidence", "Evidence"],
+          ["reasoning", "Fit reasoning"],
+          ["revisit", "Revisit plan"],
+        ].map(([key, label]) => `<button class="detail-tab ${state.detailTab === key ? "active" : ""}" data-detail-tab="${key}">${label}</button>`).join("");
+      }
+
+      function decisionButtons(lead, compact = false) {
+        const decision = decisionFor(lead);
+        const disabled = decision ? "" : "";
+        return `<div class="${compact ? "review-actions" : "detail-actions"}">
+          <button class="button ${decision?.key === "dismiss" ? "primary" : "dismiss"}" data-action="decision" data-decision="dismiss" ${disabled}>${icon("x", 14)} ${decision?.key === "dismiss" ? "Dismissed" : "Dismiss"}</button>
+          <button class="button ${decision?.key === "watch" ? "primary" : ""}" data-action="decision" data-decision="watch">${icon("clock", 14)} ${decision?.key === "watch" ? "Watching" : "Watch"}</button>
+          <button class="button primary" data-action="decision" data-decision="promote">${icon("check", 14)} ${decision?.key === "promote" ? "Promoted" : "Promote to Opportunity"}</button>
+        </div>`;
+      }
+
+      function evidenceBody(lead) {
+        return `<div class="evidence-stack">
+          ${lead.evidence.map((item) => `<article class="evidence-card">
+            <h3><span>${escapeHtml(item.title)}</span>${item.source === "GitHub" ? pill("Verified", "mint") : ""}</h3>
+            <p>${escapeHtml(item.body)}</p>
+            ${item.quote ? `<blockquote>${escapeHtml(item.quote)}</blockquote>` : ""}
+            <div class="evidence-footer">${sourceBadge(item.source, item.icon, item.age)}<button class="button ghost" data-action="open-source">${icon("external", 13)} Inspect source</button></div>
+          </article>`).join("")}
+        </div>`;
+      }
+
+      function reasoningBody(lead) {
+        return `<div class="evidence-stack"><article class="evidence-card"><h3><span>Why this is in the review queue</span>${pill(`${lead.score}% fit`, "lime")}</h3><p>${escapeHtml(lead.fitSummary)}</p><div class="reason-list">${lead.reasoning.map(([kind, text, tone]) => `<div class="reason ${tone === "unknown" ? "unknown" : ""}"><span><strong>${escapeHtml(kind)}</strong> · ${escapeHtml(text)}</span></div>`).join("")}</div></article><article class="evidence-card"><h3><span>Scout attribution</span>${pill(lead.scout, "blue")}</h3><p>This judgment is shared across the Candidate's Scouts. It can be corrected without deleting the evidence or the Lead.</p></article></div>`;
+      }
+
+      function revisitBody(lead) {
+        return `<div class="evidence-stack"><article class="evidence-card"><h3><span>Next reconsideration</span>${pill("Scheduled", "blue")}</h3><div class="revisit" style="margin-top:14px">${icon("calendar", 17)}<span>${escapeHtml(lead.revisit)}. New Signals or an explicit request can wake it sooner.</span></div><div class="rule" style="margin:15px 0"></div><p>The Candidate's Scout Policy owns the cadence. A stale conclusion is not a dismissal; it is a prompt to check again.</p></article></div>`;
+      }
+
+      function detailBody(lead) {
+        const body = state.detailTab === "reasoning" ? reasoningBody(lead) : state.detailTab === "revisit" ? revisitBody(lead) : evidenceBody(lead);
+        return `<div class="detail-body"><div>${body}</div><aside class="side-stack"><div class="side-box"><h3 class="mini-label">Fit evaluation</h3><div class="score"><strong>${lead.score}</strong><span>/ 100 · current</span></div><div class="progress" style="margin-top:12px"><span style="width:${lead.score}%"></span></div></div><div class="side-box"><h3 class="mini-label">Profile checks</h3><div class="reason-list">${lead.reasoning.slice(0, 4).map(([kind, text, tone]) => `<div class="reason ${tone === "unknown" ? "unknown" : ""}"><span>${escapeHtml(kind)} · ${escapeHtml(text)}</span></div>`).join("")}</div></div><div class="side-box"><h3 class="mini-label">Next action</h3><div class="revisit">${icon("calendar", 15)}<span>${escapeHtml(lead.revisit)}</span></div></div></aside></div>`;
+      }
+
+      function variantA() {
+        const lead = selectedLead();
+        return `<div class="command-shell"><aside class="rail">
+          <div class="brand"><span class="brand-mark">O</span><span>OpenRecruit</span></div>
+          <div class="rail-section"><div class="rail-title">Workspace</div>
+            <button class="rail-button active" data-nav="review"><span class="rail-icon">${icon("target", 15)}</span>Review queue <span class="count">3</span></button>
+            <button class="rail-button" data-nav="leads"><span class="rail-icon">${icon("layers", 15)}</span>All Leads</button>
+            <button class="rail-button" data-nav="signals"><span class="rail-icon">${icon("spark", 15)}</span>Signals <span class="count">12</span></button>
+            <button class="rail-button" data-nav="investigations"><span class="rail-icon">${icon("compass", 15)}</span>Investigations</button>
+          </div>
+          <div class="rail-section"><div class="rail-title">Control</div>
+            <button class="rail-button" data-nav="scouts"><span class="rail-icon">${icon("play", 15)}</span>Scouts</button>
+            <button class="rail-button" data-nav="sources"><span class="rail-icon">${icon("shield", 15)}</span>Source readiness</button>
+            <button class="rail-button" data-nav="profile"><span class="rail-icon">${icon("list", 15)}</span>Candidate Profile</button>
+          </div>
+          <div class="rail-spacer"></div>
+          <div class="readiness-card"><div class="row"><strong>Source readiness</strong>${pill("5 / 6", "mint")}</div><p>One authorized source needs your attention before its next Scout Run.</p><button class="button ghost" data-action="open-readiness" style="padding-left:0">Review access ${icon("arrowRight", 14)}</button></div>
+        </aside><main class="command-main">
+          <div class="command-heading"><div><div class="eyebrow">Monday · 9:42 AM</div><h1>Good morning, Michael</h1><p>Your Scouts found 3 things worth a closer look.</p></div><div class="topline-actions"><div class="status-line"><span class="dot"></span>All local · synced 8m ago</div><button class="button" data-action="run-scouts">${icon("play", 13)} Run Scouts</button><div class="avatar">MV</div></div></div>
+          <div class="metric-row"><div class="metric"><div class="mini-label">Needs review</div><span class="trend">+2 today</span><div class="value">3</div><div class="caption">Leads with fresh evidence</div></div><div class="metric"><div class="mini-label">Strong fits</div><span class="trend">+1 this week</span><div class="value">7</div><div class="caption">Above your promotion threshold</div></div><div class="metric"><div class="mini-label">Revisits due</div><span class="trend attention">1 now</span><div class="value">4</div><div class="caption">Across 2 active Scouts</div></div><div class="metric"><div class="mini-label">Source health</div><span class="trend positive">Healthy</span><div class="value">5 / 6</div><div class="caption">Public + authorized Sources</div></div></div>
+          <div class="command-grid"><section class="inbox"><div class="inbox-head"><div class="inbox-head-row"><h2>Review queue</h2><button class="icon-button" data-action="open-filter" aria-label="Filter">${icon("filter", 14)}</button></div><div class="filter-row"><button class="filter active">All <span>3</span></button><button class="filter">New</button><button class="filter">Revisit</button></div></div><div class="lead-list">${leadRows()}</div></section><section class="detail-pane"><div class="detail-top"><div><div class="eyebrow">${escapeHtml(lead.status)} · ${escapeHtml(lead.updated)}</div><h2>${escapeHtml(lead.title)}</h2><p>${escapeHtml(lead.company)} · ${escapeHtml(lead.location)}</p></div>${decisionButtons(lead)}</div><div class="identity-row"><div class="company-mark">${escapeHtml(lead.initials)}</div><div><strong>Found by ${escapeHtml(lead.scout)}</strong><span>${lead.signals} attributable Signals · Lead created 2d ago · shared across Scouts</span></div><div style="margin-left:auto">${lead.tags.map((tag) => `<span class="pill blue" style="margin-left:5px">${escapeHtml(tag)}</span>`).join("")}</div></div><div class="detail-tabs">${detailTabs()}</div>${detailBody(lead)}</section></div>
+        </main></div>`;
+      }
+
+      function queueLeadCard(lead) {
+        const decision = decisionFor(lead);
+        return `<button class="queue-nav-btn ${lead.id === state.selectedLead ? "active" : ""}" data-lead="${lead.id}"><span>${escapeHtml(lead.company)}</span><span class="count">${decision ? "✓" : lead.score}</span></button>`;
+      }
+
+      function variantB() {
+        const lead = selectedLead();
+        return `<div class="queue-page"><div class="queue-header"><div><div class="eyebrow">Candidate control surface · one decision at a time</div><h1>Review what your Scouts found</h1><p>Read the evidence, understand the fit, then decide what deserves your attention.</p></div><div class="topline-actions"><button class="button" data-action="run-scouts">${icon("play", 13)} Run Scouts</button><div class="avatar">MV</div></div></div><div class="queue-layout"><nav class="queue-nav"><div class="queue-nav-title mini-label">Queue</div><button class="queue-nav-btn active" data-queue="review"><span>Needs review</span><span class="count">3</span></button><button class="queue-nav-btn" data-queue="watching"><span>Watching</span><span class="count">8</span></button><button class="queue-nav-btn" data-queue="promoted"><span>Opportunities</span><span class="count">7</span></button><button class="queue-nav-btn" data-queue="dismissed"><span>Dismissed</span><span class="count">12</span></button><div class="rule" style="margin:8px 0"></div><div class="queue-nav-title mini-label">In this queue</div>${leads.map(queueLeadCard).join("")}<div class="queue-foot"><span>${state.queue === "review" ? "3 fresh items" : "Showing sample"}</span>${icon("arrowRight", 13)}</div></nav><section class="queue-card"><div class="queue-card-head"><strong>Next review</strong><span>1 of 3 · ordered by freshness and fit</span></div><div class="review-hero"><div class="kicker">${pill(lead.status, lead.statusTone)}<span class="mono faint">${escapeHtml(lead.updated)}</span></div><h2>${escapeHtml(lead.title)}</h2><div class="subtitle">${escapeHtml(lead.company)} · ${escapeHtml(lead.location)}</div><div class="review-company"><div class="company-mark">${escapeHtml(lead.initials)}</div><div><strong>Scout: ${escapeHtml(lead.scout)}</strong><span>${lead.signals} Signals gathered across ${lead.signals > 3 ? "3" : "2"} Sources</span></div></div></div><div class="queue-score"><div class="score-ring"><span>${lead.score}</span></div><div><h3>Current fit evaluation</h3><p>${escapeHtml(lead.fitSummary)}</p><div class="progress"><span style="width:${lead.score}%"></span></div></div></div><div class="signal-list"><div class="mini-label" style="padding:0 0 10px">Evidence behind the judgment</div>${lead.evidence.slice(0, 3).map((item) => `<div class="signal-row"><div class="signal-marker">${escapeHtml(item.sourceIcon || item.icon)}</div><div><strong>${escapeHtml(item.title)}</strong><p>${escapeHtml(item.body)}</p></div><span class="date">${escapeHtml(item.age)}</span></div>`).join("")}</div>${decisionButtons(lead, true)}</section><aside class="side-column"><div class="surface"><h3>What happens next</h3><div class="next-row"><span class="number">1</span><div><strong>Promote</strong><p>Keep the Lead and create a candidate-specific Opportunity.</p></div></div><div class="next-row"><span class="number">2</span><div><strong>Watch</strong><p>Set a revisit plan without treating the Lead as a fit.</p></div></div><div class="next-row"><span class="number">3</span><div><strong>Dismiss</strong><p>Record your decision; strong new evidence can be surfaced later.</p></div></div></div><div class="surface"><h3>Scout activity</h3><div class="scout-run"><div class="scout-orb">✦</div><div><strong>Founder-led teams</strong><span>Ran 8m ago · 2 new Leads</span></div></div><div class="scout-run"><div class="scout-orb">↗</div><div><strong>Technical frontier</strong><span>Running now · next update in 4m</span></div></div><button class="button ghost" data-action="open-scouts" style="padding-left:0;margin-top:10px">View Scout runs ${icon("arrowRight", 13)}</button></div><div class="surface"><h3>Source readiness</h3><div class="readiness-row"><span class="dot"></span><strong>Public web + RSS</strong><span>Ready</span></div><div class="readiness-row"><span class="dot"></span><strong>GitHub</strong><span>Ready</span></div><div class="readiness-row warning"><span class="dot"></span><strong>LinkedIn</strong><span>Needs auth</span></div></div></aside></div></div>`;
+      }
+
+      function flowCard(lead, kind, title, body, meta, tone) {
+        return `<button class="flow-card flow-${kind} ${lead.id === state.selectedLead ? "selected" : ""}" data-lead="${lead.id}"><h3>${escapeHtml(title)}</h3><p>${escapeHtml(body)}</p><div class="flow-meta"><span>${escapeHtml(meta)}</span>${tone ? `<strong>${escapeHtml(tone)}</strong>` : ""}</div></button>`;
+      }
+
+      function variantC() {
+        const lead = selectedLead();
+        return `<div class="map-page"><div class="map-header"><div><div class="eyebrow">Shared discovery graph · live local state</div><h1>From signal to decision</h1><p>See why a Scout promoted a Lead, what evidence supports it, and where your next decision sits.</p></div><div class="topline-actions"><button class="button" data-action="run-scouts">${icon("play", 13)} Run Scouts</button><button class="icon-button" data-action="open-filter" aria-label="Filter">${icon("filter", 14)}</button><div class="avatar">MV</div></div></div><div class="map-layout"><section class="map-canvas"><div class="map-toolbar"><strong>Discovery flow</strong><span>Last updated 8m ago · click any node to inspect</span></div><div class="flow-head"><div>Signals <span class="faint">· immutable</span></div><div>Leads <span class="faint">· durable threads</span></div><div>Opportunities <span class="faint">· candidate-specific</span></div></div><div class="flow"><div class="flow-column">${flowCard(lead, "signal", "Founder post: product-minded infra hire", "Public hiring signal with direct product ownership language.", "Founder post · 4d", "new")} ${flowCard(leads[1], "signal", "New autonomy role published", "Systems and realtime data match the technical frontier strategy.", "RSS · 32m", "fresh")} ${flowCard(leads[2], "signal", "Roadmap names engineering partner", "No formal role yet; new evidence changes the old conclusion.", "Company site · 3d", "revisit")}</div><div class="flow-column">${flowCard(lead, "lead", "LatticeFlow", "Founding Product Engineer · shared Lead across Scouts.", "5 Signals", "87% fit")} ${flowCard(leads[1], "lead", "Northstar Robotics", "Staff Software Engineer, Autonomy · constraint conflict.", "3 Signals", "74% fit")} ${flowCard(leads[2], "lead", "SignalWorks", "Product Engineer · a dismissed Lead with fresh evidence.", "4 Signals", "81% fit")}</div><div class="flow-column">${flowCard(lead, "opportunity", "Founding Product Engineer", "Candidate-specific possibility ready for your decision.", "Review now", "Promote?")} ${flowCard(leads[1], "opportunity", "Autonomy Staff Engineer", "A possible path, not yet promoted due to location.", "Held", "Unknown")} ${flowCard(leads[2], "opportunity", "Product Engineer · DevEx", "Reconsidered from prior dismissal.", "Review now", "Promote?")}</div></div><div class="map-annotation">${icon("spark", 16)}<span><strong>Selected Lead:</strong> ${escapeHtml(lead.company)} · ${escapeHtml(lead.fitSummary)} Click a node to change the inspection target; use the decision tray below to make the Candidate's choice.</span></div><div class="review-actions" style="max-width:520px;margin:18px 12px 0;padding:0">${decisionButtons(lead, true)}</div></section><aside class="map-side"><div class="surface"><div class="run-status"><strong>Scout Runs</strong><span><span class="dot"></span> 1 running</span></div><div class="run-item"><div class="run-icon">✦</div><div><strong>Founder-led teams</strong><p>2 Signals · 1 Lead updated · finished 8m ago</p></div></div><div class="run-item"><div class="run-icon">↗</div><div><strong>Technical frontier</strong><p>Scanning public Sources · next checkpoint in 4m</p></div></div><button class="button ghost" data-action="open-scouts" style="padding-left:0;margin-top:10px">Open run history ${icon("arrowRight", 13)}</button></div><div class="surface"><h3>Source readiness</h3><div class="readiness-row"><span class="dot"></span><strong>RSS / Atom</strong><span>Ready</span></div><div class="readiness-row"><span class="dot"></span><strong>GitHub</strong><span>Ready</span></div><div class="readiness-row"><span class="dot warning"></span><strong>LinkedIn</strong><span>Needs auth</span></div><div class="readiness-row"><span class="dot"></span><strong>Jina + Exa</strong><span>Ready</span></div></div><div class="map-decision"><div class="eyebrow lime">Candidate decision</div><p>Decisions are reversible and preserve the evidence history. Promotion does not delete the Lead.</p><button class="button primary" data-action="decision" data-decision="promote">Promote selected Lead ${icon("arrowRight", 13)}</button></div></aside></div></div>`;
+      }
+
+      function switcher(variant) {
+        const keys = Object.keys(variants);
+        const index = keys.indexOf(variant);
+        return `<div class="switcher" aria-label="Prototype variants"><button data-variant-step="${keys[(index + keys.length - 1) % keys.length]}" aria-label="Previous variant">${icon("arrowLeft", 16)}</button><div class="switcher-label"><span>${variant}</span> — ${variants[variant]}</div><button data-variant-step="${keys[(index + 1) % keys.length]}" aria-label="Next variant">${icon("arrowRight", 16)}</button></div>`;
+      }
+
+      function render() {
+        const variant = currentVariant();
+        const content = variant === "B" ? variantB() : variant === "C" ? variantC() : variantA();
+        document.getElementById("app").innerHTML = `<div class="app">${content}</div>${switcher(variant)}${state.toast ? `<div class="toast">${escapeHtml(state.toast)}</div>` : ""}`;
+      }
+
+      function setVariant(variant) {
+        const url = new URL(window.location.href);
+        url.searchParams.set("variant", variant);
+        window.history.replaceState({}, "", url);
+        render();
+      }
+
+      function showToast(message) {
+        state.toast = message;
+        render();
+        window.clearTimeout(showToast.timer);
+        showToast.timer = window.setTimeout(() => { state.toast = ""; render(); }, 3600);
+      }
+
+      function applyDecision(key) {
+        const lead = selectedLead();
+        const labels = { promote: ["promote", "Promoted to Opportunity", "lime"], watch: ["watch", "Watching", "blue"], dismiss: ["dismiss", "Dismissed", "red"] };
+        const [decisionKey, label, tone] = labels[key];
+        state.decisions[lead.id] = { key: decisionKey, label, tone };
+        const detail = key === "promote" ? "The Lead stays intact and a candidate-specific Opportunity is now visible." : key === "watch" ? "A revisit plan will keep this Lead in view without promoting it." : "Your decision is recorded; strong new evidence may surface it again.";
+        showToast(`${lead.company}: ${label}. ${detail}`);
+      }
+
+      document.addEventListener("click", (event) => {
+        const target = event.target.closest("button");
+        if (!target) return;
+        if (target.dataset.variantStep) return setVariant(target.dataset.variantStep);
+        if (target.dataset.lead) { state.selectedLead = target.dataset.lead; state.detailTab = "evidence"; return render(); }
+        if (target.dataset.detailTab) { state.detailTab = target.dataset.detailTab; return render(); }
+        if (target.dataset.queue) { state.queue = target.dataset.queue; showToast(`${target.textContent.trim()} is selected. This prototype keeps the sample queue visible for comparison.`); return; }
+        if (target.dataset.nav) { state.activeNav = target.dataset.nav; showToast(`${target.textContent.trim()} would open here in the full workspace.`); return; }
+        if (target.dataset.decision) return applyDecision(target.dataset.decision);
+        if (target.dataset.action === "run-scouts") { state.runStarted = true; showToast("Scout Runs started locally for the prototype. New Signals will appear in the shared review flow."); return; }
+        if (target.dataset.action === "open-source") return showToast("Source inspection would open the original page with provenance and access state attached.");
+        if (target.dataset.action === "open-readiness") return showToast("Source readiness would show public access, Candidate authorization, and the next permitted refresh.");
+        if (target.dataset.action === "open-scouts") return showToast("Scout Runs would show schedule, progress, failures, and the next revisit for each strategy.");
+        if (target.dataset.action === "open-filter") return showToast("Filters would narrow by Scout, freshness, fit, decision state, or Source readiness.");
+      });
+
+      document.addEventListener("keydown", (event) => {
+        const tag = document.activeElement?.tagName;
+        if (tag === "INPUT" || tag === "TEXTAREA" || document.activeElement?.isContentEditable) return;
+        if (event.key !== "ArrowLeft" && event.key !== "ArrowRight") return;
+        const keys = Object.keys(variants);
+        const index = keys.indexOf(currentVariant());
+        const next = event.key === "ArrowRight" ? (index + 1) % keys.length : (index + keys.length - 1) % keys.length;
+        setVariant(keys[next]);
+      });
+
+      window.addEventListener("popstate", render);
+      render();
+    </script>
+  </body>
+</html>

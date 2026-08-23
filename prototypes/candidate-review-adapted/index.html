@@ -1,0 +1,339 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>OpenRecruit · Adapted review workspace prototype</title>
+    <style>
+      :root {
+        color-scheme: dark;
+        --canvas: #101211;
+        --sidebar: #151817;
+        --surface: #1a1e1c;
+        --surface-2: #202522;
+        --surface-3: #282f2a;
+        --ink: #eef2ed;
+        --muted: #8e9891;
+        --faint: #626c65;
+        --line: rgba(255,255,255,.085);
+        --line-strong: rgba(255,255,255,.15);
+        --lime: #d6f36b;
+        --lime-dim: rgba(214,243,107,.13);
+        --mint: #73dfb0;
+        --mint-dim: rgba(115,223,176,.13);
+        --amber: #f2bd6d;
+        --amber-dim: rgba(242,189,109,.13);
+        --red: #ef8e8e;
+        --red-dim: rgba(239,142,142,.13);
+        --blue: #8dcaf0;
+        --blue-dim: rgba(141,202,240,.13);
+        font-family: Inter, ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      }
+      * { box-sizing: border-box; }
+      html, body { min-width: 1120px; min-height: 100%; margin: 0; background: var(--canvas); color: var(--ink); }
+      body { font-size: 13px; letter-spacing: -.01em; }
+      button { border: 0; color: inherit; font: inherit; cursor: pointer; }
+      button:focus-visible { outline: 2px solid var(--lime); outline-offset: 2px; }
+      .prototype-mark { position: fixed; top: 12px; right: 15px; z-index: 30; padding: 5px 9px; border: 1px solid rgba(214,243,107,.25); border-radius: 999px; color: var(--lime); background: rgba(16,18,17,.88); font-size: 10px; font-weight: 850; letter-spacing: .14em; text-transform: uppercase; }
+      .app { display: grid; grid-template-columns: 222px minmax(0,1fr) 318px; min-height: 100vh; padding-bottom: 76px; }
+      .shell-sidebar { display: flex; flex-direction: column; gap: 25px; padding: 23px 13px 18px; border-right: 1px solid var(--line); background: var(--sidebar); }
+      .brand { display: flex; align-items: center; gap: 10px; padding: 0 10px; font-size: 14px; font-weight: 800; letter-spacing: -.04em; }
+      .brand-mark { display: grid; width: 25px; height: 25px; place-items: center; border-radius: 8px; color: #11150d; background: var(--lime); font-size: 14px; font-weight: 950; }
+      .nav-section { display: grid; gap: 4px; }
+      .nav-label { padding: 0 11px 6px; color: var(--faint); font-size: 10px; font-weight: 850; letter-spacing: .16em; text-transform: uppercase; }
+      .nav-button { display: flex; align-items: center; gap: 9px; width: 100%; min-height: 34px; padding: 0 10px; border-radius: 8px; color: var(--muted); background: transparent; text-align: left; font-size: 12px; font-weight: 650; }
+      .nav-button:hover, .nav-button.active { color: var(--ink); background: var(--surface-2); }
+      .nav-button.active { box-shadow: inset 2px 0 var(--lime); }
+      .nav-icon { width: 17px; color: var(--faint); text-align: center; }
+      .nav-button.active .nav-icon { color: var(--lime); }
+      .count { min-width: 20px; margin-left: auto; padding: 2px 5px; border-radius: 999px; color: var(--faint); background: var(--surface-3); font-size: 10px; text-align: center; }
+      .nav-button.active .count { color: var(--lime); background: var(--lime-dim); }
+      .sidebar-spacer { flex: 1; }
+      .source-health { padding: 12px; border: 1px solid var(--line); border-radius: 10px; background: rgba(214,243,107,.035); }
+      .source-health .row { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+      .source-health strong { font-size: 11px; }
+      .source-health p { margin: 8px 0 11px; color: var(--muted); font-size: 10px; line-height: 1.45; }
+      .window-status { display: flex; align-items: center; gap: 7px; padding: 0 10px; color: var(--muted); font-size: 10px; }
+      .window-status .dot, .dot { display: inline-block; width: 6px; height: 6px; border-radius: 50%; background: currentColor; }
+      .window-status .dot { color: var(--mint); }
+
+      .main { min-width: 0; background: var(--canvas); }
+      .right-panel { min-width: 0; border-left: 1px solid var(--line); background: var(--sidebar); }
+      .topbar { display: flex; align-items: center; justify-content: space-between; min-height: 61px; padding: 0 23px; border-bottom: 1px solid var(--line); }
+      .topbar h1 { margin: 0; font-size: 14px; letter-spacing: -.025em; }
+      .topbar p { margin: 4px 0 0; color: var(--muted); font-size: 10px; }
+      .topbar-actions { display: flex; align-items: center; gap: 8px; }
+      .avatar { display: grid; width: 27px; height: 27px; place-items: center; border: 1px solid rgba(214,243,107,.25); border-radius: 50%; color: var(--lime); background: var(--lime-dim); font-size: 10px; font-weight: 850; }
+      .button { display: inline-flex; align-items: center; justify-content: center; gap: 6px; min-height: 30px; padding: 0 10px; border: 1px solid var(--line-strong); border-radius: 7px; color: var(--ink); background: var(--surface-2); font-size: 11px; font-weight: 750; transition: 140ms ease; }
+      .button:hover { border-color: rgba(214,243,107,.45); background: var(--surface-3); }
+      .button.primary { border-color: var(--lime); color: #11150d; background: var(--lime); }
+      .button.primary:hover { background: #e4fa92; }
+      .button.ghost { border-color: transparent; color: var(--muted); background: transparent; }
+      .button.ghost:hover { border-color: var(--line); color: var(--ink); background: var(--surface-2); }
+      .button.danger { color: var(--red); }
+      .surface { border: 1px solid var(--line); border-radius: 10px; background: var(--surface); }
+      .eyebrow, .mini-label { color: var(--faint); font-size: 10px; font-weight: 850; letter-spacing: .14em; text-transform: uppercase; }
+      .pill { display: inline-flex; align-items: center; gap: 5px; min-height: 20px; padding: 0 7px; border-radius: 999px; font-size: 10px; font-weight: 750; white-space: nowrap; }
+      .pill .dot { width: 5px; height: 5px; }
+      .pill.lime { color: var(--lime); background: var(--lime-dim); }
+      .pill.mint { color: var(--mint); background: var(--mint-dim); }
+      .pill.amber { color: var(--amber); background: var(--amber-dim); }
+      .pill.red { color: var(--red); background: var(--red-dim); }
+      .pill.blue { color: var(--blue); background: var(--blue-dim); }
+      .rule { height: 1px; background: var(--line); }
+      .progress { height: 4px; overflow: hidden; border-radius: 99px; background: var(--surface-3); }
+      .progress span { display: block; height: 100%; border-radius: inherit; background: var(--lime); }
+      .company-mark { display: grid; width: 34px; height: 34px; place-items: center; border: 1px solid rgba(214,243,107,.2); border-radius: 9px; color: var(--lime); background: var(--lime-dim); font-size: 11px; font-weight: 900; }
+
+      /* Adapted Variant A — the review workspace occupies the center; context stays right. */
+      .a-content { padding: 24px 24px 40px; }
+      .view-heading { display: flex; align-items: start; justify-content: space-between; gap: 15px; margin-bottom: 20px; }
+      .view-heading h2 { margin: 5px 0 0; font-size: 24px; letter-spacing: -.06em; }
+      .view-heading p { margin: 6px 0 0; color: var(--muted); font-size: 11px; }
+      .metric-strip { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; margin-bottom: 15px; }
+      .metric { padding: 12px; border: 1px solid var(--line); border-radius: 9px; background: var(--surface); }
+      .metric strong { display: block; margin-top: 7px; font-size: 20px; letter-spacing: -.06em; }
+      .metric span { color: var(--muted); font-size: 10px; }
+      .metric .trend { float: right; margin-top: 7px; color: var(--mint); }
+      .review-split { display: grid; grid-template-columns: 275px minmax(0,1fr); min-height: 575px; overflow: hidden; border: 1px solid var(--line); border-radius: 10px; background: var(--surface); }
+      .queue { border-right: 1px solid var(--line); }
+      .queue-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 15px; }
+      .queue-head strong { font-size: 12px; }
+      .filter-row { display: flex; gap: 4px; padding: 0 15px 11px; }
+      .filter { padding: 5px 7px; border: 1px solid transparent; border-radius: 99px; color: var(--muted); background: var(--surface-2); font-size: 10px; font-weight: 750; }
+      .filter.active, .filter:hover { border-color: rgba(214,243,107,.28); color: var(--lime); background: var(--lime-dim); }
+      .lead-row { display: block; width: 100%; padding: 13px 15px; border-top: 1px solid var(--line); background: transparent; text-align: left; }
+      .lead-row:hover { background: rgba(255,255,255,.025); }
+      .lead-row.selected { box-shadow: inset 2px 0 var(--lime); background: var(--surface-2); }
+      .lead-row-top, .lead-row-bottom { display: flex; align-items: center; justify-content: space-between; gap: 6px; }
+      .lead-row-title { max-width: 160px; overflow: hidden; font-weight: 750; text-overflow: ellipsis; white-space: nowrap; }
+      .lead-row-company { display: block; margin-top: 4px; color: var(--muted); font-size: 10px; }
+      .lead-row-bottom { margin-top: 9px; color: var(--faint); font-size: 10px; }
+      .lead-row-bottom .fit { color: var(--mint); font-weight: 750; }
+      .lead-detail { min-width: 0; padding: 20px; }
+      .detail-heading { display: flex; align-items: start; justify-content: space-between; gap: 12px; }
+      .detail-heading h3 { margin: 6px 0 4px; font-size: 18px; letter-spacing: -.05em; }
+      .detail-heading p { margin: 0; color: var(--muted); font-size: 11px; }
+      .detail-actions { display: flex; gap: 5px; }
+      .identity { display: flex; align-items: center; gap: 9px; margin: 18px 0 19px; }
+      .identity strong { display: block; font-size: 11px; }
+      .identity span { display: block; margin-top: 3px; color: var(--muted); font-size: 10px; }
+      .tags { margin-left: auto; text-align: right; }
+      .tags .pill { margin-left: 4px; }
+      .detail-tabs { display: flex; gap: 17px; border-bottom: 1px solid var(--line); }
+      .detail-tab { position: relative; padding: 0 0 10px; color: var(--muted); background: transparent; font-size: 10px; font-weight: 750; }
+      .detail-tab.active { color: var(--ink); }
+      .detail-tab.active::after { position: absolute; right: 0; bottom: -1px; left: 0; height: 2px; border-radius: 2px; background: var(--lime); content: ""; }
+      .evidence-list { display: grid; gap: 9px; padding-top: 16px; }
+      .evidence-card { padding: 12px; border: 1px solid var(--line); border-radius: 8px; background: rgba(255,255,255,.018); }
+      .evidence-card h4 { margin: 0; font-size: 11px; line-height: 1.3; }
+      .evidence-card p { margin: 6px 0 0; color: var(--muted); font-size: 10px; line-height: 1.45; }
+      .evidence-meta { display: flex; align-items: center; justify-content: space-between; gap: 9px; margin-top: 9px; color: var(--faint); font-size: 10px; }
+      .evidence-meta strong { color: var(--ink); font-weight: 650; }
+
+      /* Adapted Variant B — the center keeps the terminal/run metaphor; the right panel reviews. */
+      .b-content { padding: 24px 24px 40px; }
+      .run-header { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 18px; }
+      .run-header h2 { margin: 5px 0 0; font-size: 23px; letter-spacing: -.055em; }
+      .run-header p { margin: 6px 0 0; color: var(--muted); font-size: 11px; }
+      .run-selector { display: flex; align-items: center; gap: 8px; padding: 8px; border: 1px solid var(--line); border-radius: 8px; background: var(--surface); }
+      .run-selector strong { font-size: 11px; }
+      .run-selector span { display: block; margin-top: 2px; color: var(--muted); font-size: 10px; }
+      .run-orb { display: grid; width: 27px; height: 27px; place-items: center; border-radius: 8px; color: var(--mint); background: var(--mint-dim); }
+      .run-card { overflow: hidden; border: 1px solid var(--line); border-radius: 10px; background: var(--surface); }
+      .run-card-top { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 14px 15px; border-bottom: 1px solid var(--line); }
+      .run-card-top strong { font-size: 11px; }
+      .run-card-top span { color: var(--mint); font-size: 10px; }
+      .terminal { min-height: 260px; padding: 16px; background: #101311; font-family: "SFMono-Regular", ui-monospace, Menlo, monospace; font-size: 10px; line-height: 1.8; }
+      .terminal-line { display: grid; grid-template-columns: 52px 15px minmax(0,1fr); gap: 6px; color: var(--muted); }
+      .terminal-line .time { color: var(--faint); }
+      .terminal-line .prompt { color: var(--lime); }
+      .terminal-line .ok { color: var(--mint); }
+      .terminal-line .warn { color: var(--amber); }
+      .terminal-line .strong { color: var(--ink); }
+      .run-tabs { display: flex; gap: 16px; padding: 0 15px; border-bottom: 1px solid var(--line); }
+      .run-tab { padding: 11px 0; color: var(--muted); background: transparent; font-size: 10px; font-weight: 750; }
+      .run-tab.active { color: var(--ink); border-bottom: 2px solid var(--lime); }
+      .fresh-leads { padding: 15px; }
+      .fresh-leads-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-bottom: 9px; }
+      .fresh-leads-head strong { font-size: 11px; }
+      .fresh-lead-row { display: grid; grid-template-columns: 27px minmax(0,1fr) auto; align-items: center; gap: 9px; padding: 10px 0; border-top: 1px solid var(--line); }
+      .fresh-lead-row strong { display: block; font-size: 11px; }
+      .fresh-lead-row span { display: block; margin-top: 3px; color: var(--muted); font-size: 10px; }
+      .fresh-lead-row .fit { color: var(--mint); font-weight: 750; }
+      .fresh-lead-row .company-mark { width: 27px; height: 27px; border-radius: 7px; font-size: 9px; }
+
+      /* Adapted Variant C — the center reuses the Scheduled-style dense table; context stays right. */
+      .c-content { padding: 24px 24px 40px; }
+      .table-heading { display: flex; align-items: start; justify-content: space-between; gap: 12px; margin-bottom: 18px; }
+      .table-heading h2 { margin: 5px 0 0; font-size: 23px; letter-spacing: -.055em; }
+      .table-heading p { margin: 6px 0 0; color: var(--muted); font-size: 11px; }
+      .table-toolbar { display: flex; align-items: center; justify-content: space-between; gap: 9px; margin-bottom: 12px; }
+      .table-filters { display: flex; gap: 5px; }
+      .table-surface { overflow: hidden; border: 1px solid var(--line); border-radius: 10px; background: var(--surface); }
+      .table-grid { display: grid; grid-template-columns: minmax(185px,1.55fr) 78px minmax(100px,1fr) 72px 83px; align-items: center; gap: 10px; padding: 0 15px; }
+      .table-header { min-height: 32px; border-bottom: 1px solid var(--line); color: var(--faint); font-size: 9px; font-weight: 850; letter-spacing: .12em; text-transform: uppercase; }
+      .table-row { min-height: 62px; border-bottom: 1px solid var(--line); background: transparent; text-align: left; }
+      .table-row:last-child { border-bottom: 0; }
+      .table-row:hover, .table-row.selected { background: var(--surface-2); }
+      .table-row.selected { box-shadow: inset 2px 0 var(--lime); }
+      .table-title { min-width: 0; }
+      .table-title strong, .table-title span { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+      .table-title strong { font-size: 11px; }
+      .table-title span { margin-top: 4px; color: var(--muted); font-size: 10px; }
+      .table-cell { min-width: 0; overflow: hidden; color: var(--muted); font-size: 10px; text-overflow: ellipsis; white-space: nowrap; }
+      .table-cell.fit { color: var(--mint); font-weight: 750; }
+      .table-foot { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 14px 15px; color: var(--muted); font-size: 10px; }
+      .saved-view { margin-top: 13px; padding: 13px; border: 1px solid var(--line); border-radius: 9px; background: var(--surface); }
+      .saved-view h3 { margin: 0 0 9px; font-size: 11px; }
+      .saved-view-row { display: flex; align-items: center; justify-content: space-between; gap: 9px; padding: 8px 0; border-top: 1px solid var(--line); color: var(--muted); font-size: 10px; }
+      .saved-view-row:first-of-type { border-top: 0; }
+
+      /* Shared right panel + prototype controls. */
+      .context-head { display: flex; align-items: center; justify-content: space-between; gap: 9px; min-height: 61px; padding: 0 17px; border-bottom: 1px solid var(--line); }
+      .context-head strong { font-size: 12px; }
+      .context-head span { color: var(--muted); font-size: 10px; }
+      .context-body { padding: 18px 17px 30px; }
+      .context-lead { display: flex; align-items: center; gap: 9px; }
+      .context-lead h3 { margin: 0; font-size: 12px; }
+      .context-lead p { margin: 4px 0 0; color: var(--muted); font-size: 10px; }
+      .context-tabs { display: flex; gap: 12px; margin-top: 19px; border-bottom: 1px solid var(--line); }
+      .context-tab { position: relative; padding: 0 0 10px; color: var(--muted); background: transparent; font-size: 10px; font-weight: 750; }
+      .context-tab.active { color: var(--ink); }
+      .context-tab.active::after { position: absolute; right: 0; bottom: -1px; left: 0; height: 2px; background: var(--lime); content: ""; }
+      .context-section { padding: 17px 0; border-bottom: 1px solid var(--line); }
+      .context-section:last-child { border-bottom: 0; }
+      .context-section h4 { margin: 0 0 10px; font-size: 10px; font-weight: 850; letter-spacing: .13em; text-transform: uppercase; }
+      .score-row { display: flex; align-items: end; gap: 7px; }
+      .score-row strong { color: var(--lime); font-size: 34px; line-height: .9; letter-spacing: -.08em; }
+      .score-row span { color: var(--muted); font-size: 10px; }
+      .context-section p { margin: 9px 0 0; color: var(--muted); font-size: 10px; line-height: 1.5; }
+      .reason-list { display: grid; gap: 8px; }
+      .reason { display: grid; grid-template-columns: 9px minmax(0,1fr); gap: 7px; color: var(--muted); font-size: 10px; line-height: 1.4; }
+      .reason::before { width: 5px; height: 5px; margin-top: 4px; border-radius: 50%; background: var(--mint); content: ""; }
+      .reason.unknown::before { background: var(--amber); }
+      .context-actions { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; margin-top: 14px; }
+      .context-actions .primary { grid-column: 1 / -1; }
+      .source-row { display: grid; grid-template-columns: 7px minmax(0,1fr) auto; gap: 7px; align-items: center; padding: 8px 0; border-top: 1px solid var(--line); font-size: 10px; }
+      .source-row:first-of-type { border-top: 0; }
+      .source-row .dot { color: var(--mint); }
+      .source-row.warning .dot { color: var(--amber); }
+      .source-row span { color: var(--muted); }
+      .source-row span:last-child { color: var(--faint); white-space: nowrap; }
+      .revisit { display: flex; align-items: start; gap: 8px; color: var(--muted); font-size: 10px; line-height: 1.45; }
+      .revisit strong { color: var(--blue); }
+
+      .switcher { position: fixed; right: 50%; bottom: 17px; z-index: 35; display: flex; align-items: center; gap: 8px; min-height: 43px; padding: 5px 7px; border: 1px solid rgba(255,255,255,.16); border-radius: 999px; background: rgba(26,30,28,.95); box-shadow: 0 12px 34px rgba(0,0,0,.4); transform: translateX(50%); backdrop-filter: blur(14px); }
+      .switcher button { display: grid; width: 29px; height: 29px; place-items: center; border-radius: 50%; color: var(--muted); background: transparent; }
+      .switcher button:hover { color: var(--ink); background: var(--surface-3); }
+      .switcher-label { min-width: 225px; color: var(--ink); font-size: 10px; font-weight: 750; text-align: center; }
+      .switcher-label strong { color: var(--lime); }
+      .toast { position: fixed; right: 23px; bottom: 75px; z-index: 40; max-width: 315px; padding: 11px 13px; border: 1px solid rgba(214,243,107,.34); border-radius: 8px; color: var(--ink); background: rgba(26,30,28,.97); box-shadow: 0 14px 36px rgba(0,0,0,.35); font-size: 10px; line-height: 1.45; }
+      @media (max-width: 1250px) { .app { grid-template-columns: 205px minmax(0,1fr) 286px; } .review-split { grid-template-columns: 245px minmax(0,1fr); } .table-grid { grid-template-columns: minmax(160px,1.4fr) 65px minmax(85px,1fr) 60px 70px; gap: 7px; } }
+    </style>
+  </head>
+  <body>
+    <div class="prototype-mark">Adapted shell · mock data</div>
+    <div id="app"></div>
+    <script>
+      /*
+       * OpenRecruit adapted UI prototype.
+       * Three compositions of the existing OpenTrade three-pane shell,
+       * switchable via ?variant=A|B|C. State is deliberately in memory only.
+       */
+      const variants = {
+        A: "Review workspace in the shell",
+        B: "Scout run center + review panel",
+        C: "Dense Lead table + review panel",
+      };
+      const scouts = [
+        { id: "founder", name: "Founder-led teams", icon: "✦", status: "2 new Leads", color: "mint" },
+        { id: "frontier", name: "Technical frontier", icon: "↗", status: "Running now", color: "blue" },
+        { id: "remote", name: "Remote product roles", icon: "◌", status: "Next in 2h", color: "amber" },
+      ];
+      const leads = [
+        { id: "latticeflow", initials: "LF", company: "LatticeFlow", title: "Founding Product Engineer", location: "San Francisco · Hybrid", scout: "Founder-led teams", score: 87, status: "Needs review", tone: "lime", signals: 5, updated: "8m ago", source: "GitHub + site", revisit: "In 5 days", summary: "Strong fit with one unknown: compensation band is not published.", tags: ["Early stage", "AI infra"], reasoning: [["Preference", "Small team with direct product ownership", "positive"], ["Preference", "Developer tools / AI infrastructure", "positive"], ["Hard constraint", "Remote or Bay Area hybrid", "positive"], ["Unknown", "Compensation band", "unknown"]], evidence: [{ source: "GitHub", age: "8m", title: "Team is hiring around an active open-source product", body: "The company opened three repositories and published a contributor roadmap this week." }, { source: "Company site", age: "2d", title: "Founding Product Engineer · San Francisco", body: "Role language matches the Candidate Profile's preference for small teams with direct product ownership." }, { source: "Founder signal", age: "4d", title: "Founder described the first product hire", body: "A public post calls out systems thinking, customer empathy, and comfort with ambiguity." }] },
+        { id: "northstar", initials: "NS", company: "Northstar Robotics", title: "Staff Software Engineer, Autonomy", location: "Pittsburgh · On-site", scout: "Technical frontier", score: 74, status: "Fresh Lead", tone: "blue", signals: 3, updated: "32m ago", source: "RSS + GitHub", revisit: "In 2 days", summary: "Interesting technical match, but location is an explicit constraint conflict.", tags: ["Robotics", "Staff"], reasoning: [["Preference", "Systems-heavy engineering", "positive"], ["Hard constraint", "Remote or Bay Area hybrid", "negative"], ["Unknown", "Willingness to support relocation", "unknown"]], evidence: [{ source: "RSS feed", age: "32m", title: "Northstar posted a new autonomy role", body: "The role emphasizes distributed systems, realtime data, and hands-on technical leadership." }, { source: "GitHub", age: "3h", title: "Active work in the perception stack", body: "Recent commits suggest the team is expanding the platform rather than maintaining a legacy system." }] },
+        { id: "signalworks", initials: "SW", company: "SignalWorks", title: "Product Engineer · Developer Experience", location: "Remote · US time zones", scout: "Founder-led teams", score: 81, status: "Revisit due", tone: "amber", signals: 4, updated: "Yesterday", source: "Founder post + site", revisit: "Due now", summary: "Previously dismissed as too early; new hiring evidence warrants reconsideration.", tags: ["Remote", "DevEx"], reasoning: [["Preference", "Remote by default", "positive"], ["Preference", "Product-facing engineering", "positive"], ["Candidate decision", "Previously dismissed: too early", "unknown"]], evidence: [{ source: "Founder post", age: "Yesterday", title: "New product engineering hire is now a priority", body: "A new public note changes the hiring posture from exploratory to immediate." }, { source: "Company site", age: "3d", title: "Product roadmap names an engineering partner", body: "The roadmap creates a plausible opening even though a formal role is not listed." }] },
+        { id: "orbit", initials: "OR", company: "Orbit Systems", title: "Senior Product Engineer", location: "Remote · North America", scout: "Remote product roles", score: 69, status: "Monitoring", tone: "blue", signals: 2, updated: "2d ago", source: "Company site", revisit: "In 8 days", summary: "Good product overlap; evidence is not yet strong enough to promote.", tags: ["Remote", "Growth"], reasoning: [["Preference", "Remote by default", "positive"], ["Unknown", "Team size and ownership", "unknown"]], evidence: [{ source: "Company site", age: "2d", title: "Senior product engineer role remains open", body: "The role is current but has limited detail about the team and decision scope." }] },
+      ];
+      const state = { selectedLead: "latticeflow", selectedScout: "founder", contextTab: "evidence", runTab: "activity", decisions: {}, toast: "" };
+
+      function currentVariant() { const value = new URLSearchParams(window.location.search).get("variant"); return variants[value] ? value : "A"; }
+      function lead() { return leads.find((item) => item.id === state.selectedLead) || leads[0]; }
+      function scout() { return scouts.find((item) => item.id === state.selectedScout) || scouts[0]; }
+      function esc(value) { return String(value).replace(/[&<>'"]/g, (char) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", "'": "&#39;", '"': "&quot;" })[char]); }
+      function pill(label, tone = "lime") { return `<span class="pill ${tone}"><span class="dot"></span>${esc(label)}</span>`; }
+      function icon(symbol) { return `<span aria-hidden="true">${symbol}</span>`; }
+      function decision(item) { return state.decisions[item.id]; }
+      function decisionLabel(item) { const value = decision(item); return value ? value.label : item.status; }
+      function decisionTone(item) { const value = decision(item); return value ? value.tone : item.tone; }
+
+      function sidebar() {
+        return `<aside class="shell-sidebar"><div class="brand"><span class="brand-mark">O</span><span>OpenRecruit</span></div><div class="nav-section"><div class="nav-label">Scouts</div>${scouts.map((item) => `<button class="nav-button ${item.id === state.selectedScout ? "active" : ""}" data-scout="${item.id}"><span class="nav-icon">${item.icon}</span><span>${esc(item.name)}</span><span class="count">${item.id === "founder" ? "2" : item.id === "frontier" ? "1" : ""}</span></button>`).join("")}</div><div class="nav-section"><div class="nav-label">Workspace</div><button class="nav-button active" data-nav="review"><span class="nav-icon">◎</span><span>Review queue</span><span class="count">3</span></button><button class="nav-button" data-nav="runs"><span class="nav-icon">▷</span><span>Scout Runs</span></button><button class="nav-button" data-nav="leads"><span class="nav-icon">▤</span><span>All Leads</span></button><button class="nav-button" data-nav="profile"><span class="nav-icon">☷</span><span>Candidate Profile</span></button></div><div class="sidebar-spacer"></div><div class="source-health"><div class="row"><strong>Source readiness</strong>${pill("5 / 6", "mint")}</div><p>One authorized source needs attention before its next Scout Run.</p><button class="button ghost" data-action="readiness" style="padding:0">Review access →</button></div><div class="window-status"><span class="dot"></span>All local · synced 8m ago</div></aside>`;
+      }
+
+      function leadRows() {
+        return leads.slice(0, 4).map((item) => `<button class="lead-row ${item.id === state.selectedLead ? "selected" : ""}" data-lead="${item.id}"><span class="lead-row-top"><span class="lead-row-title">${esc(item.title)}</span>${pill(decisionLabel(item), decisionTone(item))}</span><span class="lead-row-company">${esc(item.company)} · ${esc(item.location)}</span><span class="lead-row-bottom"><span>${esc(item.scout)}</span><span class="fit">${item.score}% fit · ${esc(item.updated)}</span></span></button>`).join("");
+      }
+
+      function evidenceCards(item) {
+        return item.evidence.map((entry) => `<article class="evidence-card"><h4>${esc(entry.title)}</h4><p>${esc(entry.body)}</p><div class="evidence-meta"><span><strong>${esc(entry.source)}</strong> · ${esc(entry.age)} · provenance attached</span><button class="button ghost" data-action="source">Inspect ↗</button></div></article>`).join("");
+      }
+
+      function contextPanel() {
+        const item = lead();
+        let body = "";
+        if (state.contextTab === "reasoning") body = `<div class="context-section"><h4>Why this is here</h4><p>${esc(item.summary)}</p><div class="reason-list" style="margin-top:13px">${item.reasoning.map(([kind, text, tone]) => `<div class="reason ${tone === "unknown" ? "unknown" : ""}"><span>${esc(kind)} · ${esc(text)}</span></div>`).join("")}</div></div>`;
+        else if (state.contextTab === "revisit") body = `<div class="context-section"><h4>Next reconsideration</h4><div class="revisit"><strong>◷</strong><span>${esc(item.revisit)}. New Signals or an explicit request can wake this Lead sooner.</span></div><p>Stale means check again; it does not mean false, dismissed, or deleted.</p></div>`;
+        else body = `<div class="context-section"><h4>Evidence behind the judgment</h4><div style="display:grid;gap:8px">${item.evidence.slice(0, 2).map((entry) => `<div style="color:var(--muted);font-size:10px;line-height:1.4"><strong style="color:var(--ink)">${esc(entry.source)}</strong> · ${esc(entry.title)}</div>`).join("")}</div></div>`;
+        return `<aside class="right-panel"><div class="context-head"><div><strong>Lead context</strong><span style="display:block;margin-top:4px">Selected from the workspace</span></div>${pill(decisionLabel(item), decisionTone(item))}</div><div class="context-body"><div class="context-lead"><div class="company-mark">${esc(item.initials)}</div><div><h3>${esc(item.title)}</h3><p>${esc(item.company)} · ${esc(item.location)}</p></div></div><div class="context-tabs"><button class="context-tab ${state.contextTab === "evidence" ? "active" : ""}" data-context-tab="evidence">Evidence</button><button class="context-tab ${state.contextTab === "reasoning" ? "active" : ""}" data-context-tab="reasoning">Fit reasoning</button><button class="context-tab ${state.contextTab === "revisit" ? "active" : ""}" data-context-tab="revisit">Revisit</button></div>${body}<div class="context-section"><h4>Fit evaluation</h4><div class="score-row"><strong>${item.score}</strong><span>/ 100 · current</span></div><div class="progress" style="margin-top:11px"><span style="width:${item.score}%"></span></div></div><div class="context-section"><h4>Candidate decision</h4><p>Decisions preserve the Lead and its evidence history.</p><div class="context-actions"><button class="button danger" data-decision="dismiss">Dismiss</button><button class="button" data-decision="watch">Watch</button><button class="button primary" data-decision="promote">Promote to Opportunity</button></div></div><div class="context-section"><h4>Source readiness</h4><div class="source-row"><span class="dot"></span><span>Public web + RSS</span><span>Ready</span></div><div class="source-row"><span class="dot"></span><span>GitHub</span><span>Ready</span></div><div class="source-row warning"><span class="dot"></span><span>LinkedIn</span><span>Needs auth</span></div></div></div></aside>`;
+      }
+
+      function variantA() {
+        const item = lead();
+        return `<main class="main"><div class="topbar"><div><h1>Review queue</h1><p>Candidate decisions across all Scouts</p></div><div class="topbar-actions"><button class="button" data-action="run">▷ Run Scouts</button><div class="avatar">MV</div></div></div><div class="a-content"><div class="view-heading"><div><div class="eyebrow">Adapted from the existing agent workspace</div><h2>Good morning, Michael</h2><p>Three Leads have fresh evidence worth a closer look.</p></div>${pill("Local control surface", "mint")}</div><div class="metric-strip"><div class="metric"><div class="mini-label">Needs review</div><span class="trend">+2 today</span><strong>3</strong><span>fresh Lead decisions</span></div><div class="metric"><div class="mini-label">Strong fits</div><span class="trend">+1 this week</span><strong>7</strong><span>above your threshold</span></div><div class="metric"><div class="mini-label">Scout health</div><span class="trend">Healthy</span><strong>5 / 6</strong><span>Sources ready</span></div></div><div class="review-split"><section class="queue"><div class="queue-head"><strong>Review queue</strong><button class="button ghost" data-action="filter">Filter</button></div><div class="filter-row"><button class="filter active">All 3</button><button class="filter">New</button><button class="filter">Revisit</button></div>${leadRows()}</section><section class="lead-detail"><div class="detail-heading"><div><div class="eyebrow">${esc(decisionLabel(item))} · ${esc(item.updated)}</div><h3>${esc(item.title)}</h3><p>${esc(item.company)} · ${esc(item.location)}</p></div><div class="detail-actions"><button class="button" data-decision="watch">Watch</button><button class="button primary" data-decision="promote">Promote</button></div></div><div class="identity"><div class="company-mark">${esc(item.initials)}</div><div><strong>Found by ${esc(item.scout)}</strong><span>${item.signals} attributable Signals · shared across Scouts</span></div><div class="tags">${item.tags.map((tag) => `<span class="pill blue">${esc(tag)}</span>`).join("")}</div></div><div class="detail-tabs"><button class="detail-tab active">Evidence</button><button class="detail-tab" data-context-tab="reasoning">Fit reasoning</button><button class="detail-tab" data-context-tab="revisit">Revisit plan</button></div><div class="evidence-list">${evidenceCards(item)}</div></section></div></div></main>${contextPanel()}`;
+      }
+
+      function terminalLines() {
+        const item = lead();
+        return `<div class="terminal"><div class="terminal-line"><span class="time">09:41:58</span><span class="prompt">›</span><span class="strong">Scout "${esc(scout().name)}" resumed from checkpoint</span></div><div class="terminal-line"><span class="time">09:42:01</span><span class="prompt">›</span><span>Reading public Sources with provenance capture</span></div><div class="terminal-line"><span class="time">09:42:07</span><span class="prompt ok">✓</span><span>New Signal: founder described the first product hire</span></div><div class="terminal-line"><span class="time">09:42:12</span><span class="prompt ok">✓</span><span>Linked Signal to Lead: ${esc(item.company)}</span></div><div class="terminal-line"><span class="time">09:42:14</span><span class="prompt ok">✓</span><span>Fit evaluation refreshed: ${item.score}% · ${esc(item.status)}</span></div><div class="terminal-line"><span class="time">09:42:15</span><span class="prompt warn">!</span><span>Unknown remains: compensation band</span></div><div class="terminal-line"><span class="time">09:42:16</span><span class="prompt">›</span><span>Next revisit planned: ${esc(item.revisit)}</span></div><div class="terminal-line"><span class="time">09:42:17</span><span class="prompt">_</span><span>Waiting for Candidate review</span></div></div>`;
+      }
+
+      function freshRows() { return leads.slice(0, 3).map((item) => `<button class="fresh-lead-row" data-lead="${item.id}"><span class="company-mark">${esc(item.initials)}</span><span><strong>${esc(item.company)}</strong><span>${esc(item.title)} · ${esc(item.updated)}</span></span><span class="fit">${item.score}%</span></button>`).join(""); }
+      function variantB() {
+        return `<main class="main"><div class="topbar"><div><h1>Scout Runs</h1><p>The existing terminal surface, adapted for discovery work</p></div><div class="topbar-actions"><button class="button" data-action="run">▷ Run now</button><div class="avatar">MV</div></div></div><div class="b-content"><div class="run-header"><div><div class="eyebrow">Persistent Scout · bounded run</div><h2>${esc(scout().name)}</h2><p>Discover, investigate, and hand the Candidate a transparent review queue.</p></div><div class="run-selector"><div class="run-orb">${scout().icon}</div><div><strong>${esc(scout().name)}</strong><span>${esc(scout().status)} · last run 8m ago</span></div></div></div><section class="run-card"><div class="run-card-top"><strong>Live Scout activity</strong><span><span class="dot"></span> Running</span></div>${terminalLines()}<div class="run-tabs"><button class="run-tab ${state.runTab === "activity" ? "active" : ""}" data-run-tab="activity">Activity</button><button class="run-tab ${state.runTab === "signals" ? "active" : ""}" data-run-tab="signals">Signals found</button><button class="run-tab ${state.runTab === "history" ? "active" : ""}" data-run-tab="history">Run history</button></div><div class="fresh-leads"><div class="fresh-leads-head"><strong>Fresh Leads from this run</strong><span class="muted">Click one to inspect in the right panel</span></div>${freshRows()}</div></section></div></main>${contextPanel()}`;
+      }
+
+      function tableRows() { return leads.map((item) => `<button class="table-grid table-row ${item.id === state.selectedLead ? "selected" : ""}" data-lead="${item.id}"><span class="table-title"><strong>${esc(item.company)}</strong><span>${esc(item.title)}</span></span><span class="table-cell fit">${item.score}%</span><span class="table-cell">${esc(item.scout)}</span><span class="table-cell">${item.signals} Signals</span><span class="table-cell">${esc(item.revisit)}</span></button>`).join(""); }
+      function variantC() {
+        return `<main class="main"><div class="topbar"><div><h1>All Leads</h1><p>Shared discovery records, independent of any one Scout</p></div><div class="topbar-actions"><button class="button" data-action="run">▷ Run Scouts</button><div class="avatar">MV</div></div></div><div class="c-content"><div class="table-heading"><div><div class="eyebrow">Adapted from the existing Scheduled table</div><h2>Every employment path in one place</h2><p>Sort, filter, and open a Lead without losing its evidence history.</p></div>${pill("4 active Leads", "blue")}</div><div class="table-toolbar"><div class="table-filters"><button class="filter active">All</button><button class="filter">Needs review</button><button class="filter">Strong fit</button><button class="filter">Revisit due</button></div><button class="button ghost" data-action="filter">☷ Filter fields</button></div><section class="table-surface"><div class="table-grid table-header"><span>Lead / Opportunity</span><span>Fit</span><span>Scout</span><span>Evidence</span><span>Next revisit</span></div>${tableRows()}<div class="table-foot"><span>Showing 4 Leads · last updated 8m ago</span><span>Shared Candidate database · local</span></div></section><section class="saved-view"><h3>Saved views</h3><div class="saved-view-row"><span>Strong fit · fresh evidence</span>${pill("7", "lime")}</div><div class="saved-view-row"><span>Needs Candidate review</span>${pill("3", "amber")}</div><div class="saved-view-row"><span>Revisit due this week</span>${pill("4", "blue")}</div></section></div></main>${contextPanel()}`;
+      }
+
+      function switcher(variant) { const keys = Object.keys(variants); const i = keys.indexOf(variant); const prev = keys[(i + keys.length - 1) % keys.length]; const next = keys[(i + 1) % keys.length]; return `<div class="switcher"><button data-variant="${prev}" aria-label="Previous variant">←</button><div class="switcher-label"><strong>${variant}</strong> — ${variants[variant]}</div><button data-variant="${next}" aria-label="Next variant">→</button></div>`; }
+      function render() { const variant = currentVariant(); const center = variant === "B" ? variantB() : variant === "C" ? variantC() : variantA(); document.getElementById("app").innerHTML = `<div class="app">${sidebar()}${center}</div>${switcher(variant)}${state.toast ? `<div class="toast">${esc(state.toast)}</div>` : ""}`; }
+      function setVariant(value) { const url = new URL(window.location.href); url.searchParams.set("variant", value); window.history.replaceState({}, "", url); render(); }
+      function toast(message) { state.toast = message; render(); clearTimeout(toast.timer); toast.timer = setTimeout(() => { state.toast = ""; render(); }, 3200); }
+      function makeDecision(key) { const item = lead(); const map = { promote: ["promote", "Promoted to Opportunity", "lime"], watch: ["watch", "Watching", "blue"], dismiss: ["dismiss", "Dismissed", "red"] }; const [decisionKey, label, tone] = map[key]; state.decisions[item.id] = { key: decisionKey, label, tone }; toast(`${item.company}: ${label}. The Lead and evidence history remain intact.`); }
+
+      document.addEventListener("click", (event) => {
+        const target = event.target.closest("button");
+        if (!target) return;
+        if (target.dataset.variant) return setVariant(target.dataset.variant);
+        if (target.dataset.lead) { state.selectedLead = target.dataset.lead; state.contextTab = "evidence"; return render(); }
+        if (target.dataset.scout) { state.selectedScout = target.dataset.scout; return toast(`${target.textContent.trim()} selected. Its next run and fresh Leads are now in context.`); }
+        if (target.dataset.contextTab) { state.contextTab = target.dataset.contextTab; return render(); }
+        if (target.dataset.runTab) { state.runTab = target.dataset.runTab; return toast(`${target.textContent.trim()} tab selected for the prototype.`); }
+        if (target.dataset.nav) return toast(`${target.textContent.trim()} would open as a sibling view in the adapted shell.`);
+        if (target.dataset.decision) return makeDecision(target.dataset.decision);
+        if (target.dataset.action === "run") return toast("Scout Run started locally for the prototype; new Signals will flow into the shared review surface.");
+        if (target.dataset.action === "source") return toast("Source inspection would open the original page with provenance and access state attached.");
+        if (target.dataset.action === "readiness") return toast("Source readiness would show public access, Candidate authorization, and the next permitted refresh.");
+        if (target.dataset.action === "filter") return toast("Filters would narrow by Scout, freshness, fit, decision state, or Source readiness.");
+      });
+      document.addEventListener("keydown", (event) => { const tag = document.activeElement?.tagName; if (tag === "INPUT" || tag === "TEXTAREA" || document.activeElement?.isContentEditable) return; if (event.key !== "ArrowLeft" && event.key !== "ArrowRight") return; const keys = Object.keys(variants); const i = keys.indexOf(currentVariant()); setVariant(keys[event.key === "ArrowRight" ? (i + 1) % keys.length : (i + keys.length - 1) % keys.length]); });
+      window.addEventListener("popstate", render);
+      render();
+    </script>
+  </body>
+</html>
