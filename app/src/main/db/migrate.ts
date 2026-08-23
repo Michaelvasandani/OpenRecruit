@@ -34,7 +34,7 @@ export interface MigrationDb {
 }
 
 /** Bump on every schema change, with a matching entry in MIGRATIONS. */
-export const SCHEMA_VERSION = 5;
+export const SCHEMA_VERSION = 6;
 
 const MIGRATIONS: Record<number, (db: MigrationDb) => void> = {
   // v2 — headless turn limit: per-agent unattended-turn counter + on/off toggle.
@@ -57,6 +57,31 @@ const MIGRATIONS: Record<number, (db: MigrationDb) => void> = {
   // back to their wake/audit history in the meantime.
   5: (db) => {
     addColumnIfMissing(db, "agents", "last_turn_at", "INTEGER");
+  },
+  // v6 — additive Recruiting boundary. Legacy rows remain in place and only
+  // active agents are represented in the new Scout projection. The unique
+  // legacy_agent_id constraint plus the NOT EXISTS guard makes this safe to replay.
+  6: (db) => {
+    db.exec(`
+      INSERT INTO scouts (
+        id, name, harness, instruction_path, strategy_path,
+        resumable_session_ref, legacy_agent_id, created_at
+      )
+      SELECT
+        lower(hex(randomblob(16))),
+        a.name,
+        a.harness,
+        'agents/' || a.slug,
+        NULL,
+        a.last_session_id,
+        a.id,
+        a.created_at
+      FROM agents a
+      WHERE a.archived_at IS NULL
+        AND NOT EXISTS (
+          SELECT 1 FROM scouts s WHERE s.legacy_agent_id = a.id
+        )
+    `);
   },
 };
 

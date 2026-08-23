@@ -1,4 +1,13 @@
-import { index, integer, sqliteTable, text } from "drizzle-orm/sqlite-core";
+import { sql } from "drizzle-orm";
+import {
+  check,
+  index,
+  integer,
+  primaryKey,
+  sqliteTable,
+  text,
+  uniqueIndex,
+} from "drizzle-orm/sqlite-core";
 
 /** Registry row per agent folder. Runtime `status` is a mirror, rewritten on boot. */
 export const agents = sqliteTable("agents", {
@@ -143,3 +152,457 @@ export const recentNotifications = sqliteTable("recent_notifications", {
   agentId: text("agent_id"),
   at: integer("at").notNull(),
 });
+
+// Recruiting persistence starts at schema v6. These tables deliberately live beside
+// the inherited OpenTrade tables during the additive migration. The host owns all
+// writes; the renderer only receives projections from the Recruiting application.
+export const profiles = sqliteTable("profiles", {
+  id: text("id").primaryKey(),
+  name: text("name").notNull(),
+  artifactPath: text("artifact_path").notNull(),
+  state: text("state").notNull().default("draft"),
+  currentVersionId: text("current_version_id"),
+  contentHash: text("content_hash"),
+  createdAt: integer("created_at").notNull(),
+  updatedAt: integer("updated_at").notNull(),
+});
+
+export const profileVersions = sqliteTable(
+  "profile_versions",
+  {
+    id: text("id").primaryKey(),
+    profileId: text("profile_id")
+      .notNull()
+      .references(() => profiles.id),
+    versionNo: integer("version_no").notNull(),
+    markdownSnapshot: text("markdown_snapshot").notNull(),
+    structuredSnapshot: text("structured_snapshot").notNull(),
+    provenance: text("provenance").notNull(),
+    contentHash: text("content_hash").notNull(),
+    confirmedAt: integer("confirmed_at"),
+    createdAt: integer("created_at").notNull(),
+  },
+  (t) => [
+    uniqueIndex("profile_versions_number").on(t.profileId, t.versionNo),
+    uniqueIndex("profile_versions_hash").on(t.profileId, t.contentHash),
+  ],
+);
+
+export const scouts = sqliteTable(
+  "scouts",
+  {
+    id: text("id").primaryKey(),
+    name: text("name").notNull(),
+    harness: text("harness").notNull().default("claude"),
+    instructionPath: text("instruction_path").notNull(),
+    strategyPath: text("strategy_path"),
+    instructionHash: text("instruction_hash"),
+    strategyHash: text("strategy_hash"),
+    defaultProfileId: text("default_profile_id").references(() => profiles.id),
+    lifecycleState: text("lifecycle_state").notNull().default("active"),
+    resumableSessionRef: text("resumable_session_ref"),
+    legacyAgentId: text("legacy_agent_id").references(() => agents.id),
+    revision: integer("revision").notNull().default(0),
+    createdAt: integer("created_at").notNull(),
+    archivedAt: integer("archived_at"),
+  },
+  (t) => [
+    uniqueIndex("scouts_legacy_agent").on(t.legacyAgentId),
+    index("scouts_lifecycle").on(t.lifecycleState, t.createdAt),
+  ],
+);
+
+export const sources = sqliteTable("sources", {
+  id: text("id").primaryKey(),
+  kind: text("kind").notNull(),
+  name: text("name").notNull(),
+  config: text("config").notNull().default("{}"),
+  readiness: text("readiness").notNull().default("not_configured"),
+  safeFailure: text("safe_failure"),
+  createdAt: integer("created_at").notNull(),
+  updatedAt: integer("updated_at").notNull(),
+});
+
+export const sourceAccess = sqliteTable(
+  "source_access",
+  {
+    id: text("id").primaryKey(),
+    sourceId: text("source_id")
+      .notNull()
+      .references(() => sources.id),
+    accountRef: text("account_ref").notNull().default(""),
+    scopeKey: text("scope_key").notNull(),
+    readiness: text("readiness").notNull().default("not_configured"),
+    safeFailure: text("safe_failure"),
+    lastCheckedAt: integer("last_checked_at"),
+    retryAt: integer("retry_at"),
+    createdAt: integer("created_at").notNull(),
+    updatedAt: integer("updated_at").notNull(),
+  },
+  (t) => [uniqueIndex("source_access_scope").on(t.sourceId, t.accountRef, t.scopeKey)],
+);
+
+export const scoutSources = sqliteTable(
+  "scout_sources",
+  {
+    scoutId: text("scout_id")
+      .notNull()
+      .references(() => scouts.id),
+    sourceId: text("source_id")
+      .notNull()
+      .references(() => sources.id),
+    selectedAt: integer("selected_at").notNull(),
+  },
+  (t) => [primaryKey({ columns: [t.scoutId, t.sourceId] })],
+);
+
+export const scoutRuns = sqliteTable(
+  "scout_runs",
+  {
+    id: text("id").primaryKey(),
+    scoutId: text("scout_id")
+      .notNull()
+      .references(() => scouts.id),
+    trigger: text("trigger").notNull(),
+    status: text("status").notNull().default("queued"),
+    phase: text("phase").notNull().default("preflight"),
+    budget: text("budget").notNull().default("{}"),
+    profileVersionId: text("profile_version_id").references(() => profileVersions.id),
+    profileSnapshot: text("profile_snapshot"),
+    strategySnapshot: text("strategy_snapshot"),
+    policySnapshot: text("policy_snapshot"),
+    checkpoint: text("checkpoint"),
+    safeFailure: text("safe_failure"),
+    startedAt: integer("started_at"),
+    completedAt: integer("completed_at"),
+    createdAt: integer("created_at").notNull(),
+  },
+  (t) => [index("scout_runs_scout_created").on(t.scoutId, t.createdAt)],
+);
+
+export const scoutRunCheckpoints = sqliteTable(
+  "scout_run_checkpoints",
+  {
+    id: text("id").primaryKey(),
+    runId: text("run_id")
+      .notNull()
+      .references(() => scoutRuns.id),
+    sequence: integer("sequence").notNull(),
+    phase: text("phase").notNull(),
+    checkpoint: text("checkpoint").notNull(),
+    createdAt: integer("created_at").notNull(),
+  },
+  (t) => [uniqueIndex("scout_run_checkpoint_sequence").on(t.runId, t.sequence)],
+);
+
+export const sourceAttempts = sqliteTable(
+  "source_attempts",
+  {
+    id: text("id").primaryKey(),
+    runId: text("run_id")
+      .notNull()
+      .references(() => scoutRuns.id),
+    sourceId: text("source_id")
+      .notNull()
+      .references(() => sources.id),
+    requestedScope: text("requested_scope").notNull().default("{}"),
+    cursor: text("cursor"),
+    outcome: text("outcome").notNull().default("started"),
+    itemCount: integer("item_count").notNull().default(0),
+    pageCount: integer("page_count").notNull().default(0),
+    retryAt: integer("retry_at"),
+    safeFailure: text("safe_failure"),
+    startedAt: integer("started_at").notNull(),
+    completedAt: integer("completed_at"),
+  },
+  (t) => [index("source_attempts_run").on(t.runId, t.startedAt)],
+);
+
+export const sourceItems = sqliteTable(
+  "source_items",
+  {
+    id: text("id").primaryKey(),
+    sourceId: text("source_id")
+      .notNull()
+      .references(() => sources.id),
+    identityKey: text("identity_key").notNull(),
+    canonicalUrl: text("canonical_url"),
+    providerIdentity: text("provider_identity"),
+    latestFingerprint: text("latest_fingerprint"),
+    latestSignalId: text("latest_signal_id"),
+    deletionMarkerAt: integer("deletion_marker_at"),
+    createdAt: integer("created_at").notNull(),
+    updatedAt: integer("updated_at").notNull(),
+  },
+  (t) => [uniqueIndex("source_items_identity").on(t.sourceId, t.identityKey)],
+);
+
+export const signals = sqliteTable(
+  "signals",
+  {
+    id: text("id").primaryKey(),
+    sourceItemId: text("source_item_id")
+      .notNull()
+      .references(() => sourceItems.id),
+    sourceAttemptId: text("source_attempt_id")
+      .notNull()
+      .references(() => sourceAttempts.id),
+    runId: text("run_id")
+      .notNull()
+      .references(() => scoutRuns.id),
+    fingerprint: text("fingerprint").notNull(),
+    provenance: text("provenance").notNull(),
+    publicationAt: integer("publication_at"),
+    observedAt: integer("observed_at").notNull(),
+    retrievedAt: integer("retrieved_at").notNull(),
+    evidence: text("evidence").notNull(),
+    retentionUntil: integer("retention_until"),
+    supersededSignalId: text("superseded_signal_id"),
+    createdAt: integer("created_at").notNull(),
+  },
+  (t) => [uniqueIndex("signals_observation_fingerprint").on(t.sourceItemId, t.fingerprint)],
+);
+
+export const signalAttributions = sqliteTable(
+  "signal_attributions",
+  {
+    signalId: text("signal_id")
+      .notNull()
+      .references(() => signals.id),
+    runId: text("run_id")
+      .notNull()
+      .references(() => scoutRuns.id),
+    scoutId: text("scout_id")
+      .notNull()
+      .references(() => scouts.id),
+    strategyKey: text("strategy_key"),
+    createdAt: integer("created_at").notNull(),
+  },
+  (t) => [primaryKey({ columns: [t.signalId, t.runId] })],
+);
+
+export const leads = sqliteTable("leads", {
+  id: text("id").primaryKey(),
+  canonicalKey: text("canonical_key").notNull().unique(),
+  title: text("title").notNull(),
+  summary: text("summary"),
+  identityState: text("identity_state").notNull().default("settled"),
+  conflict: text("conflict"),
+  revision: integer("revision").notNull().default(0),
+  createdAt: integer("created_at").notNull(),
+  updatedAt: integer("updated_at").notNull(),
+});
+
+export const leadAliases = sqliteTable(
+  "lead_aliases",
+  {
+    id: text("id").primaryKey(),
+    leadId: text("lead_id")
+      .notNull()
+      .references(() => leads.id),
+    kind: text("kind").notNull(),
+    value: text("value").notNull(),
+  },
+  (t) => [uniqueIndex("lead_aliases_identity").on(t.kind, t.value)],
+);
+
+export const leadSignalLinks = sqliteTable(
+  "lead_signal_links",
+  {
+    leadId: text("lead_id")
+      .notNull()
+      .references(() => leads.id),
+    signalId: text("signal_id")
+      .notNull()
+      .references(() => signals.id),
+    relation: text("relation").notNull().default("supporting"),
+    createdAt: integer("created_at").notNull(),
+  },
+  (t) => [primaryKey({ columns: [t.leadId, t.signalId] })],
+);
+
+export const opportunities = sqliteTable("opportunities", {
+  id: text("id").primaryKey(),
+  leadId: text("lead_id")
+    .notNull()
+    .references(() => leads.id),
+  title: text("title").notNull(),
+  state: text("state").notNull().default("active"),
+  revision: integer("revision").notNull().default(0),
+  createdAt: integer("created_at").notNull(),
+  updatedAt: integer("updated_at").notNull(),
+});
+
+export const fitEvaluations = sqliteTable(
+  "fit_evaluations",
+  {
+    id: text("id").primaryKey(),
+    leadId: text("lead_id").references(() => leads.id),
+    opportunityId: text("opportunity_id").references(() => opportunities.id),
+    profileVersionId: text("profile_version_id")
+      .notNull()
+      .references(() => profileVersions.id),
+    runId: text("run_id")
+      .notNull()
+      .references(() => scoutRuns.id),
+    strategyHash: text("strategy_hash"),
+    policyHash: text("policy_hash"),
+    detail: text("detail").notNull(),
+    freshness: text("freshness").notNull(),
+    staleReason: text("stale_reason"),
+    staleAt: integer("stale_at"),
+    createdAt: integer("created_at").notNull(),
+  },
+  () => [
+    check(
+      "fit_evaluations_one_subject",
+      sql`(lead_id IS NOT NULL) <> (opportunity_id IS NOT NULL)`,
+    ),
+  ],
+);
+
+export const fitEvaluationSignalLinks = sqliteTable(
+  "fit_evaluation_signal_links",
+  {
+    evaluationId: text("evaluation_id")
+      .notNull()
+      .references(() => fitEvaluations.id),
+    signalId: text("signal_id")
+      .notNull()
+      .references(() => signals.id),
+  },
+  (t) => [primaryKey({ columns: [t.evaluationId, t.signalId] })],
+);
+
+export const investigations = sqliteTable(
+  "investigations",
+  {
+    id: text("id").primaryKey(),
+    leadId: text("lead_id").references(() => leads.id),
+    opportunityId: text("opportunity_id").references(() => opportunities.id),
+    questionKey: text("question_key").notNull(),
+    questionSnapshot: text("question_snapshot").notNull(),
+    status: text("status").notNull().default("open"),
+    revision: integer("revision").notNull().default(0),
+    createdAt: integer("created_at").notNull(),
+    updatedAt: integer("updated_at").notNull(),
+  },
+  (t) => [
+    check("investigations_one_subject", sql`(lead_id IS NOT NULL) <> (opportunity_id IS NOT NULL)`),
+    uniqueIndex("investigations_lead_question")
+      .on(t.leadId, t.questionKey)
+      .where(sql`lead_id IS NOT NULL`),
+    uniqueIndex("investigations_opportunity_question")
+      .on(t.opportunityId, t.questionKey)
+      .where(sql`opportunity_id IS NOT NULL`),
+  ],
+);
+
+export const investigationAttempts = sqliteTable(
+  "investigation_attempts",
+  {
+    id: text("id").primaryKey(),
+    investigationId: text("investigation_id")
+      .notNull()
+      .references(() => investigations.id),
+    scoutId: text("scout_id")
+      .notNull()
+      .references(() => scouts.id),
+    questionSnapshot: text("question_snapshot").notNull(),
+    evidence: text("evidence").notNull().default("[]"),
+    conclusion: text("conclusion"),
+    uncertainty: text("uncertainty"),
+    outcome: text("outcome").notNull(),
+    createdAt: integer("created_at").notNull(),
+  },
+  (t) => [index("investigation_attempts_subject").on(t.investigationId, t.createdAt)],
+);
+
+export const revisitPlans = sqliteTable(
+  "revisit_plans",
+  {
+    id: text("id").primaryKey(),
+    scoutId: text("scout_id")
+      .notNull()
+      .references(() => scouts.id),
+    sourceId: text("source_id").references(() => sources.id),
+    leadId: text("lead_id").references(() => leads.id),
+    opportunityId: text("opportunity_id").references(() => opportunities.id),
+    investigationId: text("investigation_id").references(() => investigations.id),
+    kind: text("kind").notNull(),
+    cadence: text("cadence"),
+    dueAt: integer("due_at"),
+    state: text("state").notNull().default("active"),
+    policySnapshot: text("policy_snapshot").notNull().default("{}"),
+    revision: integer("revision").notNull().default(0),
+    createdAt: integer("created_at").notNull(),
+    updatedAt: integer("updated_at").notNull(),
+  },
+  (t) => [
+    check(
+      "revisit_plans_one_subject",
+      sql`((source_id IS NOT NULL) + (lead_id IS NOT NULL) + (opportunity_id IS NOT NULL) + (investigation_id IS NOT NULL)) = 1`,
+    ),
+    uniqueIndex("revisit_plans_source_identity")
+      .on(t.scoutId, t.sourceId)
+      .where(sql`source_id IS NOT NULL`),
+    uniqueIndex("revisit_plans_lead_identity")
+      .on(t.scoutId, t.leadId)
+      .where(sql`lead_id IS NOT NULL`),
+    uniqueIndex("revisit_plans_opportunity_identity")
+      .on(t.scoutId, t.opportunityId)
+      .where(sql`opportunity_id IS NOT NULL`),
+    uniqueIndex("revisit_plans_investigation_identity")
+      .on(t.scoutId, t.investigationId)
+      .where(sql`investigation_id IS NOT NULL`),
+  ],
+);
+
+export const candidateDecisions = sqliteTable(
+  "candidate_decisions",
+  {
+    id: text("id").primaryKey(),
+    leadId: text("lead_id").references(() => leads.id),
+    opportunityId: text("opportunity_id").references(() => opportunities.id),
+    kind: text("kind").notNull(),
+    detail: text("detail").notNull().default("{}"),
+    expectedRevision: integer("expected_revision"),
+    createdAt: integer("created_at").notNull(),
+  },
+  () => [
+    check(
+      "candidate_decisions_one_subject",
+      sql`(lead_id IS NOT NULL) <> (opportunity_id IS NOT NULL)`,
+    ),
+  ],
+);
+
+export const domainClock = sqliteTable("domain_clock", {
+  id: integer("id").primaryKey(),
+  revision: integer("revision").notNull(),
+});
+
+export const commandReceipts = sqliteTable(
+  "command_receipts",
+  {
+    id: text("id").primaryKey(),
+    scopeKind: text("scope_kind").notNull(),
+    scopeId: text("scope_id"),
+    commandKind: text("command_kind").notNull(),
+    idempotencyKey: text("idempotency_key").notNull(),
+    payloadHash: text("payload_hash").notNull(),
+    status: text("status").notNull(),
+    result: text("result"),
+    errorCode: text("error_code"),
+    createdAt: integer("created_at").notNull(),
+    completedAt: integer("completed_at"),
+  },
+  (t) => [
+    uniqueIndex("command_receipts_identity").on(
+      t.scopeKind,
+      t.scopeId,
+      t.commandKind,
+      t.idempotencyKey,
+    ),
+  ],
+);

@@ -39,6 +39,11 @@ export function createDb() {
     // best-effort
   }
   sqlite.pragma("journal_mode = WAL");
+  sqlite.pragma("foreign_keys = ON");
+  // Keep local commands bounded when a detached host and a short-lived test or
+  // maintenance process commit at the same time; callers receive a normal typed
+  // failure rather than waiting indefinitely on SQLite's writer lock.
+  sqlite.pragma("busy_timeout = 5000");
   // Fresh = no tables yet (the `agents` table has existed since the first release),
   // decided BEFORE the DDL runs so migrate() knows whether to stamp or replay.
   const fresh =

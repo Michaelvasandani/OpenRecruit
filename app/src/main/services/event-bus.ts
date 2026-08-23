@@ -3,6 +3,7 @@ import type { Agent } from "@shared/agent";
 import type { Approval } from "@shared/approval";
 import type { BrokerConnectionStatus } from "@shared/broker";
 import type { HostNotification, RecentNotification } from "@shared/notify";
+import type { RecruitingInvalidation } from "@shared/recruiting";
 import type { AppSettings } from "@shared/settings";
 
 /** Typed app-wide event bus bridged into tRPC observables. */
@@ -35,6 +36,8 @@ export interface AppEvents {
   "gui:gone": undefined;
   /** A GUI (re)appeared (0→1 renderer connection). Drives the analytics `app_opened`. */
   "gui:present": undefined;
+  /** Post-commit invalidation envelope for Recruiting read projections. */
+  "recruiting:changed": RecruitingInvalidation;
 }
 
 class TypedEmitter extends EventEmitter {

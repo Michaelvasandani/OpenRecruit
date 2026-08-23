@@ -2,6 +2,7 @@ import type { Agent } from "@shared/agent";
 import { CalendarClock, Loader2, Plus, Settings, X } from "lucide-react";
 import { type CSSProperties, useEffect, useState } from "react";
 import { useAgents } from "../../hooks/useAgents";
+import { useScouts } from "../../hooks/useScouts";
 import { trpc } from "../../lib/trpc";
 import { cn } from "../../lib/utils";
 import { useConnectionStore } from "../../stores/connection";
@@ -13,6 +14,7 @@ import { UpdateButton } from "./UpdateButton";
 
 export function AgentSidebar() {
   const agents = useAgents();
+  const scouts = useScouts();
   const selectedId = useUIStore((s) => s.selectedAgentId);
   const select = useUIStore((s) => s.select);
   const view = useUIStore((s) => s.view);
@@ -83,6 +85,28 @@ export function AgentSidebar() {
       </div>
 
       <Separator className="bg-sidebar-border" />
+
+      <div className="px-3 pb-2 pt-3">
+        <span className="text-xs font-medium uppercase tracking-wider text-muted-foreground">
+          Scouts
+        </span>
+      </div>
+      <div className="px-2 pb-2">
+        {scouts.length === 0 && (
+          <p className="px-2 py-1 text-sm text-muted-foreground">No Scouts yet.</p>
+        )}
+        {scouts.map((scout) => (
+          <div
+            key={scout.id}
+            className="flex items-center gap-2 rounded-md px-2 py-1.5 text-sm text-sidebar-foreground"
+            title={scout.instructionPath}
+          >
+            <span className="size-2 rounded-full bg-emerald-500" aria-hidden="true" />
+            <span className="min-w-0 flex-1 truncate">{scout.name}</span>
+            <span className="text-[10px] uppercase text-muted-foreground">{scout.harness}</span>
+          </div>
+        ))}
+      </div>
 
       <div className="px-3 pb-2 pt-3">
         <span className="text-xs font-medium uppercase tracking-wider text-muted-foreground">

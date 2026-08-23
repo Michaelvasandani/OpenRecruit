@@ -6,6 +6,7 @@ import type { ApprovalService } from "../services/approvals";
 import type { AuditLog } from "../services/audit";
 import type { BrokerService } from "../services/broker";
 import type { RecentNotificationsService } from "../services/notifications/recent";
+import type { RecruitingApplication } from "../services/recruiting";
 import type { Scheduler } from "../services/scheduler";
 import type { WakeTransport } from "../services/scheduler/wake/types";
 import type { SettingsService } from "../services/settings";
@@ -23,6 +24,7 @@ export interface Context {
   wake: WakeTransport;
   /** Durable Recent ring buffer behind `notifications.onRecent` (§12.6). */
   recent: RecentNotificationsService;
+  recruiting: RecruitingApplication;
 }
 
 const t = initTRPC.context<Context>().create({ transformer: superjson });

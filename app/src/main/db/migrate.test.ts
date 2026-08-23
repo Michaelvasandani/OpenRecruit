@@ -119,4 +119,97 @@ describe("db migrations", () => {
     db.exec(`PRAGMA user_version = ${SCHEMA_VERSION + 1}`);
     expect(() => migrate(m, { fresh: false })).toThrow(/newer than this build/);
   });
+
+  test("v6 imports each active legacy agent into exactly one Scout", () => {
+    const db = new Database(":memory:");
+    const m = wrap(db);
+    db.exec(BASELINE_AGENTS);
+    db.exec(
+      `INSERT INTO agents (id, slug, name, template, approval_mode, last_session_id, status, created_at)
+       VALUES ('active', 'active-agent', 'Active Agent', 'default', 'approve', 'session-1', 'idle', 1000),
+              ('archived', 'old-agent', 'Old Agent', 'default', 'approve', 'session-2', 'idle', 1001)`,
+    );
+    db.exec("UPDATE agents SET archived_at = 2000 WHERE id = 'archived'");
+    db.exec(SCHEMA_DDL);
+    migrate(m, { fresh: false });
+
+    const scouts = db
+      .query(
+        "SELECT legacy_agent_id, name, harness, instruction_path, resumable_session_ref FROM scouts",
+      )
+      .all() as Record<string, unknown>[];
+    expect(scouts).toHaveLength(1);
+    expect(scouts[0]).toMatchObject({
+      legacy_agent_id: "active",
+      name: "Active Agent",
+      harness: "claude",
+      instruction_path: "agents/active-agent",
+      resumable_session_ref: "session-1",
+    });
+
+    migrate(m, { fresh: false });
+    expect(db.query("SELECT count(*) AS count FROM scouts").get()).toEqual({ count: 1 });
+    expect(db.query("SELECT count(*) AS count FROM schedules").get()).toEqual({ count: 0 });
+  });
+
+  test("fresh recruiting schema has the subject checks, foreign keys, and durable clock", () => {
+    const db = new Database(":memory:");
+    const m = wrap(db);
+    db.exec("PRAGMA foreign_keys = ON");
+    db.exec(SCHEMA_DDL);
+    migrate(m, { fresh: true });
+
+    expect(db.query("PRAGMA foreign_keys").get()).toEqual({ foreign_keys: 1 });
+    expect(db.query("SELECT revision FROM domain_clock WHERE id = 1").get()).toEqual({
+      revision: 0,
+    });
+    const tables = db
+      .query(
+        "SELECT name FROM sqlite_master WHERE type = 'table' AND name IN ('profiles', 'scouts', 'scout_runs', 'signals', 'leads', 'opportunities', 'investigations', 'revisit_plans', 'candidate_decisions', 'command_receipts') ORDER BY name",
+      )
+      .all() as { name: string }[];
+    expect(tables.map((row) => row.name)).toEqual([
+      "candidate_decisions",
+      "command_receipts",
+      "investigations",
+      "leads",
+      "opportunities",
+      "profiles",
+      "revisit_plans",
+      "scout_runs",
+      "scouts",
+      "signals",
+    ]);
+    expect(() =>
+      db.exec(
+        `INSERT INTO candidate_decisions (id, lead_id, opportunity_id, kind, created_at)
+         VALUES ('invalid', NULL, NULL, 'dismiss', 1)`,
+      ),
+    ).toThrow();
+  });
+
+  test("v6 leaves legacy runtime and broker records recoverable", () => {
+    const db = new Database(":memory:");
+    const m = wrap(db);
+    db.exec(BASELINE_AGENTS);
+    db.exec(
+      `INSERT INTO agents (id, slug, name, created_at) VALUES ('legacy', 'legacy', 'Legacy', 1)`,
+    );
+    db.exec(SCHEMA_DDL);
+    db.exec(`
+      INSERT INTO schedules (id, agent_id, cron_expr, prompt, created_at) VALUES ('schedule', 'legacy', '* * * * *', 'wake', 1);
+      INSERT INTO monitors (id, agent_id, command, created_at) VALUES ('monitor', 'legacy', 'echo signal', 1);
+      INSERT INTO wakes (id, agent_id, source_kind, prompt, background, fired_at) VALUES ('wake', 'legacy', 'cron', 'wake', 1, 1);
+      INSERT INTO approvals (id, agent_id, tool_name, raw_input, requested_at) VALUES ('approval', 'legacy', 'tool', '{}', 1);
+      INSERT INTO broker_cache (key, payload, fetched_at) VALUES ('portfolio', '{}', 1);
+    `);
+    migrate(m, { fresh: false });
+
+    expect(db.query("SELECT count(*) AS count FROM schedules").get()).toEqual({ count: 1 });
+    expect(db.query("SELECT count(*) AS count FROM monitors").get()).toEqual({ count: 1 });
+    expect(db.query("SELECT count(*) AS count FROM wakes").get()).toEqual({ count: 1 });
+    expect(db.query("SELECT count(*) AS count FROM approvals").get()).toEqual({ count: 1 });
+    expect(db.query("SELECT count(*) AS count FROM broker_cache").get()).toEqual({ count: 1 });
+    expect(db.query("SELECT count(*) AS count FROM scouts").get()).toEqual({ count: 1 });
+  });
 });

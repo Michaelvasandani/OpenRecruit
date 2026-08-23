@@ -28,6 +28,7 @@ import { buildCodexAnswerer, buildInteractivePushFactory } from "../services/har
 import { LocalApiServer } from "../services/local-api";
 import { derivePort } from "../services/local-api/endpoint";
 import { RecentNotificationsService } from "../services/notifications/recent";
+import { RecruitingApplication } from "../services/recruiting";
 import { Scheduler } from "../services/scheduler";
 import {
   CodexHeadlessStrategy,
@@ -70,6 +71,7 @@ async function main() {
   const db = createDb();
   const registry = new AgentRegistry(db);
   registry.resetStatusesOnBoot();
+  const recruiting = new RecruitingApplication(db);
 
   const settings = new SettingsService(db);
   // Durable Recent ring buffer for the tray (§12.6). Subscribed HERE, before anything
@@ -205,6 +207,7 @@ async function main() {
     scheduler,
     wake,
     recent,
+    recruiting,
   };
   const trpc = new HostTrpcServer(ctx, token);
   await trpc.listen();
