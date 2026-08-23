@@ -159,10 +159,15 @@ export const recentNotifications = sqliteTable("recent_notifications", {
 export const profiles = sqliteTable("profiles", {
   id: text("id").primaryKey(),
   name: text("name").notNull(),
+  roleTarget: text("role_target").notNull().default(""),
   artifactPath: text("artifact_path").notNull(),
   state: text("state").notNull().default("draft"),
   currentVersionId: text("current_version_id"),
   contentHash: text("content_hash"),
+  draftMarkdown: text("draft_markdown"),
+  draftStructured: text("draft_structured"),
+  draftProvenance: text("draft_provenance"),
+  revision: integer("revision").notNull().default(0),
   createdAt: integer("created_at").notNull(),
   updatedAt: integer("updated_at").notNull(),
 });

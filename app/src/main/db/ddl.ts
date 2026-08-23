@@ -103,10 +103,15 @@ export const SCHEMA_DDL = `
     CREATE TABLE IF NOT EXISTS profiles (
       id TEXT PRIMARY KEY,
       name TEXT NOT NULL,
+      role_target TEXT NOT NULL DEFAULT '',
       artifact_path TEXT NOT NULL,
       state TEXT NOT NULL DEFAULT 'draft',
       current_version_id TEXT,
       content_hash TEXT,
+      draft_markdown TEXT,
+      draft_structured TEXT,
+      draft_provenance TEXT,
+      revision INTEGER NOT NULL DEFAULT 0,
       created_at INTEGER NOT NULL,
       updated_at INTEGER NOT NULL,
       FOREIGN KEY (current_version_id) REFERENCES profile_versions(id)

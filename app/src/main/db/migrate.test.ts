@@ -212,4 +212,41 @@ describe("db migrations", () => {
     expect(db.query("SELECT count(*) AS count FROM broker_cache").get()).toEqual({ count: 1 });
     expect(db.query("SELECT count(*) AS count FROM scouts").get()).toEqual({ count: 1 });
   });
+
+  test("v7 adds Candidate Profile draft columns to an existing v6 database", () => {
+    const db = new Database(":memory:");
+    const m = wrap(db);
+    db.exec(`
+      CREATE TABLE profiles (
+        id TEXT PRIMARY KEY,
+        name TEXT NOT NULL,
+        artifact_path TEXT NOT NULL,
+        state TEXT NOT NULL DEFAULT 'draft',
+        current_version_id TEXT,
+        content_hash TEXT,
+        created_at INTEGER NOT NULL,
+        updated_at INTEGER NOT NULL
+      );
+      INSERT INTO profiles (id, name, artifact_path, created_at, updated_at)
+      VALUES ('p1', 'Candidate', '/tmp/p1.md', 1, 1);
+      PRAGMA user_version = 6;
+    `);
+    db.exec(SCHEMA_DDL);
+    migrate(m, { fresh: false });
+
+    expect(userVersion(m)).toBe(SCHEMA_VERSION);
+    expect(columns(db, "profiles")).toEqual(
+      expect.arrayContaining([
+        "role_target",
+        "draft_markdown",
+        "draft_structured",
+        "draft_provenance",
+        "revision",
+      ]),
+    );
+    expect(db.query("SELECT name, revision FROM profiles WHERE id = 'p1'").get()).toEqual({
+      name: "Candidate",
+      revision: 0,
+    });
+  });
 });

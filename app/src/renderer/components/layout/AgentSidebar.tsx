@@ -1,5 +1,5 @@
 import type { Agent } from "@shared/agent";
-import { CalendarClock, Loader2, Plus, Settings, X } from "lucide-react";
+import { CalendarClock, FileUser, Loader2, Plus, Settings, X } from "lucide-react";
 import { type CSSProperties, useEffect, useState } from "react";
 import { useAgents } from "../../hooks/useAgents";
 import { useScouts } from "../../hooks/useScouts";
@@ -106,6 +106,23 @@ export function AgentSidebar() {
             <span className="text-[10px] uppercase text-muted-foreground">{scout.harness}</span>
           </div>
         ))}
+      </div>
+
+      <div className="px-2 pb-2">
+        <button
+          type="button"
+          onClick={() => setView("profiles")}
+          disabled={!backendConnected}
+          className={cn(
+            "flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-sm hover:bg-sidebar-accent",
+            view === "profiles"
+              ? "bg-sidebar-accent font-medium text-sidebar-foreground"
+              : "text-muted-foreground",
+            !backendConnected && "pointer-events-none opacity-50",
+          )}
+        >
+          <FileUser className="size-4" /> Candidate Profiles
+        </button>
       </div>
 
       <div className="px-3 pb-2 pt-3">

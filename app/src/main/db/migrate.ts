@@ -34,7 +34,7 @@ export interface MigrationDb {
 }
 
 /** Bump on every schema change, with a matching entry in MIGRATIONS. */
-export const SCHEMA_VERSION = 6;
+export const SCHEMA_VERSION = 7;
 
 const MIGRATIONS: Record<number, (db: MigrationDb) => void> = {
   // v2 — headless turn limit: per-agent unattended-turn counter + on/off toggle.
@@ -82,6 +82,15 @@ const MIGRATIONS: Record<number, (db: MigrationDb) => void> = {
           SELECT 1 FROM scouts s WHERE s.legacy_agent_id = a.id
         )
     `);
+  },
+  // v7 — Candidate Profile drafts and role targeting. Existing profile rows are
+  // valid empty drafts; confirmed versions remain immutable and untouched.
+  7: (db) => {
+    addColumnIfMissing(db, "profiles", "role_target", "TEXT NOT NULL DEFAULT ''");
+    addColumnIfMissing(db, "profiles", "draft_markdown", "TEXT");
+    addColumnIfMissing(db, "profiles", "draft_structured", "TEXT");
+    addColumnIfMissing(db, "profiles", "draft_provenance", "TEXT");
+    addColumnIfMissing(db, "profiles", "revision", "INTEGER NOT NULL DEFAULT 0");
   },
 };
 

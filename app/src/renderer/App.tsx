@@ -9,6 +9,7 @@ import { useShellSelection } from "./lib/shell";
 import { backendStarted } from "./lib/trpc";
 import { cn } from "./lib/utils";
 import { BackendFailed } from "./screens/BackendFailed";
+import { CandidateProfilesScreen } from "./screens/CandidateProfiles";
 import { Onboarding } from "./screens/Onboarding";
 import { ScheduledScreen } from "./screens/Scheduled";
 import { SettingsScreen } from "./screens/Settings";
@@ -52,6 +53,7 @@ export function App() {
         </div>
         {view === "scheduled" && <ScheduledScreen />}
         {view === "settings" && <SettingsScreen />}
+        {view === "profiles" && <CandidateProfilesScreen />}
       </div>
       <NewAgentDialog />
     </div>

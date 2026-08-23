@@ -1,24 +1,24 @@
 import { createHash, randomUUID } from "node:crypto";
-import {
-  type RecruitingErrorCode,
-  type RecruitingInvalidation,
-  ScoutHarness,
-  type ScoutSummary,
-} from "@shared/recruiting";
+import { type RecruitingInvalidation, ScoutHarness, type ScoutSummary } from "@shared/recruiting";
 import { and, asc, eq, sql } from "drizzle-orm";
 import type { Db } from "../../db/client";
 import { commandReceipts, domainClock, scouts } from "../../db/schema";
 import { bus } from "../event-bus";
+import { RecruitingError } from "./errors";
+import type { ConfirmProfileCommand, ImportProfileCommand, UpdateDraftCommand } from "./profile";
+import { CandidateProfileApplication } from "./profile";
 
-export class RecruitingError extends Error {
-  readonly code: RecruitingErrorCode;
-
-  constructor(code: RecruitingErrorCode, message: string) {
-    super(message);
-    this.name = "RecruitingError";
-    this.code = code;
-  }
-}
+export { RecruitingError } from "./errors";
+export type {
+  ConfirmProfileCommand,
+  GitHubFactInput,
+  GitHubImportInput,
+  ImportProfileCommand,
+  ProfileArtifactStore,
+  ProfileFactInput,
+  UpdateDraftCommand,
+} from "./profile";
+export { CandidateProfileApplication } from "./profile";
 
 export type CreateScoutCommand = {
   name: string;
@@ -56,10 +56,46 @@ type RecruitingDb = Pick<Db, "select" | "insert" | "update">;
  * published only after the transaction has completed successfully.
  */
 export class RecruitingApplication {
+  private readonly profileApplication: CandidateProfileApplication;
+
   constructor(
     private readonly db: Db,
     private readonly now: () => number = Date.now,
-  ) {}
+  ) {
+    this.profileApplication = new CandidateProfileApplication(db, { now });
+  }
+
+  listProfiles() {
+    return this.profileApplication.listProfiles();
+  }
+
+  getProfile(id: string) {
+    return this.profileApplication.getProfile(id);
+  }
+
+  listProfileVersions(profileId: string) {
+    return this.profileApplication.listVersions(profileId);
+  }
+
+  getProfileVersion(id: string) {
+    return this.profileApplication.getVersion(id);
+  }
+
+  importProfile(command: ImportProfileCommand) {
+    return this.profileApplication.importProfile(command);
+  }
+
+  updateProfileDraft(command: UpdateDraftCommand) {
+    return this.profileApplication.updateDraft(command);
+  }
+
+  deleteProfileContent(command: Omit<UpdateDraftCommand, "addFacts" | "replaceFacts">) {
+    return this.profileApplication.deleteProfileContent(command);
+  }
+
+  confirmProfile(command: ConfirmProfileCommand) {
+    return this.profileApplication.confirmProfile(command);
+  }
 
   listScouts(): ScoutSummary[] {
     return this.db

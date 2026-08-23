@@ -39,3 +39,63 @@ export const RecruitingErrorCode = z.enum([
   "VALIDATION",
 ]);
 export type RecruitingErrorCode = z.infer<typeof RecruitingErrorCode>;
+
+export const ProfileFactSection = z.enum([
+  "cv",
+  "portfolio",
+  "career_interests",
+  "hard_constraints",
+  "preferences",
+]);
+export type ProfileFactSection = z.infer<typeof ProfileFactSection>;
+
+export const ProfileFactSource = z.enum(["cv", "github", "career_interests", "manual"]);
+export type ProfileFactSource = z.infer<typeof ProfileFactSource>;
+
+/** A reviewable assertion about the Candidate, separate from discovery Signals. */
+export const ProfileFact = z.object({
+  id: z.string().min(1),
+  section: ProfileFactSection,
+  key: z.string().min(1),
+  value: z.string().min(1),
+  source: ProfileFactSource,
+  sourceLabel: z.string().min(1),
+  sourceRef: z.string().nullable(),
+  conflict: z.boolean(),
+  conflictWith: z.array(z.string()),
+});
+export type ProfileFact = z.infer<typeof ProfileFact>;
+
+export const ProfileSection = z.object({
+  section: ProfileFactSection,
+  facts: z.array(ProfileFact),
+});
+export type ProfileSection = z.infer<typeof ProfileSection>;
+
+export const CandidateProfileVersion = z.object({
+  id: z.string().min(1),
+  profileId: z.string().min(1),
+  versionNo: z.number().int().positive(),
+  markdown: z.string(),
+  facts: z.array(ProfileFact),
+  provenance: z.array(z.string()),
+  contentHash: z.string().min(1),
+  confirmedAt: z.number().int().nullable(),
+  immutable: z.literal(true),
+});
+export type CandidateProfileVersion = z.infer<typeof CandidateProfileVersion>;
+
+export const CandidateProfileSummary = z.object({
+  id: z.string().min(1),
+  name: z.string().min(1),
+  roleTarget: z.string(),
+  artifactPath: z.string().min(1),
+  state: z.enum(["draft", "confirmed"]),
+  currentVersion: CandidateProfileVersion.nullable(),
+  sections: z.array(ProfileSection),
+  markdown: z.string(),
+  importWarnings: z.array(z.string()),
+  revision: z.number().int().nonnegative(),
+  updatedAt: z.number().int(),
+});
+export type CandidateProfileSummary = z.infer<typeof CandidateProfileSummary>;
