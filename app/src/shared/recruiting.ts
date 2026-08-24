@@ -57,6 +57,7 @@ export const SourceAttemptOutcome = z.enum([
   "malformed_content",
   "timed_out",
   "unsupported",
+  "rejected",
   "cancelled",
 ]);
 export type SourceAttemptOutcome = z.infer<typeof SourceAttemptOutcome>;

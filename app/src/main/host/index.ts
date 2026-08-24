@@ -51,6 +51,7 @@ async function main() {
   const settings = new SettingsService(db);
   const recruiting = new RecruitingApplication(db, Date.now, {
     webSearchSettings: () => settings.get().firecrawl,
+    webSearchApiKey: () => settings.getFirecrawlApiKey(),
   });
   // Durable Recent ring buffer for the tray (§12.6). Subscribed HERE, before anything
   // that can emit `notify` — the scheduler's boot catch-up sweep (scheduler.start()
@@ -145,6 +146,7 @@ async function main() {
   const scheduler = new Scheduler(db, wake, registry, localApi);
   recruiting.setWake(wake);
   scheduler.setRecruiting(recruiting);
+  localApi.setRecruiting(recruiting);
   localApi.setScheduler(scheduler);
   localApi.setWake(wake);
   // Let the coordinator pause/resume an agent's crons + monitors as it breaks/recovers.

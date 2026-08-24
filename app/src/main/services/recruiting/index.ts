@@ -87,6 +87,12 @@ import {
   WEB_SEARCH_SOURCE_ID,
   type WebSearchSettingsProjection,
 } from "./scout-runs";
+import {
+  WebSearchApplication,
+  type WebSearchApplicationOptions,
+  type WebSearchRequest,
+  type WebSearchResponse,
+} from "./web-search";
 
 export type {
   EvidenceDeletionSummary,
@@ -208,6 +214,20 @@ export {
   validateFeedUrl,
 } from "./source";
 export {
+  DeterministicWebSearchProvider,
+  FirecrawlWebSearchProvider,
+  normalizeQuery,
+  WebSearchApplication,
+  type WebSearchApplicationOptions,
+  type WebSearchProvider,
+  WebSearchProviderError,
+  type WebSearchProviderRequest,
+  type WebSearchProviderResponse,
+  type WebSearchProviderResult,
+  type WebSearchRequest,
+  type WebSearchResponse,
+} from "./web-search";
+export {
   DeterministicXProvider,
   HttpXProvider,
   normalizeXResponse,
@@ -232,7 +252,10 @@ export type CreateScoutCommand = {
   idempotencyKey: string;
 };
 
-export type RecruitingApplicationOptions = ScoutRunApplicationOptions;
+export type RecruitingApplicationOptions = ScoutRunApplicationOptions &
+  WebSearchApplicationOptions & {
+    webSearchApiKey?: () => string | undefined;
+  };
 
 export type ArchiveScoutCommand = {
   scoutId: string;
@@ -281,6 +304,7 @@ export class RecruitingApplication {
   private readonly candidateDecisions: CandidateDecisionApplication;
   private readonly evidence: EvidenceApplication;
   private readonly webSearchSettings?: () => WebSearchSettingsProjection;
+  private readonly webSearchApplication: WebSearchApplication;
 
   constructor(
     private readonly db: Db,
@@ -290,6 +314,10 @@ export class RecruitingApplication {
     this.webSearchSettings = options.webSearchSettings;
     this.profileApplication = new CandidateProfileApplication(db, { now });
     this.scoutRuns = new ScoutRunApplication(db, now, options);
+    this.webSearchApplication = new WebSearchApplication(db, now, {
+      provider: options.provider,
+      apiKey: options.webSearchApiKey ?? options.apiKey,
+    });
     this.candidateDecisions = new CandidateDecisionApplication(db, now);
     this.evidence = new EvidenceApplication(db, now);
     this.fitEvaluations = new FitEvaluationApplication(db, now, (subjectId, at) =>
@@ -397,6 +425,24 @@ export class RecruitingApplication {
 
   readSource(command: ReadSourceCommand) {
     return this.scoutRuns.readSource(command);
+  }
+
+  webSearch(command: WebSearchRequest & { scoutId: string }): Promise<WebSearchResponse> {
+    return this.webSearchApplication.search(command);
+  }
+
+  /** Map the authenticated local agent identity to its canonical Scout. New
+   * Scouts may use their own id in tests and future harness adapters; migrated
+   * Scouts use the legacy agent id that rides the existing MCP environment. */
+  resolveScoutForAgent(agentId: string): string | null {
+    const row = this.db.select({ id: scouts.id }).from(scouts).where(eq(scouts.id, agentId)).get();
+    if (row) return row.id;
+    const legacy = this.db
+      .select({ id: scouts.id })
+      .from(scouts)
+      .where(eq(scouts.legacyAgentId, agentId))
+      .get();
+    return legacy?.id ?? null;
   }
 
   listSourceAttempts(runId?: string) {

@@ -6,6 +6,11 @@ import type { Scheduler } from "../scheduler";
 import type { WakeTransport } from "../scheduler/wake/types";
 import type { StatusArbiter } from "../status/arbiter";
 
+type WebSearchBoundary = {
+  resolveScoutForAgent(agentId: string): string | null;
+  webSearch(input: { scoutId: string; query: string; limit?: number }): Promise<unknown>;
+};
+
 /** How long a `/wake-stream` long-poll is held open before returning empty (the
  *  agent's channel poller then immediately re-polls). */
 const WAKE_STREAM_HOLD_MS = 60_000;
@@ -17,6 +22,7 @@ interface Deps {
   port?: number;
   /** Persisted bearer token. Reused across restarts; omit (→ random) in tests. */
   token?: string;
+  recruiting?: WebSearchBoundary;
 }
 
 /** EADDRINUSE retries before falling back to an ephemeral port. Covers the dev
@@ -44,10 +50,12 @@ export class LocalApiServer {
   /** Late-bound: the wake transport backing the `/wake-stream` long-poll (the single
    *  wake authority — owns the queue + the parked-poll rendezvous). */
   private wake: WakeTransport | null = null;
+  private recruiting: WebSearchBoundary | null;
 
   constructor(private deps: Deps) {
     this.token = deps.token ?? randomBytes(24).toString("hex");
     this.desiredPort = deps.port ?? 0;
+    this.recruiting = deps.recruiting ?? null;
   }
 
   /** Wire the scheduler in once it's built (enables the /schedules/* routes). */
@@ -58,6 +66,12 @@ export class LocalApiServer {
   /** Wire the wake transport in once built (enables the /wake-stream route). */
   setWake(wake: WakeTransport): void {
     this.wake = wake;
+  }
+
+  /** Wire the host-owned Recruiting boundary after construction. The MCP server
+   * remains a transport shim; all Scout/Run/Source policy stays in Recruiting. */
+  setRecruiting(recruiting: WebSearchBoundary): void {
+    this.recruiting = recruiting;
   }
 
   get port(): number {
@@ -126,6 +140,9 @@ export class LocalApiServer {
     }
     if (url.pathname.startsWith("/schedules")) {
       return this.handleSchedules(req, res, url);
+    }
+    if (req.method === "POST" && url.pathname === "/web-search") {
+      return this.handleWebSearch(req, res);
     }
 
     return json(res, 404, { error: "not found" });
@@ -231,6 +248,35 @@ export class LocalApiServer {
       return json(res, 400, { error: String(err instanceof Error ? err.message : err) });
     }
     return json(res, 404, { error: "not found" });
+  }
+
+  /** Authenticated agent-facing WebSearch boundary. The caller's agent header
+   * is mapped to a canonical Scout; the request body cannot choose another
+   * Scout, and the Recruiting service resolves the active Run and Source Access. */
+  private async handleWebSearch(req: IncomingMessage, res: ServerResponse) {
+    const recruiting = this.recruiting;
+    if (!recruiting) return json(res, 503, { error: "recruiting service not ready" });
+    const agentId = header(req, "x-opentrade-agent");
+    if (!agentId) return json(res, 404, { error: "unknown Scout" });
+    const scoutId = recruiting.resolveScoutForAgent(agentId);
+    if (!scoutId) return json(res, 404, { error: "unknown Scout" });
+    const body = await readJson(req);
+    if (!body || typeof body.query !== "string") {
+      return json(res, 400, { error: "WebSearch query is required", code: "VALIDATION" });
+    }
+    try {
+      const result = await recruiting.webSearch({
+        scoutId,
+        query: body.query,
+        limit: body.limit as number | undefined,
+      });
+      return json(res, 200, result);
+    } catch (error) {
+      const code =
+        error && typeof error === "object" && "code" in error ? String(error.code) : "CONFLICT";
+      const message = error instanceof Error ? error.message : "Web Search could not complete";
+      return json(res, code === "NOT_FOUND" ? 404 : 400, { error: message, code });
+    }
   }
 
   private get registry(): AgentRegistry {

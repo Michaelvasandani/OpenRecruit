@@ -133,6 +133,37 @@ function obj(
 
 const TOOLS: ToolDef[] = [
   {
+    name: "WebSearch",
+    description:
+      "Search the public web through OpenRecruit's host-owned Web Search Source. " +
+      "Results are bounded, attributable evidence; they do not create Leads or Signals automatically.",
+    inputSchema: obj(
+      {
+        query: {
+          type: "string",
+          minLength: 1,
+          description: "A natural-language or supported Google-style public-web query.",
+        },
+        limit: {
+          type: "integer",
+          minimum: 1,
+          maximum: 25,
+          default: 10,
+          description: "Maximum number of results to return (1–25; defaults to 10).",
+        },
+      },
+      ["query"],
+    ),
+    run: async (a) => {
+      const { status, json } = await callHost("POST", "/web-search", {
+        query: a.query,
+        ...(a.limit === undefined ? {} : { limit: a.limit }),
+      });
+      if (status !== 200) throw new Error(describeError(json));
+      return JSON.stringify(json, null, 2);
+    },
+  },
+  {
     name: "CronCreate",
     description:
       "Schedule a recurring (or one-shot) wake for this agent on a cron timer. " +
