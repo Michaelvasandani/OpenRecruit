@@ -34,7 +34,7 @@ export interface MigrationDb {
 }
 
 /** Bump on every schema change, with a matching entry in MIGRATIONS. */
-export const SCHEMA_VERSION = 12;
+export const SCHEMA_VERSION = 13;
 
 const MIGRATIONS: Record<number, (db: MigrationDb) => void> = {
   // v2 — headless turn limit: per-agent unattended-turn counter + on/off toggle.
@@ -174,6 +174,44 @@ const MIGRATIONS: Record<number, (db: MigrationDb) => void> = {
           "ON investigation_attempts (investigation_id) WHERE outcome = 'in_progress'",
       );
     }
+  },
+  // v13 — durable Recruiting Run requests. Existing legacy schedules, monitors,
+  // and wakes are intentionally untouched; this table is only populated by the
+  // Recruiting request seam and is safe to replay after a host interruption.
+  13: (db) => {
+    if (!hasTable(db, "scout_run_requests")) {
+      db.exec(`
+        CREATE TABLE scout_run_requests (
+          id TEXT PRIMARY KEY,
+          scout_id TEXT NOT NULL REFERENCES scouts(id),
+          trigger TEXT NOT NULL,
+          request_key TEXT NOT NULL,
+          source_id TEXT REFERENCES sources(id),
+          lead_id TEXT REFERENCES leads(id),
+          opportunity_id TEXT REFERENCES opportunities(id),
+          investigation_id TEXT REFERENCES investigations(id),
+          reason TEXT NOT NULL DEFAULT '',
+          budget TEXT NOT NULL DEFAULT '{}',
+          status TEXT NOT NULL DEFAULT 'pending',
+          attempt_count INTEGER NOT NULL DEFAULT 0,
+          next_attempt_at INTEGER,
+          run_id TEXT REFERENCES scout_runs(id),
+          safe_failure TEXT,
+          created_at INTEGER NOT NULL,
+          dispatched_at INTEGER,
+          completed_at INTEGER
+        );
+      `);
+    }
+    db.exec(
+      "CREATE INDEX IF NOT EXISTS scout_run_requests_scout_created " +
+        "ON scout_run_requests (scout_id, created_at)",
+    );
+    db.exec(
+      "CREATE UNIQUE INDEX IF NOT EXISTS scout_run_requests_pending_key " +
+        "ON scout_run_requests (scout_id, request_key) " +
+        "WHERE status IN ('pending', 'dispatching')",
+    );
   },
 };
 

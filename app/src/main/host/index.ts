@@ -183,6 +183,8 @@ async function main() {
   // into the LocalApi so the agent MCP server's /schedules and /wake-stream routes
   // reach them.
   const scheduler = new Scheduler(db, wake, registry, localApi);
+  recruiting.setWake(wake);
+  scheduler.setRecruiting(recruiting);
   localApi.setScheduler(scheduler);
   localApi.setWake(wake);
   // Let the coordinator pause/resume an agent's crons + monitors as it breaks/recovers.

@@ -5,6 +5,9 @@ import {
   type LeadContext as LeadContextValue,
   LeadSummary,
   type LeadSummary as LeadSummaryValue,
+  ScoutRunCheckpointSummary,
+  type ScoutRunCheckpointSummary as ScoutRunCheckpointSummaryValue,
+  ScoutRunPhase,
   type ScoutRunPhase as ScoutRunPhaseValue,
   ScoutRunStatus,
   type ScoutRunStatus as ScoutRunStatusValue,
@@ -31,6 +34,7 @@ import {
   leads,
   profiles,
   profileVersions,
+  scoutRunCheckpoints,
   scoutRuns,
   scoutSources,
   scouts,
@@ -141,6 +145,13 @@ export type AdvanceScoutRunCommand = {
   checkpoint?: string | null;
   safeFailure?: string | null;
   expectedStatus?: ScoutRunStatusValue;
+  idempotencyKey: string;
+};
+
+export type CheckpointScoutRunCommand = {
+  runId: string;
+  phase: ScoutRunPhaseValue;
+  checkpoint: string;
   idempotencyKey: string;
 };
 
@@ -1960,6 +1971,24 @@ export class ScoutRunApplication {
         })
         .where(eq(scoutRuns.id, row.id))
         .run();
+      if (command.checkpoint !== undefined && command.checkpoint !== null) {
+        const latest = tx
+          .select({ sequence: scoutRunCheckpoints.sequence })
+          .from(scoutRunCheckpoints)
+          .where(eq(scoutRunCheckpoints.runId, row.id))
+          .orderBy(desc(scoutRunCheckpoints.sequence))
+          .get();
+        tx.insert(scoutRunCheckpoints)
+          .values({
+            id: randomUUID(),
+            runId: row.id,
+            sequence: (latest?.sequence ?? 0) + 1,
+            phase: command.phase ?? phaseForStatus(command.status),
+            checkpoint: command.checkpoint,
+            createdAt: at,
+          })
+          .run();
+      }
       const value = this.toRunSummary(tx, requireRun(tx, row.id));
       const revision = advanceRevision(tx);
       writeReceipt(
@@ -1972,6 +2001,79 @@ export class ScoutRunApplication {
     if (notification)
       emitChange(notification.revision, "run", [command.runId], "run_changed", notification.at);
     return outcome;
+  }
+
+  /** Persist a committed, append-only progress marker before provider work is
+   * resumed. The latest marker is also mirrored on scout_runs for cheap safe
+   * projections. */
+  checkpointScoutRun(command: CheckpointScoutRunCommand): {
+    value: ScoutRunCheckpointSummaryValue;
+    revision: number;
+    replayed: boolean;
+  } {
+    requireKey(command.idempotencyKey);
+    if (!command.checkpoint.trim())
+      throw new RecruitingError("VALIDATION", "Checkpoint is required");
+    ScoutRunPhase.parse(command.phase);
+    const payloadHash = hashPayload(command);
+    const outcome = this.db.transaction((tx) => {
+      const previous = findReceipt(tx, "run", command.runId, "checkpoint", command.idempotencyKey);
+      if (previous) {
+        assertReceiptPayload(previous, payloadHash);
+        return {
+          value: parseReceipt<ScoutRunCheckpointSummaryValue>(previous.result),
+          revision: currentRevision(tx),
+          replayed: true,
+        };
+      }
+      const run = requireRun(tx, command.runId);
+      if (!(ACTIVE_RUN_STATUSES as readonly string[]).includes(run.status)) {
+        throw new RecruitingError(
+          "CONFLICT",
+          `Run ${run.id} is ${run.status}; it cannot checkpoint`,
+        );
+      }
+      const latest = tx
+        .select({ sequence: scoutRunCheckpoints.sequence })
+        .from(scoutRunCheckpoints)
+        .where(eq(scoutRunCheckpoints.runId, run.id))
+        .orderBy(desc(scoutRunCheckpoints.sequence))
+        .get();
+      const at = this.now();
+      const row = {
+        id: randomUUID(),
+        runId: run.id,
+        sequence: (latest?.sequence ?? 0) + 1,
+        phase: command.phase,
+        checkpoint: command.checkpoint,
+        createdAt: at,
+      };
+      tx.insert(scoutRunCheckpoints).values(row).run();
+      tx.update(scoutRuns)
+        .set({ checkpoint: command.checkpoint, phase: command.phase })
+        .where(eq(scoutRuns.id, run.id))
+        .run();
+      const revision = advanceRevision(tx);
+      const value = ScoutRunCheckpointSummary.parse(row);
+      writeReceipt(
+        tx,
+        receiptFor("run", run.id, "checkpoint", command.idempotencyKey, payloadHash, value, at),
+      );
+      return { value, revision, replayed: false };
+    });
+    if (!outcome.replayed)
+      emitChange(outcome.revision, "run", [command.runId], "run_checkpointed", this.now());
+    return outcome;
+  }
+
+  listScoutRunCheckpoints(runId: string): ScoutRunCheckpointSummaryValue[] {
+    return this.db
+      .select()
+      .from(scoutRunCheckpoints)
+      .where(eq(scoutRunCheckpoints.runId, runId))
+      .orderBy(asc(scoutRunCheckpoints.sequence))
+      .all()
+      .map((row) => ScoutRunCheckpointSummary.parse(row));
   }
 
   private toRunSummary(db: RecruitingDb, row: RunRow): ScoutRunSummaryValue {

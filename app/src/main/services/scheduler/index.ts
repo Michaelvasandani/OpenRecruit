@@ -24,6 +24,11 @@ import { CronTimer } from "./cron-timer";
 import { MonitorRunner } from "./monitor-runner";
 import type { WakeTransport } from "./wake/types";
 
+type RecruitingSchedulerHooks = {
+  processDueRevisits(): unknown;
+  processRunRequests(): unknown;
+};
+
 /**
  * Durable autonomy scheduler, owned by the always-on backend host. Arms cron
  * timers and supervises monitor children that survive the GUI closing (unlike
@@ -35,6 +40,8 @@ import type { WakeTransport } from "./wake/types";
 export class Scheduler {
   private cron = new CronTimer();
   private runners = new Map<string, MonitorRunner>();
+  private recruiting?: RecruitingSchedulerHooks;
+  private recruitingTimer?: ReturnType<typeof setInterval>;
 
   constructor(
     private db: Db,
@@ -42,6 +49,16 @@ export class Scheduler {
     private registry: AgentRegistry,
     private localApi: LocalApiServer,
   ) {}
+
+  /** Late-bind Recruiting so the legacy scheduler can remain independently
+   * recoverable. This hook only processes explicitly created Run requests; it
+   * never reads or converts schedules, monitors, or wakes. */
+  setRecruiting(hooks: RecruitingSchedulerHooks): void {
+    this.recruiting = hooks;
+    if (this.recruitingTimer) return;
+    this.recruitingTimer = setInterval(() => this.processRecruiting(), 1_000);
+    this.recruitingTimer.unref?.();
+  }
 
   /** Load enabled rows and arm their timers / monitor children. */
   start(): void {
@@ -88,6 +105,7 @@ export class Scheduler {
       if (this.registry.executionStateOf(row.agentId) === "broken") continue; // paused (see above)
       this.startMonitor(row.id, row.agentId, row.command);
     }
+    this.processRecruiting();
     hostLog.info(`scheduler started: ${this.runners.size} monitor(s), crons armed`);
   }
 
@@ -334,8 +352,21 @@ export class Scheduler {
   /** Host shutdown: stop every timer and monitor child. */
   stop(): void {
     this.cron.disarmAll();
+    if (this.recruitingTimer) clearInterval(this.recruitingTimer);
+    this.recruitingTimer = undefined;
     for (const r of this.runners.values()) r.stop();
     this.runners.clear();
+  }
+
+  private processRecruiting(): void {
+    if (!this.recruiting) return;
+    try {
+      this.recruiting.processDueRevisits();
+      this.recruiting.processRunRequests();
+    } catch (err) {
+      hostLog.error("recruiting scheduler tick failed", String(err));
+      analytics.trackError("scheduler", err, "caught");
+    }
   }
 
   // ---- internals ----

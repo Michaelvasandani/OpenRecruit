@@ -207,6 +207,31 @@ export const SCHEMA_DDL = `
     CREATE UNIQUE INDEX IF NOT EXISTS scout_runs_one_active
       ON scout_runs (scout_id)
       WHERE status IN ('queued', 'preflight', 'running', 'finalizing');
+    CREATE TABLE IF NOT EXISTS scout_run_requests (
+      id TEXT PRIMARY KEY,
+      scout_id TEXT NOT NULL REFERENCES scouts(id),
+      trigger TEXT NOT NULL,
+      request_key TEXT NOT NULL,
+      source_id TEXT REFERENCES sources(id),
+      lead_id TEXT REFERENCES leads(id),
+      opportunity_id TEXT REFERENCES opportunities(id),
+      investigation_id TEXT REFERENCES investigations(id),
+      reason TEXT NOT NULL DEFAULT '',
+      budget TEXT NOT NULL DEFAULT '{}',
+      status TEXT NOT NULL DEFAULT 'pending',
+      attempt_count INTEGER NOT NULL DEFAULT 0,
+      next_attempt_at INTEGER,
+      run_id TEXT REFERENCES scout_runs(id),
+      safe_failure TEXT,
+      created_at INTEGER NOT NULL,
+      dispatched_at INTEGER,
+      completed_at INTEGER
+    );
+    CREATE INDEX IF NOT EXISTS scout_run_requests_scout_created
+      ON scout_run_requests (scout_id, created_at);
+    CREATE UNIQUE INDEX IF NOT EXISTS scout_run_requests_pending_key
+      ON scout_run_requests (scout_id, request_key)
+      WHERE status IN ('pending', 'dispatching');
     CREATE TABLE IF NOT EXISTS scout_run_checkpoints (
       id TEXT PRIMARY KEY,
       run_id TEXT NOT NULL REFERENCES scout_runs(id),

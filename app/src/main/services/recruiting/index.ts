@@ -17,6 +17,7 @@ import {
   sources,
 } from "../../db/schema";
 import { bus } from "../event-bus";
+import type { WakeTransport } from "../scheduler/wake/types";
 import { assertSafeMaterial } from "./contract";
 import { RecruitingError } from "./errors";
 import {
@@ -34,7 +35,18 @@ import {
 import type { ConfirmProfileCommand, ImportProfileCommand, UpdateDraftCommand } from "./profile";
 import { CandidateProfileApplication } from "./profile";
 import {
+  type CreateRevisitPlanCommand,
+  type RequestCandidateRunCommand,
+  type RequestExplicitReconsiderationCommand,
+  type RequestScheduledRefreshCommand,
+  type RequestScoutRunCommand,
+  type RequestSourceEventCommand,
+  RevisitPlanApplication,
+  type UpdateRevisitPlanCommand,
+} from "./revisit";
+import {
   type AdvanceScoutRunCommand,
+  type CheckpointScoutRunCommand,
   type CheckSourceReadinessCommand,
   type CreateFeedSourceCommand,
   type CreateRssSourceCommand,
@@ -101,8 +113,20 @@ export type {
   UpdateDraftCommand,
 } from "./profile";
 export { CandidateProfileApplication } from "./profile";
+export {
+  type CreateRevisitPlanCommand,
+  type RequestCandidateRunCommand,
+  type RequestExplicitReconsiderationCommand,
+  type RequestScheduledRefreshCommand,
+  type RequestScoutRunCommand,
+  type RequestSourceEventCommand,
+  RevisitPlanApplication,
+  type RevisitTarget,
+  type UpdateRevisitPlanCommand,
+} from "./revisit";
 export type {
   AdvanceScoutRunCommand,
+  CheckpointScoutRunCommand,
   CheckSourceReadinessCommand,
   CreateFeedSourceCommand,
   CreateRssSourceCommand,
@@ -196,6 +220,7 @@ export class RecruitingApplication {
   private readonly scoutRuns: ScoutRunApplication;
   private readonly fitEvaluations: FitEvaluationApplication;
   private readonly investigations: InvestigationApplication;
+  private readonly revisitPlans: RevisitPlanApplication;
 
   constructor(
     private readonly db: Db,
@@ -205,6 +230,16 @@ export class RecruitingApplication {
     this.scoutRuns = new ScoutRunApplication(db, now);
     this.fitEvaluations = new FitEvaluationApplication(db, now);
     this.investigations = new InvestigationApplication(db, now);
+    this.revisitPlans = new RevisitPlanApplication(
+      db,
+      (command) => this.scoutRuns.launchScoutRun(command),
+      (runId) => this.scoutRuns.getScoutRun(runId),
+      now,
+    );
+  }
+
+  setWake(wake: WakeTransport): void {
+    this.revisitPlans.setWake(wake);
   }
 
   listProfiles() {
@@ -451,6 +486,74 @@ export class RecruitingApplication {
 
   advanceScoutRun(command: AdvanceScoutRunCommand) {
     return this.scoutRuns.advanceScoutRun(command);
+  }
+
+  checkpointScoutRun(command: CheckpointScoutRunCommand) {
+    return this.scoutRuns.checkpointScoutRun(command);
+  }
+
+  listScoutRunCheckpoints(runId: string) {
+    return this.scoutRuns.listScoutRunCheckpoints(runId);
+  }
+
+  createRevisitPlan(command: CreateRevisitPlanCommand) {
+    return this.revisitPlans.createRevisitPlan(command);
+  }
+
+  updateRevisitPlan(command: UpdateRevisitPlanCommand) {
+    return this.revisitPlans.updateRevisitPlan(command);
+  }
+
+  listRevisitPlans(scoutId?: string) {
+    return this.revisitPlans.listRevisitPlans(scoutId);
+  }
+
+  getRevisitPlan(id: string) {
+    return this.revisitPlans.getRevisitPlan(id);
+  }
+
+  requestScoutRun(command: RequestScoutRunCommand) {
+    return this.revisitPlans.requestScoutRun(command);
+  }
+
+  requestScheduledRefresh(command: RequestScheduledRefreshCommand) {
+    return this.revisitPlans.requestScheduledRefresh(command);
+  }
+
+  requestSourceEvent(command: RequestSourceEventCommand) {
+    return this.revisitPlans.requestSourceEvent(command);
+  }
+
+  requestCandidateRun(command: RequestCandidateRunCommand) {
+    return this.revisitPlans.requestCandidateRun(command);
+  }
+
+  requestExplicitReconsideration(command: RequestExplicitReconsiderationCommand) {
+    return this.revisitPlans.requestExplicitReconsideration(command);
+  }
+
+  listRunRequests(scoutId?: string) {
+    return this.revisitPlans.listRunRequests(scoutId);
+  }
+
+  getRunRequest(id: string) {
+    return this.revisitPlans.getRunRequest(id);
+  }
+
+  processRunRequests() {
+    return this.revisitPlans.processRunRequests();
+  }
+
+  processDueRevisits() {
+    return this.revisitPlans.processDueRevisits();
+  }
+
+  getScoutRunCenter(scoutId: string) {
+    return this.revisitPlans.getScoutRunCenter(scoutId);
+  }
+
+  listScoutRunCenters() {
+    return this.revisitPlans.listScoutRunCenters();
   }
 
   listScouts(): ScoutSummary[] {

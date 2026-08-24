@@ -15,6 +15,7 @@ import { UpdateButton } from "./UpdateButton";
 export function AgentSidebar() {
   const agents = useAgents();
   const scouts = useScouts();
+  const runCenters = trpc.recruiting.scoutRunCenters.useQuery();
   const selectedId = useUIStore((s) => s.selectedAgentId);
   const select = useUIStore((s) => s.select);
   const view = useUIStore((s) => s.view);
@@ -103,7 +104,11 @@ export function AgentSidebar() {
           >
             <span className="size-2 rounded-full bg-emerald-500" aria-hidden="true" />
             <span className="min-w-0 flex-1 truncate">{scout.name}</span>
-            <span className="text-[10px] uppercase text-muted-foreground">{scout.harness}</span>
+            <span className="text-[10px] uppercase text-muted-foreground">
+              {runCenters.data?.find((center) => center.scoutId === scout.id)?.dueRevisitCount
+                ? `${runCenters.data.find((center) => center.scoutId === scout.id)?.dueRevisitCount} due`
+                : scout.harness}
+            </span>
           </div>
         ))}
       </div>

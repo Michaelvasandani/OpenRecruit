@@ -300,6 +300,41 @@ export const scoutRuns = sqliteTable(
   ],
 );
 
+/** Durable intent to run a Scout. Requests are separate from Scout Runs so a
+ * request can survive a host restart, wait for a Scout's current Run to finish,
+ * and be coalesced before it consumes a Run slot. */
+export const scoutRunRequests = sqliteTable(
+  "scout_run_requests",
+  {
+    id: text("id").primaryKey(),
+    scoutId: text("scout_id")
+      .notNull()
+      .references(() => scouts.id),
+    trigger: text("trigger").notNull(),
+    requestKey: text("request_key").notNull(),
+    sourceId: text("source_id").references(() => sources.id),
+    leadId: text("lead_id").references(() => leads.id),
+    opportunityId: text("opportunity_id").references(() => opportunities.id),
+    investigationId: text("investigation_id").references(() => investigations.id),
+    reason: text("reason").notNull().default(""),
+    budget: text("budget").notNull().default("{}"),
+    status: text("status").notNull().default("pending"),
+    attemptCount: integer("attempt_count").notNull().default(0),
+    nextAttemptAt: integer("next_attempt_at"),
+    runId: text("run_id").references(() => scoutRuns.id),
+    safeFailure: text("safe_failure"),
+    createdAt: integer("created_at").notNull(),
+    dispatchedAt: integer("dispatched_at"),
+    completedAt: integer("completed_at"),
+  },
+  (t) => [
+    index("scout_run_requests_scout_created").on(t.scoutId, t.createdAt),
+    uniqueIndex("scout_run_requests_pending_key")
+      .on(t.scoutId, t.requestKey)
+      .where(sql`status IN ('pending', 'dispatching')`),
+  ],
+);
+
 export const scoutRunCheckpoints = sqliteTable(
   "scout_run_checkpoints",
   {

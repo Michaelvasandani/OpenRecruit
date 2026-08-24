@@ -410,6 +410,95 @@ export const ScoutRunSummary = z.object({
 });
 export type ScoutRunSummary = z.infer<typeof ScoutRunSummary>;
 
+export const RevisitPlanState = z.enum(["active", "paused", "completed"]);
+export type RevisitPlanState = z.infer<typeof RevisitPlanState>;
+
+export const RevisitPlanKind = z.enum(["source", "lead", "opportunity", "investigation"]);
+export type RevisitPlanKind = z.infer<typeof RevisitPlanKind>;
+
+/** A durable plan has exactly one subject. A null cadence is an explicit
+ * Candidate choice to revisit only when requested. */
+export const RevisitPlanSummary = z.object({
+  id: z.string().min(1),
+  scoutId: z.string().min(1),
+  sourceId: z.string().nullable(),
+  leadId: z.string().nullable(),
+  opportunityId: z.string().nullable(),
+  investigationId: z.string().nullable(),
+  kind: RevisitPlanKind,
+  cadence: z.string().nullable(),
+  dueAt: z.number().int().nullable(),
+  state: RevisitPlanState,
+  policySnapshot: z.string(),
+  revision: z.number().int().nonnegative(),
+  createdAt: z.number().int(),
+  updatedAt: z.number().int(),
+});
+export type RevisitPlanSummary = z.infer<typeof RevisitPlanSummary>;
+
+export const ScoutRunRequestTrigger = z.enum([
+  "scheduled",
+  "source_event",
+  "revisit",
+  "candidate_request",
+  "explicit_request",
+]);
+export type ScoutRunRequestTrigger = z.infer<typeof ScoutRunRequestTrigger>;
+
+export const ScoutRunRequestStatus = z.enum([
+  "pending",
+  "dispatching",
+  "dispatched",
+  "blocked",
+  "cancelled",
+]);
+export type ScoutRunRequestStatus = z.infer<typeof ScoutRunRequestStatus>;
+
+/** Safe projection of a durable Run intent. The request key is a stable
+ * coalescing identity, never provider input or a secret. */
+export const ScoutRunRequestSummary = z.object({
+  id: z.string().min(1),
+  scoutId: z.string().min(1),
+  trigger: ScoutRunRequestTrigger,
+  requestKey: z.string().min(1),
+  sourceId: z.string().nullable(),
+  leadId: z.string().nullable(),
+  opportunityId: z.string().nullable(),
+  investigationId: z.string().nullable(),
+  reason: z.string(),
+  budget: z.string(),
+  status: ScoutRunRequestStatus,
+  attemptCount: z.number().int().nonnegative(),
+  nextAttemptAt: z.number().int().nullable(),
+  runId: z.string().nullable(),
+  safeFailure: z.string().nullable(),
+  createdAt: z.number().int(),
+  dispatchedAt: z.number().int().nullable(),
+  completedAt: z.number().int().nullable(),
+});
+export type ScoutRunRequestSummary = z.infer<typeof ScoutRunRequestSummary>;
+
+export const ScoutRunCheckpointSummary = z.object({
+  id: z.string().min(1),
+  runId: z.string().min(1),
+  sequence: z.number().int().positive(),
+  phase: ScoutRunPhase,
+  checkpoint: z.string(),
+  createdAt: z.number().int(),
+});
+export type ScoutRunCheckpointSummary = z.infer<typeof ScoutRunCheckpointSummary>;
+
+export const ScoutRunCenterProjection = z.object({
+  scoutId: z.string().min(1),
+  lastRun: ScoutRunSummary.nullable(),
+  nextRunAt: z.number().int().nullable(),
+  dueRevisitCount: z.number().int().nonnegative(),
+  activeRunId: z.string().nullable(),
+  checkpoint: z.string().nullable(),
+  pendingRequestCount: z.number().int().nonnegative(),
+});
+export type ScoutRunCenterProjection = z.infer<typeof ScoutRunCenterProjection>;
+
 export const RecruitingInvalidation = z.object({
   revision: z.number().int().nonnegative(),
   kind: z.enum(["scout", "run", "source", "lead", "review"]),

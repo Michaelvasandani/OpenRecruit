@@ -39,6 +39,10 @@ export function ScoutRunsScreen() {
       enabled: Boolean(selectedId),
     },
   );
+  const runCenter = trpc.recruiting.scoutRunCenter.useQuery(
+    { scoutId: selectedId ?? "" },
+    { enabled: Boolean(selectedId) },
+  );
   trpc.recruiting.onChanged.useSubscription(undefined, {
     onData: (event) => {
       if (
@@ -49,6 +53,7 @@ export function ScoutRunsScreen() {
         event.kind === "lead"
       ) {
         void utils.recruiting.scoutRuns.invalidate();
+        void utils.recruiting.scoutRunCenter.invalidate();
         void utils.recruiting.scouts.invalidate();
         void utils.recruiting.sources.invalidate();
         void utils.recruiting.signals.invalidate();
@@ -182,6 +187,32 @@ export function ScoutRunsScreen() {
                       onChange={(event) => setPolicyMaterial(event.target.value)}
                       rows={4}
                     />
+                  </div>
+                </div>
+                <div className="grid gap-3 rounded-md border border-border p-3 text-xs sm:grid-cols-4">
+                  <div>
+                    <span className="block text-muted-foreground">Last Run</span>
+                    <span className="font-medium">
+                      {runCenter.data?.lastRun?.status ?? "No Runs yet"}
+                    </span>
+                  </div>
+                  <div>
+                    <span className="block text-muted-foreground">Next Run</span>
+                    <span className="font-medium">
+                      {runCenter.data?.nextRunAt
+                        ? new Date(runCenter.data.nextRunAt).toLocaleString()
+                        : "Manual only"}
+                    </span>
+                  </div>
+                  <div>
+                    <span className="block text-muted-foreground">Due Revisits</span>
+                    <span className="font-medium">{runCenter.data?.dueRevisitCount ?? 0}</span>
+                  </div>
+                  <div>
+                    <span className="block text-muted-foreground">Committed Checkpoint</span>
+                    <span className="block truncate font-medium">
+                      {runCenter.data?.checkpoint ?? "None"}
+                    </span>
                   </div>
                 </div>
                 <div className="grid gap-3 sm:grid-cols-2">

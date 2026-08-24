@@ -151,6 +151,70 @@ export const recruitingRouter = router({
     .input(z.object({ scoutId: z.string().min(1).optional() }).optional())
     .query(({ ctx, input }) => ctx.recruiting.listScoutRuns(input?.scoutId)),
 
+  revisitPlans: publicProcedure
+    .input(z.object({ scoutId: z.string().min(1).optional() }).optional())
+    .query(({ ctx, input }) => ctx.recruiting.listRevisitPlans(input?.scoutId)),
+
+  revisitPlan: publicProcedure
+    .input(z.object({ id: z.string().min(1) }))
+    .query(({ ctx, input }) => ctx.recruiting.getRevisitPlan(input.id)),
+
+  createRevisitPlan: publicProcedure
+    .input(
+      z
+        .object({
+          scoutId: z.string().min(1),
+          sourceId: z.string().min(1).optional(),
+          leadId: z.string().min(1).optional(),
+          opportunityId: z.string().min(1).optional(),
+          investigationId: z.string().min(1).optional(),
+          cadence: z.string().max(100).nullable().optional(),
+          dueAt: z.number().int().nullable().optional(),
+          policySnapshot: z.string().max(100_000).optional(),
+          idempotencyKey: z.string().trim().min(1).max(200),
+        })
+        .refine(
+          (input) =>
+            [input.sourceId, input.leadId, input.opportunityId, input.investigationId].filter(
+              Boolean,
+            ).length === 1,
+          "A Revisit Plan must target exactly one subject",
+        ),
+    )
+    .mutation(({ ctx, input }) => command(() => ctx.recruiting.createRevisitPlan(input))),
+
+  updateRevisitPlan: publicProcedure
+    .input(
+      z.object({
+        planId: z.string().min(1),
+        expectedRevision: z.number().int().nonnegative(),
+        cadence: z.string().max(100).nullable().optional(),
+        dueAt: z.number().int().nullable().optional(),
+        state: z.enum(["active", "paused", "completed"]).optional(),
+        policySnapshot: z.string().max(100_000).optional(),
+        idempotencyKey: z.string().trim().min(1).max(200),
+      }),
+    )
+    .mutation(({ ctx, input }) => command(() => ctx.recruiting.updateRevisitPlan(input))),
+
+  runRequests: publicProcedure
+    .input(z.object({ scoutId: z.string().min(1).optional() }).optional())
+    .query(({ ctx, input }) => ctx.recruiting.listRunRequests(input?.scoutId)),
+
+  runRequest: publicProcedure
+    .input(z.object({ id: z.string().min(1) }))
+    .query(({ ctx, input }) => ctx.recruiting.getRunRequest(input.id)),
+
+  scoutRunCenter: publicProcedure
+    .input(z.object({ scoutId: z.string().min(1) }))
+    .query(({ ctx, input }) => ctx.recruiting.getScoutRunCenter(input.scoutId)),
+
+  scoutRunCenters: publicProcedure.query(({ ctx }) => ctx.recruiting.listScoutRunCenters()),
+
+  scoutRunCheckpoints: publicProcedure
+    .input(z.object({ runId: z.string().min(1) }))
+    .query(({ ctx, input }) => ctx.recruiting.listScoutRunCheckpoints(input.runId)),
+
   scoutRun: publicProcedure
     .input(z.object({ id: z.string().min(1) }))
     .query(({ ctx, input }) => ctx.recruiting.getScoutRun(input.id)),
@@ -394,6 +458,70 @@ export const recruitingRouter = router({
       }),
     )
     .mutation(({ ctx, input }) => command(() => ctx.recruiting.advanceScoutRun(input))),
+
+  checkpointScoutRun: publicProcedure
+    .input(
+      z.object({
+        runId: z.string().min(1),
+        phase: z.enum(["preflight", "discovery", "finalization"]),
+        checkpoint: z.string().max(100_000).min(1),
+        idempotencyKey: z.string().trim().min(1).max(200),
+      }),
+    )
+    .mutation(({ ctx, input }) => command(() => ctx.recruiting.checkpointScoutRun(input))),
+
+  requestScheduledRefresh: publicProcedure
+    .input(
+      z.object({
+        scoutId: z.string().min(1),
+        reason: z.string().max(2_000).optional(),
+        idempotencyKey: z.string().trim().min(1).max(200),
+      }),
+    )
+    .mutation(({ ctx, input }) => command(() => ctx.recruiting.requestScheduledRefresh(input))),
+
+  requestSourceEvent: publicProcedure
+    .input(
+      z.object({
+        scoutId: z.string().min(1),
+        sourceId: z.string().min(1),
+        reason: z.string().max(2_000).optional(),
+        idempotencyKey: z.string().trim().min(1).max(200),
+      }),
+    )
+    .mutation(({ ctx, input }) => command(() => ctx.recruiting.requestSourceEvent(input))),
+
+  requestCandidateRun: publicProcedure
+    .input(
+      z.object({
+        scoutId: z.string().min(1),
+        sourceId: z.string().min(1).optional(),
+        leadId: z.string().min(1).optional(),
+        opportunityId: z.string().min(1).optional(),
+        investigationId: z.string().min(1).optional(),
+        reason: z.string().max(2_000).optional(),
+        requestKey: z.string().max(200).optional(),
+        idempotencyKey: z.string().trim().min(1).max(200),
+      }),
+    )
+    .mutation(({ ctx, input }) => command(() => ctx.recruiting.requestCandidateRun(input))),
+
+  requestExplicitReconsideration: publicProcedure
+    .input(
+      z.object({
+        scoutId: z.string().min(1),
+        sourceId: z.string().min(1).optional(),
+        leadId: z.string().min(1).optional(),
+        opportunityId: z.string().min(1).optional(),
+        investigationId: z.string().min(1).optional(),
+        reason: z.string().max(2_000).optional(),
+        requestKey: z.string().max(200).optional(),
+        idempotencyKey: z.string().trim().min(1).max(200),
+      }),
+    )
+    .mutation(({ ctx, input }) =>
+      command(() => ctx.recruiting.requestExplicitReconsideration(input)),
+    ),
 
   importProfile: publicProcedure
     .input(
