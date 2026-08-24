@@ -75,6 +75,27 @@ export type FeedItem = {
   title: string;
   content: string;
   publicationAt: number | null;
+  /** Optional provider-specific evidence that remains safe to normalize into a Signal. */
+  metadata?: FeedItemMetadata;
+  /** Source-specific retention may be shorter than the default evidence window. */
+  retentionUntil?: number;
+};
+
+export type FeedItemMetadata = {
+  provider?: string;
+  state?: "available" | "deleted" | "protected" | "withheld" | "deleted_or_unavailable";
+  author?: {
+    id: string;
+    username: string | null;
+    name: string | null;
+    protected?: boolean;
+    withheld?: unknown;
+  } | null;
+  editHistory?: string[];
+  withheld?: unknown;
+  protected?: boolean;
+  retentionUntil?: number | null;
+  [key: string]: unknown;
 };
 
 export type ParsedFeed = {

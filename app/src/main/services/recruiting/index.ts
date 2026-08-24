@@ -32,6 +32,7 @@ import {
   type CreateFeedSourceCommand,
   type CreateRssSourceCommand,
   type CreateSourceCommand,
+  type CreateXSourceCommand,
   type LaunchScoutRunCommand,
   type ReadSourceCommand,
   ScoutRunApplication,
@@ -81,6 +82,7 @@ export type {
   CreateFeedSourceCommand,
   CreateRssSourceCommand,
   CreateSourceCommand,
+  CreateXSourceCommand,
   LaunchScoutRunCommand,
   ReadSourceCommand,
   SetScoutSourcesCommand,
@@ -91,6 +93,7 @@ export { DEFAULT_RUN_BUDGET, ScoutRunApplication } from "./scout-runs";
 export {
   DeterministicFeedProvider,
   type FeedItem,
+  type FeedItemMetadata,
   type FeedProvider,
   type FeedRequest,
   type FeedResponse,
@@ -98,6 +101,17 @@ export {
   parseFeed,
   validateFeedUrl,
 } from "./source";
+export {
+  DeterministicXProvider,
+  HttpXProvider,
+  normalizeXResponse,
+  XApiProvider,
+  type XApiRequest,
+  type XApiResponse,
+  type XProvider,
+  type XSourceConfig,
+  xConfigFromSource,
+} from "./x";
 
 export type CreateScoutCommand = {
   name: string;
@@ -210,6 +224,10 @@ export class RecruitingApplication {
 
   createFeedSource(command: CreateFeedSourceCommand) {
     return this.scoutRuns.createFeedSource(command);
+  }
+
+  createXSource(command: CreateXSourceCommand) {
+    return this.scoutRuns.createXSource(command);
   }
 
   listSources() {

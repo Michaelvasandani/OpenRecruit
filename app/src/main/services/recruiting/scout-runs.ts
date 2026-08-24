@@ -51,6 +51,17 @@ import {
   parseFeed,
   validateFeedUrl,
 } from "./source";
+import {
+  HttpXProvider,
+  type NormalizedXPage,
+  normalizeXResponse,
+  XApiError,
+  type XApiResponse,
+  type XProvider,
+  xConfigFromSource,
+  xRequestForLookup,
+  xRequestForSearch,
+} from "./x";
 
 export type CreateSourceCommand = {
   kind: string;
@@ -65,13 +76,27 @@ export type CreateRssSourceCommand = {
   idempotencyKey: string;
 };
 
+export type CreateXSourceCommand = {
+  name: string;
+  query?: string;
+  postIds?: string[];
+  windowHours?: number;
+  maxPages?: number;
+  maxItems?: number;
+  maxSpendCents?: number;
+  maxRequestsPerRun?: number;
+  /** Accepted for setup convenience but intentionally never persisted. */
+  bearerToken?: string;
+  idempotencyKey: string;
+};
+
 export type CreateFeedSourceCommand = CreateRssSourceCommand & {
   kind: "rss" | "atom";
 };
 
 export type CheckSourceReadinessCommand = {
   sourceId: string;
-  provider?: FeedProvider;
+  provider?: FeedProvider | XProvider;
 };
 
 export type SetSourceDisabledCommand = {
@@ -82,7 +107,7 @@ export type SetSourceDisabledCommand = {
 export type ReadSourceCommand = {
   runId: string;
   sourceId: string;
-  provider?: FeedProvider;
+  provider?: FeedProvider | XProvider;
   budget?: Partial<RunBudget>;
   retry?: { maxAttempts?: number; baseDelayMs?: number };
 };
@@ -159,6 +184,18 @@ type SourceAccessPatch = Partial<
   readiness: SourceReadinessValue;
 };
 
+type SourceAttemptFinish = (
+  outcome: SourceAttemptOutcome,
+  input?: {
+    items?: FeedItem[];
+    cursor?: string | null;
+    pageCount?: number;
+    retryAt?: number | null;
+    safeFailure?: string | null;
+    accessPatch?: SourceAccessPatch;
+  },
+) => Promise<SourceAttemptResult>;
+
 /**
  * Host-owned Source and bounded Scout Run operations. Provider adapters receive
  * only the resulting safe projections and snapshots; they never receive a Db or
@@ -166,6 +203,7 @@ type SourceAccessPatch = Partial<
  */
 export class ScoutRunApplication {
   private readonly httpProvider = new HttpFeedProvider();
+  private readonly httpXProvider = new HttpXProvider();
 
   constructor(
     private readonly db: Db,
@@ -272,6 +310,27 @@ export class ScoutRunApplication {
     return this.createFeedSource({ ...command, kind: "atom" });
   }
 
+  createXSource(command: CreateXSourceCommand) {
+    const config: Record<string, unknown> = {
+      query: command.query,
+      postIds: command.postIds,
+      windowHours: command.windowHours,
+      maxPages: command.maxPages,
+      maxItems: command.maxItems,
+      maxSpendCents: command.maxSpendCents,
+      maxRequestsPerRun: command.maxRequestsPerRun,
+      // bearerToken is accepted only so callers do not need a second setup
+      // shape; sanitizeSourceConfig removes it before the Source transaction.
+      bearerToken: command.bearerToken,
+    };
+    return this.createSource({
+      kind: "x",
+      name: command.name,
+      config,
+      idempotencyKey: command.idempotencyKey,
+    });
+  }
+
   createFeedSource(command: CreateFeedSourceCommand) {
     return this.createSource({
       kind: command.kind,
@@ -348,6 +407,9 @@ export class ScoutRunApplication {
   ): Promise<SourceAccessSummaryValue> {
     const source = requireSource(this.db, command.sourceId);
     ensureSourceAccess(this.db, source.id, this.now());
+    if (source.kind === "x") {
+      return this.checkXSourceReadiness(source, command.provider as XProvider | undefined);
+    }
     let url: string;
     try {
       url = feedUrlFromConfig(source.config);
@@ -386,7 +448,10 @@ export class ScoutRunApplication {
     const previous = requireSourceAccess(this.db, source.id);
     let patch: SourceAccessPatch;
     try {
-      const response = await (command.provider ?? this.httpProvider).fetch({
+      const response = await (isFeedProvider(command.provider)
+        ? command.provider
+        : this.httpProvider
+      ).fetch({
         url,
         headers: conditionalHeaders(previous),
         cursor: null,
@@ -445,6 +510,112 @@ export class ScoutRunApplication {
     return result;
   }
 
+  private async checkXSourceReadiness(
+    source: SourceRow,
+    provider: XProvider | undefined,
+  ): Promise<SourceAccessSummaryValue> {
+    ensureSourceAccess(this.db, source.id, this.now());
+    let config: ReturnType<typeof xConfigFromSource>;
+    try {
+      config = xConfigFromSource(source.config);
+    } catch (error) {
+      const message =
+        error instanceof XApiError ? error.message : "X Source configuration is malformed";
+      const checkedAt = this.now();
+      this.persistSourceReadiness(
+        source.id,
+        {
+          readiness: "not_configured",
+          safeFailure: message,
+          nextAction: "Configure a bounded recent-search query or public Post IDs",
+          retryAt: null,
+        },
+        checkedAt,
+      );
+      return toSourceAccessSummary(requireSourceAccess(this.db, source.id));
+    }
+    const access = requireSourceAccess(this.db, source.id);
+    const request = config.postIds.length
+      ? xRequestForLookup(config)
+      : xRequestForSearch(config, this.now(), null, 10);
+    let response: XApiResponse;
+    try {
+      const candidate = provider ?? this.httpXProvider;
+      response =
+        "readiness" in candidate && typeof candidate.readiness === "function"
+          ? await candidate.readiness(request)
+          : await candidate.request(request);
+    } catch {
+      response = { status: 503, body: "" };
+    }
+    let patch = xReadinessPatchForResponse(response, this.now());
+    if ((response.status === 200 || response.status === 204) && !patch.safeFailure) {
+      try {
+        normalizeXResponse(response.body || "{}", config.postIds);
+      } catch (error) {
+        patch = {
+          readiness: "degraded",
+          safeFailure:
+            error instanceof XApiError ? error.message : "X API response could not be parsed",
+          nextAction: "Retry readiness after verifying the official X API response",
+          retryAt: null,
+        };
+      }
+    }
+    if (
+      patch.readiness === "ready" &&
+      config.maxSpendCents > 0 &&
+      (response.costCents ?? 0) > config.maxSpendCents
+    ) {
+      patch = {
+        readiness: "degraded",
+        safeFailure: "The configured X Source spend budget is below the API request cost",
+        nextAction: "Increase the bounded X Source spend budget or choose a lower-cost plan",
+        retryAt: null,
+      };
+    }
+    const checkedAt = this.now();
+    this.persistSourceReadiness(
+      source.id,
+      {
+        ...patch,
+        lastSuccessAt: patch.readiness === "ready" ? checkedAt : access.lastSuccessAt,
+        sourceIdentity: "x-api-v2",
+      },
+      checkedAt,
+    );
+    return toSourceAccessSummary(requireSourceAccess(this.db, source.id));
+  }
+
+  private persistSourceReadiness(
+    sourceId: string,
+    patch: SourceAccessPatch & { sourceIdentity?: string | null; lastSuccessAt?: number | null },
+    checkedAt: number,
+  ): void {
+    this.db.transaction((tx) => {
+      const current = requireSourceAccess(tx, sourceId);
+      const next = {
+        ...patch,
+        lastCheckedAt: checkedAt,
+        lastSuccessAt: patch.lastSuccessAt ?? current.lastSuccessAt,
+        updatedAt: checkedAt,
+        sourceIdentity: patch.sourceIdentity ?? current.sourceIdentity,
+      };
+      tx.update(sourceAccess).set(next).where(eq(sourceAccess.id, current.id)).run();
+      tx.update(sources)
+        .set({ readiness: next.readiness, safeFailure: next.safeFailure, updatedAt: checkedAt })
+        .where(eq(sources.id, sourceId))
+        .run();
+    });
+    emitChange(
+      currentRevision(this.db),
+      "source",
+      [sourceId],
+      "source_readiness_checked",
+      checkedAt,
+    );
+  }
+
   async readSource(command: ReadSourceCommand): Promise<SourceAttemptResult> {
     const run = requireRun(this.db, command.runId);
     const source = requireSource(this.db, command.sourceId);
@@ -486,17 +657,7 @@ export class ScoutRunApplication {
         .run();
     });
 
-    const finish = async (
-      outcome: SourceAttemptOutcome,
-      input: {
-        items?: FeedItem[];
-        cursor?: string | null;
-        pageCount?: number;
-        retryAt?: number | null;
-        safeFailure?: string | null;
-        accessPatch?: SourceAccessPatch;
-      } = {},
-    ): Promise<SourceAttemptResult> => {
+    const finish: SourceAttemptFinish = async (outcome, input = {}) => {
       const completedAt = this.now();
       const items = input.items ?? [];
       const acceptedItems = items.filter(isAttributableItem);
@@ -545,7 +706,7 @@ export class ScoutRunApplication {
           source,
           sourceAccess: persistedAccess,
           attemptId,
-          items: acceptedItems,
+          items,
           observedAt: completedAt,
         });
         return toSourceAttemptSummary(requireSourceAttempt(tx, attemptId), items);
@@ -591,6 +752,18 @@ export class ScoutRunApplication {
           nextAction: "Retry after the indicated time",
           retryAt: access.retryAt,
         },
+      });
+    }
+
+    if (source.kind === "x") {
+      return this.readXSource({
+        source,
+        access,
+        budget,
+        startedAt,
+        provider: command.provider as XProvider | undefined,
+        retry: command.retry,
+        finish,
       });
     }
 
@@ -651,7 +824,10 @@ export class ScoutRunApplication {
         });
       }
       try {
-        response = await (command.provider ?? this.httpProvider).fetch({
+        response = await (isFeedProvider(command.provider)
+          ? command.provider
+          : this.httpProvider
+        ).fetch({
           url,
           headers: conditionalHeaders(access),
           cursor: null,
@@ -792,7 +968,10 @@ export class ScoutRunApplication {
       while (pageAttempts < retry.maxAttempts) {
         pageAttempts++;
         try {
-          page = await (command.provider ?? this.httpProvider).fetch({
+          page = await (isFeedProvider(command.provider)
+            ? command.provider
+            : this.httpProvider
+          ).fetch({
             url,
             headers: {},
             cursor: nextCursor,
@@ -862,6 +1041,212 @@ export class ScoutRunApplication {
         etag: response.etag ?? access.etag,
         lastModified: response.lastModified ?? access.lastModified,
         sourceIdentity: feed.identity,
+      },
+    });
+  }
+
+  private async readXSource(input: {
+    source: SourceRow;
+    access: SourceAccessRow;
+    budget: RunBudget;
+    startedAt: number;
+    provider?: XProvider;
+    retry?: ReadSourceCommand["retry"];
+    finish: SourceAttemptFinish;
+  }): Promise<SourceAttemptResult> {
+    const { source, access, budget, startedAt, finish } = input;
+    let config: ReturnType<typeof xConfigFromSource>;
+    try {
+      config = xConfigFromSource(source.config);
+    } catch (error) {
+      return finish("unsupported", {
+        safeFailure:
+          error instanceof XApiError ? error.message : "X Source configuration is malformed",
+        accessPatch: {
+          readiness: "not_configured",
+          safeFailure:
+            error instanceof XApiError ? error.message : "X Source configuration is malformed",
+          nextAction: "Configure a bounded recent-search query or public Post IDs",
+          retryAt: null,
+          sourceIdentity: "x-api-v2",
+        },
+      });
+    }
+    const maxPages = Math.min(budget.maxPages, config.maxPages, config.maxRequestsPerRun);
+    const maxItems = Math.min(budget.maxItems, config.maxItems);
+    const maxSpendCents =
+      config.maxSpendCents > 0
+        ? Math.min(budget.maxSpendCents, config.maxSpendCents)
+        : budget.maxSpendCents;
+    if (maxPages < 1 || maxItems < 1) {
+      return finish("budget_exhausted", {
+        safeFailure: "The X Source Run budget was exhausted before retrieval",
+        accessPatch: {
+          readiness: access.readiness as SourceReadinessValue,
+          safeFailure: "The X Source Run budget was exhausted before retrieval",
+          nextAction: "Increase the bounded X Source Run budget",
+          retryAt: null,
+          sourceIdentity: "x-api-v2",
+        },
+      });
+    }
+    const provider = input.provider ?? this.httpXProvider;
+    const attemptsAllowed = Math.max(1, Math.min(input.retry?.maxAttempts ?? 3, 3));
+    const baseDelayMs = Math.max(1, Math.min(input.retry?.baseDelayMs ?? 1_000, 60_000));
+    const retentionUntil = startedAt + 24 * 60 * 60 * 1_000;
+    const allItems: FeedItem[] = [];
+    let nextCursor: string | null = null;
+    let pageCount = 0;
+    let spentCents = 0;
+    let partialFailure: string | null = null;
+    let retryAt: number | null = null;
+    const lookup = config.postIds.length > 0;
+
+    while (pageCount < maxPages && allItems.length < maxItems) {
+      if (this.now() - startedAt > budget.maxWallClockMs) {
+        partialFailure = "The X Source read exceeded its wall-clock budget";
+        break;
+      }
+      const request = lookup
+        ? xRequestForLookup(config)
+        : xRequestForSearch(config, startedAt, nextCursor, Math.min(100, Math.max(10, maxItems)));
+      let response: XApiResponse = { status: 503, body: "" };
+      let attempts = 0;
+      while (attempts < attemptsAllowed) {
+        attempts++;
+        try {
+          response = await provider.request(request);
+        } catch {
+          response = { status: 503, body: "" };
+        }
+        if (
+          ![408, 425, 500, 502, 503, 504].includes(response.status) ||
+          attempts >= attemptsAllowed
+        )
+          break;
+      }
+      pageCount++;
+      spentCents += response.costCents ?? 0;
+      if (spentCents > maxSpendCents) {
+        return finish("budget_exhausted", {
+          pageCount,
+          safeFailure: "The X Source Run spend budget was exhausted",
+          accessPatch: {
+            readiness: access.readiness as SourceReadinessValue,
+            safeFailure: "The X Source Run spend budget was exhausted",
+            nextAction: "Increase the bounded X Source spend budget",
+            retryAt: null,
+            sourceIdentity: "x-api-v2",
+          },
+        });
+      }
+      if (response.status === 401) {
+        return finish("blocked", {
+          pageCount,
+          safeFailure: "X App-Only Source Access is not configured or was rejected",
+          accessPatch: {
+            readiness: "reauthentication_required",
+            safeFailure: "X App-Only Source Access is not configured or was rejected",
+            nextAction: "Configure an official X API v2 App-Only Bearer Token",
+            retryAt: null,
+            sourceIdentity: "x-api-v2",
+          },
+        });
+      }
+      if (response.status === 403) {
+        return finish("blocked", {
+          pageCount,
+          safeFailure: "X blocked this public API read or the App plan lacks access",
+          accessPatch: {
+            readiness: "blocked",
+            safeFailure: "X blocked this public API read or the App plan lacks access",
+            nextAction: "Check the official X App permissions and plan",
+            retryAt: null,
+            sourceIdentity: "x-api-v2",
+          },
+        });
+      }
+      if (response.status === 429) {
+        retryAt = startedAt + Math.max(0, response.retryAfterMs ?? 60_000);
+        return finish("rate_limited", {
+          pageCount,
+          retryAt,
+          safeFailure: "X asked OpenRecruit to retry after the documented rate limit window",
+          accessPatch: {
+            readiness: "rate_limited",
+            safeFailure: "X asked OpenRecruit to retry after the documented rate limit window",
+            nextAction: "Retry after X Retry-After",
+            retryAt,
+            sourceIdentity: "x-api-v2",
+          },
+        });
+      }
+      if ([408, 425, 500, 502, 503, 504].includes(response.status)) {
+        retryAt = startedAt + baseDelayMs;
+        partialFailure = "X is temporarily unavailable";
+        break;
+      }
+      if (response.status < 200 || response.status >= 300) {
+        return finish("blocked", {
+          pageCount,
+          safeFailure: "X returned an unavailable response",
+          accessPatch: {
+            readiness: "blocked",
+            safeFailure: "X returned an unavailable response",
+            nextAction: "Verify the official X API App and Source configuration",
+            retryAt: null,
+            sourceIdentity: "x-api-v2",
+          },
+        });
+      }
+      let page: NormalizedXPage;
+      try {
+        page = normalizeXResponse(response.body, lookup ? config.postIds : [], retentionUntil);
+      } catch (error) {
+        return finish("malformed_content", {
+          pageCount,
+          safeFailure: error instanceof XApiError ? error.message : "X returned malformed content",
+          accessPatch: {
+            readiness: "degraded",
+            safeFailure:
+              error instanceof XApiError ? error.message : "X returned malformed content",
+            nextAction: "Verify the official X API response and retry",
+            retryAt: null,
+            sourceIdentity: "x-api-v2",
+          },
+        });
+      }
+      allItems.push(...page.items);
+      nextCursor = page.nextCursor;
+      if (lookup || !nextCursor) break;
+    }
+
+    const boundedItems = allItems.slice(0, maxItems);
+    const exhausted = boundedItems.length < allItems.length || Boolean(nextCursor);
+    const accepted = boundedItems.some(isAttributableItem);
+    const outcome: SourceAttemptOutcome = partialFailure
+      ? "transient_failure"
+      : exhausted
+        ? "budget_exhausted"
+        : accepted
+          ? "succeeded_with_items"
+          : "succeeded_empty";
+    const cursor = nextCursor
+      ? `x:${digest(`${source.id}\0${nextCursor}`)}`
+      : `x:${digest(`${source.id}\0${boundedItems.at(-1)?.identityKey ?? ""}`)}`;
+    return finish(outcome, {
+      items: boundedItems,
+      cursor,
+      pageCount,
+      retryAt,
+      safeFailure:
+        partialFailure ?? (exhausted ? "The X Source item or page budget was exhausted" : null),
+      accessPatch: {
+        readiness: partialFailure ? "degraded" : "ready",
+        safeFailure: partialFailure,
+        nextAction: partialFailure ? "Retry the X Source later" : "Run the X Source again when due",
+        retryAt,
+        sourceIdentity: "x-api-v2",
       },
     });
   }
@@ -1322,13 +1707,29 @@ function isAttributableItem(item: FeedItem): boolean {
   // Content-derived identity is useful for parsing and bounded Attempt metrics,
   // but it is not attributable evidence. Signals require a provider identity or
   // a canonical public URL so a Candidate can inspect their provenance later.
-  return Boolean(item.providerIdentity || item.canonicalUrl);
+  return Boolean(
+    (item.providerIdentity || item.canonicalUrl) &&
+      item.metadata?.state !== "deleted" &&
+      item.metadata?.state !== "protected" &&
+      item.metadata?.state !== "withheld" &&
+      item.metadata?.state !== "deleted_or_unavailable",
+  );
+}
+
+function isUnavailableItem(item: FeedItem): boolean {
+  return (
+    item.metadata?.state === "deleted" ||
+    item.metadata?.state === "protected" ||
+    item.metadata?.state === "withheld" ||
+    item.metadata?.state === "deleted_or_unavailable"
+  );
 }
 
 function persistSignals(db: RecruitingDb, input: SignalPersistenceInput): void {
   const strategyMaterial = strategyMaterialFromSnapshot(input.run.strategySnapshot);
   const strategyKey = digest(strategyMaterial);
   for (const item of input.items) {
+    if (!isAttributableItem(item) && !isUnavailableItem(item)) continue;
     const identityKey = stableItemIdentity(item);
     let sourceItem = db
       .select()
@@ -1357,6 +1758,53 @@ function persistSignals(db: RecruitingDb, input: SignalPersistenceInput): void {
     }
     if (!sourceItem) continue;
 
+    if (isUnavailableItem(item)) {
+      const oldSignals = db
+        .select({ id: signals.id })
+        .from(signals)
+        .where(eq(signals.sourceItemId, sourceItem.id))
+        .all();
+      const oldLeadIds = db
+        .select({ leadId: leadSignalLinks.leadId })
+        .from(leadSignalLinks)
+        .where(
+          inArray(
+            leadSignalLinks.signalId,
+            oldSignals.length ? oldSignals.map((signal) => signal.id) : [""],
+          ),
+        )
+        .all()
+        .map((link) => link.leadId);
+      for (const oldSignal of oldSignals) {
+        db.delete(leadSignalLinks).where(eq(leadSignalLinks.signalId, oldSignal.id)).run();
+        db.delete(signalAttributions).where(eq(signalAttributions.signalId, oldSignal.id)).run();
+        db.delete(signals).where(eq(signals.id, oldSignal.id)).run();
+      }
+      for (const leadId of new Set(oldLeadIds)) {
+        const remaining = db
+          .select({ signalId: leadSignalLinks.signalId })
+          .from(leadSignalLinks)
+          .where(eq(leadSignalLinks.leadId, leadId))
+          .limit(1)
+          .get();
+        if (!remaining) {
+          db.delete(leadAliases).where(eq(leadAliases.leadId, leadId)).run();
+          db.delete(leads).where(eq(leads.id, leadId)).run();
+        }
+      }
+      db.update(sourceItems)
+        .set({
+          canonicalUrl: sourceItem.canonicalUrl,
+          providerIdentity: item.providerIdentity ?? sourceItem.providerIdentity,
+          latestFingerprint: null,
+          latestSignalId: null,
+          deletionMarkerAt: input.observedAt,
+          updatedAt: input.observedAt,
+        })
+        .where(eq(sourceItems.id, sourceItem.id))
+        .run();
+      continue;
+    }
     const fingerprint = itemFingerprint(item);
     const existing = db
       .select()
@@ -1373,7 +1821,12 @@ function persistSignals(db: RecruitingDb, input: SignalPersistenceInput): void {
         canonicalUrl: item.canonicalUrl,
         providerIdentity: item.providerIdentity,
         sourceIdentity: input.sourceAccess.sourceIdentity,
+        ...(item.metadata?.author ? { author: item.metadata.author } : {}),
+        ...(item.metadata?.editHistory ? { editHistory: item.metadata.editHistory } : {}),
+        ...(item.metadata?.withheld ? { withheld: item.metadata.withheld } : {}),
+        ...(item.metadata?.protected !== undefined ? { protected: item.metadata.protected } : {}),
       };
+      const isX = item.metadata?.provider === "x-api-v2";
       db.insert(signals)
         .values({
           id: signalId,
@@ -1390,8 +1843,10 @@ function persistSignals(db: RecruitingDb, input: SignalPersistenceInput): void {
             scoutId: input.run.scoutId,
             sourceIdentity: input.sourceAccess.sourceIdentity,
             accessMode: "public",
-            adapterVersion: "rss-atom-v1",
-            processor: "openrecruit-rss-atom",
+            adapterVersion: isX ? "x-api-v2" : "rss-atom-v1",
+            processor: isX ? "openrecruit-x-api" : "openrecruit-rss-atom",
+            ...(isX && item.metadata?.author ? { author: item.metadata.author } : {}),
+            ...(isX ? { authMode: "app_only", editHistory: item.metadata?.editHistory ?? [] } : {}),
             strategyKey,
           }),
           publicationAt: item.publicationAt,
@@ -1399,9 +1854,12 @@ function persistSignals(db: RecruitingDb, input: SignalPersistenceInput): void {
           retrievedAt: input.observedAt,
           evidence: JSON.stringify(evidence),
           accessMode: "public",
-          adapterVersion: "rss-atom-v1",
-          processor: "openrecruit-rss-atom",
-          retentionUntil: input.observedAt + 30 * 24 * 60 * 60 * 1_000,
+          adapterVersion: isX ? "x-api-v2" : "rss-atom-v1",
+          processor: isX ? "openrecruit-x-api" : "openrecruit-rss-atom",
+          retentionUntil:
+            item.retentionUntil ??
+            item.metadata?.retentionUntil ??
+            input.observedAt + 30 * 24 * 60 * 60 * 1_000,
           supersededSignalId: previousSignalId,
           createdAt: input.observedAt,
         })
@@ -1494,6 +1952,8 @@ function ensureLead(db: RecruitingDb, item: FeedItem, at: number): typeof leads.
 }
 
 function stableItemIdentity(item: FeedItem): string {
+  if (item.metadata?.provider === "x-api-v2" && item.providerIdentity)
+    return `provider:${item.providerIdentity}`;
   if (item.canonicalUrl) return `url:${item.canonicalUrl}`;
   if (item.providerIdentity) return `provider:${item.providerIdentity}`;
   return item.identityKey;
@@ -1507,6 +1967,16 @@ function itemFingerprint(item: FeedItem): string {
       title: item.title,
       content: item.content,
       publicationAt: item.publicationAt,
+      metadata: item.metadata
+        ? {
+            provider: item.metadata.provider,
+            state: item.metadata.state,
+            author: item.metadata.author,
+            editHistory: item.metadata.editHistory,
+            withheld: item.metadata.withheld,
+            protected: item.metadata.protected,
+          }
+        : undefined,
     }),
   );
 }
@@ -1852,6 +2322,10 @@ function conditionalHeaders(access: SourceAccessRow): Record<string, string> {
   };
 }
 
+function isFeedProvider(provider: FeedProvider | XProvider | undefined): provider is FeedProvider {
+  return Boolean(provider && "fetch" in provider && typeof provider.fetch === "function");
+}
+
 function readinessPatchForResponse(
   response: { status: number; retryAfterMs?: number | null },
   at: number,
@@ -1902,6 +2376,65 @@ function readinessPatchForResponse(
     safeFailure: "The Source returned an unavailable response",
     nextAction: "Verify the feed URL",
     retryAt: null,
+  };
+}
+
+function xReadinessPatchForResponse(
+  response: Pick<XApiResponse, "status" | "retryAfterMs">,
+  at: number,
+): SourceAccessPatch {
+  if (response.status >= 200 && response.status < 300) {
+    return {
+      readiness: "ready",
+      safeFailure: null,
+      nextAction: "Run the X Source again when due",
+      retryAt: null,
+      sourceIdentity: "x-api-v2",
+    };
+  }
+  if (response.status === 401) {
+    return {
+      readiness: "reauthentication_required",
+      safeFailure: "X App-Only Source Access is not configured or was rejected",
+      nextAction: "Configure an official X API v2 App-Only Bearer Token",
+      retryAt: null,
+      sourceIdentity: "x-api-v2",
+    };
+  }
+  if (response.status === 403) {
+    return {
+      readiness: "blocked",
+      safeFailure: "X blocked this public API read or the App plan lacks access",
+      nextAction: "Check the official X App permissions and plan",
+      retryAt: null,
+      sourceIdentity: "x-api-v2",
+    };
+  }
+  if (response.status === 429) {
+    const retryAt = at + Math.max(0, response.retryAfterMs ?? 60_000);
+    return {
+      readiness: "rate_limited",
+      safeFailure: "X asked OpenRecruit to retry after the documented rate limit window",
+      nextAction: "Retry after X Retry-After",
+      retryAt,
+      sourceIdentity: "x-api-v2",
+    };
+  }
+  if (response.status >= 500 || response.status === 408 || response.status === 425) {
+    return {
+      readiness: "degraded",
+      safeFailure: "X is temporarily unavailable",
+      nextAction: "Retry the X readiness check later",
+      retryAt: at + 60_000,
+      sourceIdentity: "x-api-v2",
+    };
+  }
+  return {
+    readiness: "blocked",
+    safeFailure: "X returned an unavailable response",
+    nextAction: "Verify the official X API App and Source configuration",
+    retryAt: null,
+    sourceIdentity: "x-api-v2",
   };
 }
 

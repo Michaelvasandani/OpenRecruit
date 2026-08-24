@@ -120,6 +120,19 @@ export const SignalEvidence = z.object({
   canonicalUrl: z.string().nullable(),
   providerIdentity: z.string().nullable(),
   sourceIdentity: z.string().nullable(),
+  author: z
+    .object({
+      id: z.string(),
+      username: z.string().nullable(),
+      name: z.string().nullable(),
+      protected: z.boolean().optional(),
+      withheld: z.unknown().nullable().optional(),
+    })
+    .nullable()
+    .optional(),
+  editHistory: z.array(z.string()).optional(),
+  withheld: z.unknown().nullable().optional(),
+  protected: z.boolean().optional(),
 });
 export type SignalEvidence = z.infer<typeof SignalEvidence>;
 

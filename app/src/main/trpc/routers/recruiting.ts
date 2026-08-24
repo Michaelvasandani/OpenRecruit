@@ -104,6 +104,26 @@ export const recruitingRouter = router({
     )
     .mutation(({ ctx, input }) => command(() => ctx.recruiting.createFeedSource(input))),
 
+  createXSource: publicProcedure
+    .input(
+      z.object({
+        name: z.string().trim().min(1).max(160),
+        query: z.string().trim().min(1).max(512).optional(),
+        postIds: z
+          .array(z.string().regex(/^\d{1,30}$/))
+          .max(100)
+          .optional(),
+        windowHours: z.number().int().positive().max(168).optional(),
+        maxPages: z.number().int().positive().max(100).optional(),
+        maxItems: z.number().int().positive().max(10_000).optional(),
+        maxSpendCents: z.number().int().nonnegative().max(10_000_000).optional(),
+        maxRequestsPerRun: z.number().int().positive().max(100).optional(),
+        bearerToken: z.string().optional(),
+        idempotencyKey: z.string().trim().min(1).max(200),
+      }),
+    )
+    .mutation(({ ctx, input }) => command(() => ctx.recruiting.createXSource(input))),
+
   sourceAccess: publicProcedure
     .input(z.object({ sourceId: z.string().min(1) }))
     .query(({ ctx, input }) => ctx.recruiting.getSourceAccess(input.sourceId)),
