@@ -325,6 +325,7 @@ export const scoutRunRequests = sqliteTable(
     safeFailure: text("safe_failure"),
     createdAt: integer("created_at").notNull(),
     dispatchedAt: integer("dispatched_at"),
+    wakeDeliveredAt: integer("wake_delivered_at"),
     completedAt: integer("completed_at"),
   },
   (t) => [

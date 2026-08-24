@@ -225,6 +225,7 @@ export const SCHEMA_DDL = `
       safe_failure TEXT,
       created_at INTEGER NOT NULL,
       dispatched_at INTEGER,
+      wake_delivered_at INTEGER,
       completed_at INTEGER
     );
     CREATE INDEX IF NOT EXISTS scout_run_requests_scout_created

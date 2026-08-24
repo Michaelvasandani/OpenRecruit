@@ -9,7 +9,7 @@ import {
   type ScoutRunRequestTrigger as ScoutRunRequestTriggerValue,
   type ScoutRunSummary as ScoutRunSummaryValue,
 } from "@shared/recruiting";
-import { and, asc, desc, eq, inArray, lte, or, sql } from "drizzle-orm";
+import { and, asc, desc, eq, inArray, isNull, lte, or, sql } from "drizzle-orm";
 import type { Db } from "../../db/client";
 import {
   commandReceipts,
@@ -94,7 +94,6 @@ const ACTIVE_REQUEST_STATES = ["pending", "dispatching"] as const;
  */
 export class RevisitPlanApplication {
   private wake?: WakeTransport;
-  private readonly deliveredWakeRequests = new Set<string>();
 
   constructor(
     private readonly db: Db,
@@ -121,11 +120,13 @@ export class RevisitPlanApplication {
       .where(
         and(
           eq(scoutRunRequests.status, "dispatched"),
+          isNull(scoutRunRequests.wakeDeliveredAt),
           inArray(scoutRuns.status, ["queued", "preflight", "running", "finalizing"]),
         ),
       )
       .all();
-    for (const { request, run } of active) this.deliverWake(request.scoutId, run.id, "resume");
+    for (const { request, run } of active)
+      this.deliverWake(request.id, request.scoutId, run.id, "resume");
   }
 
   createRevisitPlan(command: CreateRevisitPlanCommand): {
@@ -530,7 +531,7 @@ export class RevisitPlanApplication {
           completedAt: null,
         });
         delivered.push(updated);
-        this.deliverWake(candidate.scoutId, run.value.id, candidate.trigger);
+        this.deliverWake(candidate.id, candidate.scoutId, run.value.id, candidate.trigger);
       } catch (error) {
         const attempts = candidate.attemptCount + 1;
         const terminal = attempts >= MAX_REQUEST_ATTEMPTS;
@@ -712,17 +713,37 @@ export class RevisitPlanApplication {
     return null;
   }
 
-  private deliverWake(scoutId: string, runId: string, trigger: string): void {
-    if (!this.wake) return;
-    if (this.deliveredWakeRequests.has(runId)) return;
-    const scout = this.db.select().from(scouts).where(eq(scouts.id, scoutId)).get();
-    const agentId = scout?.legacyAgentId ?? scoutId;
-    this.wake.enqueue(
-      agentId,
-      `[OpenRecruit Scout Run ${runId}] ${trigger} request accepted. Resume from the latest committed checkpoint and report a structured final outcome.`,
-    );
-    this.deliveredWakeRequests.add(runId);
+  private deliverWake(requestId: string, scoutId: string, runId: string, trigger: string): void {
+    const wake = this.wake;
+    if (!wake) return;
+    this.db.transaction((tx) => {
+      const request = tx
+        .select({ id: scoutRunRequests.id })
+        .from(scoutRunRequests)
+        .where(wakeDeliveryWhere(requestId, runId))
+        .get();
+      if (!request) return;
+      const scout = tx.select().from(scouts).where(eq(scouts.id, scoutId)).get();
+      const agentId = scout?.legacyAgentId ?? scoutId;
+      wake.enqueue(
+        agentId,
+        `[OpenRecruit Scout Run ${runId}] ${trigger} request accepted. Resume from the latest committed checkpoint and report a structured final outcome.`,
+      );
+      tx.update(scoutRunRequests)
+        .set({ wakeDeliveredAt: this.now() })
+        .where(wakeDeliveryWhere(requestId, runId))
+        .run();
+    });
   }
+}
+
+function wakeDeliveryWhere(requestId: string, runId: string) {
+  return and(
+    eq(scoutRunRequests.id, requestId),
+    eq(scoutRunRequests.status, "dispatched"),
+    eq(scoutRunRequests.runId, runId),
+    isNull(scoutRunRequests.wakeDeliveredAt),
+  );
 }
 
 const ACTIVE_RUN_STATES = new Set(["queued", "preflight", "running", "finalizing"]);

@@ -20,7 +20,8 @@ function makeDb(): Db {
 
 function fixture() {
   let now = 10_000;
-  const app = new RecruitingApplication(makeDb(), () => now);
+  const db = makeDb();
+  const app = new RecruitingApplication(db, () => now);
   const profile = app.importProfile({
     name: "Candidate",
     roleTarget: "Staff engineer",
@@ -46,7 +47,13 @@ function fixture() {
     sourceIds: [source.value.id],
     idempotencyKey: "scout",
   });
-  return { app, scout: scout.value, source: source.value, now: (value: number) => (now = value) };
+  return {
+    app,
+    db,
+    scout: scout.value,
+    source: source.value,
+    now: (value: number) => (now = value),
+  };
 }
 
 describe("Recruiting Revisit Plans and durable Run requests", () => {
@@ -161,6 +168,29 @@ describe("Recruiting Revisit Plans and durable Run requests", () => {
     app.requestScheduledRefresh({ scoutId: scout.id, idempotencyKey: "idempotent-wake" });
     app.processRunRequests();
     app.processRunRequests();
+    expect(wakes).toHaveLength(1);
+  });
+
+  test("does not redeliver an active Run wake after application reconstruction", () => {
+    const { app, db, scout } = fixture();
+    const wakes: string[] = [];
+    const wake = {
+      enqueue: (_agentId: string, prompt: string) => wakes.push(prompt),
+      wouldDropWake: () => false,
+      awaitPoll: async () => null,
+      onInteractiveUp: () => {},
+      onInteractiveDown: () => {},
+      stop: () => false,
+      stopAll: () => {},
+    };
+    app.setWake(wake);
+    app.requestScheduledRefresh({ scoutId: scout.id, idempotencyKey: "restart-idempotent-wake" });
+    app.processRunRequests();
+    expect(wakes).toHaveLength(1);
+
+    const recovered = new RecruitingApplication(db, () => 10_000);
+    recovered.setWake(wake);
+
     expect(wakes).toHaveLength(1);
   });
 

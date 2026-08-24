@@ -376,4 +376,31 @@ describe("db migrations", () => {
     });
     expect(userVersion(m)).toBe(SCHEMA_VERSION);
   });
+
+  test("v14 adds durable Scout Run wake-delivery state without rewriting requests", () => {
+    const db = new Database(":memory:");
+    const m = wrap(db);
+    db.exec(`
+      CREATE TABLE scout_run_requests (
+        id TEXT PRIMARY KEY,
+        scout_id TEXT NOT NULL,
+        trigger TEXT NOT NULL,
+        request_key TEXT NOT NULL,
+        status TEXT NOT NULL DEFAULT 'pending',
+        created_at INTEGER NOT NULL
+      );
+      INSERT INTO scout_run_requests (id, scout_id, trigger, request_key, status, created_at)
+      VALUES ('request-1', 'scout-1', 'scheduled', 'request-key', 'dispatched', 1);
+      PRAGMA user_version = 13;
+    `);
+    migrate(m, { fresh: false });
+
+    expect(columns(db, "scout_run_requests")).toContain("wake_delivered_at");
+    expect(db.query("SELECT id, status, wake_delivered_at FROM scout_run_requests").get()).toEqual({
+      id: "request-1",
+      status: "dispatched",
+      wake_delivered_at: null,
+    });
+    expect(userVersion(m)).toBe(SCHEMA_VERSION);
+  });
 });

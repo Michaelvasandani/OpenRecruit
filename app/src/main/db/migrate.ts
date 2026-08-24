@@ -34,7 +34,7 @@ export interface MigrationDb {
 }
 
 /** Bump on every schema change, with a matching entry in MIGRATIONS. */
-export const SCHEMA_VERSION = 13;
+export const SCHEMA_VERSION = 14;
 
 const MIGRATIONS: Record<number, (db: MigrationDb) => void> = {
   // v2 — headless turn limit: per-agent unattended-turn counter + on/off toggle.
@@ -199,6 +199,7 @@ const MIGRATIONS: Record<number, (db: MigrationDb) => void> = {
           safe_failure TEXT,
           created_at INTEGER NOT NULL,
           dispatched_at INTEGER,
+          wake_delivered_at INTEGER,
           completed_at INTEGER
         );
       `);
@@ -212,6 +213,13 @@ const MIGRATIONS: Record<number, (db: MigrationDb) => void> = {
         "ON scout_run_requests (scout_id, request_key) " +
         "WHERE status IN ('pending', 'dispatching')",
     );
+  },
+  // v14 — persist the wake-to-Run delivery marker so host recovery does not
+  // enqueue an already-delivered active Run a second time.
+  14: (db) => {
+    if (hasTable(db, "scout_run_requests")) {
+      addColumnIfMissing(db, "scout_run_requests", "wake_delivered_at", "INTEGER");
+    }
   },
 };
 
