@@ -235,6 +235,26 @@ describe("host-owned WebFetch", () => {
     expect(provider.requests).toHaveLength(0);
   });
 
+  test("never persists URL credentials or malformed URL text in rejected Source Attempts", async () => {
+    const { app, scout, run } = fixture();
+
+    await expect(
+      app.webFetch({
+        scoutId: scout.id,
+        urls: ["https://candidate:top-secret@example.com/private"],
+      }),
+    ).rejects.toThrow(/credentials/i);
+    await expect(
+      app.webFetch({ scoutId: scout.id, urls: ["not-a-url?api_key=another-secret"] }),
+    ).rejects.toThrow(/URL|HTTP|public/i);
+
+    const persisted = JSON.stringify(app.listSourceAttempts(run.id));
+    expect(persisted).not.toContain("candidate");
+    expect(persisted).not.toContain("top-secret");
+    expect(persisted).not.toContain("another-secret");
+    expect(persisted).not.toContain("api_key");
+  });
+
   test("rejects a public-looking hostname that resolves to a private address", async () => {
     const { app, provider, scout } = fixture(async () => ["10.0.0.7"]);
 

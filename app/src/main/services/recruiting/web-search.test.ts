@@ -295,6 +295,81 @@ describe("host-owned WebSearch", () => {
     });
   });
 
+  test("rejects a non-empty provider payload when every result is malformed", async () => {
+    const app = new RecruitingApplication(makeDb(), () => 10_000, {
+      provider: {
+        async search() {
+          return {
+            requestId: "safe-malformed-response",
+            creditsUsed: 2,
+            results: [{ title: "Broken result", url: "not-a-public-url" }],
+          };
+        },
+      },
+      webSearchApiKey: () => "test-key",
+    });
+    const profileId = confirmedProfile(app);
+    const scout = app.createScout({
+      name: "Malformed Search Scout",
+      harness: "codex",
+      instructionPath: "agents/malformed-search",
+      defaultProfileId: profileId,
+      sourceIds: [WEB_SEARCH_SOURCE_ID],
+      idempotencyKey: "malformed-search-scout",
+    }).value;
+    const run = app.launchScoutRun({
+      scoutId: scout.id,
+      idempotencyKey: "malformed-search-run",
+    }).value;
+
+    await expect(app.webSearch({ scoutId: scout.id, query: "broken" })).rejects.toMatchObject({
+      category: "provider_failure",
+    });
+    expect(app.listSourceAttempts(run.id)[0]).toMatchObject({
+      outcome: "rejected",
+      errorCategory: "provider_failure",
+      retryDisposition: "not_retried",
+      attemptCount: 1,
+    });
+  });
+
+  test("records a transient retry followed by authentication failure as mixed", async () => {
+    const responses = [
+      new Response("outage", { status: 503 }),
+      new Response("invalid key", { status: 401 }),
+    ];
+    const app = new RecruitingApplication(makeDb(), () => 10_000, {
+      provider: new FirecrawlWebSearchProvider(
+        () => "test-key",
+        async () => responses.shift() ?? new Response("unexpected", { status: 500 }),
+      ),
+      webSearchApiKey: () => "test-key",
+    });
+    const profileId = confirmedProfile(app);
+    const scout = app.createScout({
+      name: "Mixed Failure Search Scout",
+      harness: "codex",
+      instructionPath: "agents/mixed-failure-search",
+      defaultProfileId: profileId,
+      sourceIds: [WEB_SEARCH_SOURCE_ID],
+      idempotencyKey: "mixed-failure-search-scout",
+    }).value;
+    const run = app.launchScoutRun({
+      scoutId: scout.id,
+      idempotencyKey: "mixed-failure-search-run",
+    }).value;
+
+    await expect(app.webSearch({ scoutId: scout.id, query: "query" })).rejects.toMatchObject({
+      category: "invalid_authentication",
+    });
+    expect(app.listSourceAttempts(run.id)[0]).toMatchObject({
+      outcome: "rejected",
+      errorCategory: "authentication",
+      retryDisposition: "mixed",
+      attemptCount: 2,
+    });
+  });
+
   test("defaults and rejects result limits instead of clamping", async () => {
     const { app, scout, run } = fixture();
     await app.webSearch({ scoutId: scout.id, query: "Forward Deployed Engineer" });

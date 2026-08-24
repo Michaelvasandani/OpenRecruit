@@ -418,7 +418,10 @@ export class WebSearchApplication {
         creditsUsed: providerError?.creditsUsed ?? null,
         retryCount: safeRetryCount(providerError?.retryCount),
         retryAt: safeRetryAt(providerError?.retryAt),
-        retryDisposition: retryDispositionFor(safeRetryCount(providerError?.retryCount), true),
+        retryDisposition: retryDispositionForFailure(
+          safeRetryCount(providerError?.retryCount),
+          providerError?.category,
+        ),
         errorCategory: providerError?.category ?? "provider_failure",
         attemptCount: Math.max(1, 1 + safeRetryCount(providerError?.retryCount)),
       };
@@ -438,9 +441,26 @@ export class WebSearchApplication {
       );
     }
     const retrievedAt = this.now();
-    const results = response.results
+    const normalizedResults = response.results
       .map((result) => normalizeResult(result, retrievedAt))
-      .filter((result): result is WebSearchResult => result !== null)
+      .filter((result): result is WebSearchResult => result !== null);
+    if (response.results.length > 0 && normalizedResults.length === 0) {
+      const retryCount = safeRetryCount(response.retryCount);
+      const details: WebSearchAttemptDetails = {
+        ...initialDetails,
+        requestId: safeRequestId(response.requestId),
+        creditsUsed: safeCredits(response.creditsUsed),
+        retryCount,
+        retryAt: safeRetryAt(response.retryAt),
+        retryDisposition: retryCount > 0 ? "mixed" : "not_retried",
+        errorCategory: "provider_failure",
+        attemptCount: Math.max(1, 1 + retryCount),
+      };
+      const safeMessage = safeProviderMessage("provider_failure");
+      this.completeAttempt(attemptId, "rejected", details, safeMessage);
+      throw new RecruitingError("CONFLICT", safeMessage, "provider_failure");
+    }
+    const results = normalizedResults
       .filter((result) =>
         isAllowedByDomainRestrictions(result.canonicalUrl, normalized.includeDomains),
       )
@@ -776,6 +796,14 @@ function retryDispositionFor(
 ): "not_retried" | "recovered" | "exhausted" {
   if (retryCount === 0) return "not_retried";
   return exhausted ? "exhausted" : "recovered";
+}
+
+function retryDispositionForFailure(
+  retryCount: number,
+  category: WebSearchProviderError["category"] | undefined,
+): "not_retried" | "exhausted" | "mixed" {
+  if (retryCount === 0) return "not_retried";
+  return category === "rate_limited" || category === "transient_failure" ? "exhausted" : "mixed";
 }
 
 function safeProviderMessage(category: WebSearchProviderError["category"] | undefined): string {

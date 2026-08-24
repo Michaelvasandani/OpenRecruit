@@ -776,6 +776,8 @@ function auditUrl(value: string): string {
   const trimmed = value.trim().slice(0, 2_000);
   try {
     const url = new URL(trimmed);
+    url.username = "";
+    url.password = "";
     for (const key of url.searchParams.keys()) {
       if (
         /(?:token|secret|password|credential|authorization|api[_-]?key|signature|sig)/i.test(key)
@@ -785,7 +787,7 @@ function auditUrl(value: string): string {
     }
     return url.toString().slice(0, 2_000);
   } catch {
-    return trimmed;
+    return "[invalid_url]";
   }
 }
 
