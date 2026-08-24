@@ -2,6 +2,7 @@ import type { HarnessId } from "@shared/agent";
 import { ArrowUp, Check, ChevronsUpDown, Cloud, File, FileText, Laptop, Wand2 } from "lucide-react";
 import { type ReactNode, useEffect, useRef, useState } from "react";
 import { useCreateAgent } from "../../hooks/useCreateAgent";
+import { useSettings } from "../../hooks/useSettings";
 import { trpc } from "../../lib/trpc";
 import { cn } from "../../lib/utils";
 import { useUIStore } from "../../stores/ui";
@@ -80,6 +81,8 @@ export function NewAgentDialog() {
 
 function NewAgentForm() {
   const { create, isPending } = useCreateAgent();
+  const settings = useSettings();
+  const profiles = trpc.recruiting.profiles.useQuery();
 
   const [name, setName] = useState("");
   const [template, setTemplate] = useState("default");
@@ -104,6 +107,15 @@ function NewAgentForm() {
   ];
   const [environment, setEnvironment] = useState<Environment>("local");
   const [claudeMd, setClaudeMd] = useState("");
+  const [defaultProfileId, setDefaultProfileId] = useState("");
+  const confirmedProfiles = profiles.data?.filter((profile) => profile.state === "confirmed") ?? [];
+  const firstConfirmedProfileId = confirmedProfiles[0]?.id;
+
+  useEffect(() => {
+    if (!defaultProfileId && firstConfirmedProfileId) {
+      setDefaultProfileId(firstConfirmedProfileId);
+    }
+  }, [defaultProfileId, firstConfirmedProfileId]);
 
   // The selected template's specialty section (prefix excluded). Seeds the editor;
   // switching templates reloads (an explicit choice to load that template's doc).
@@ -116,13 +128,30 @@ function NewAgentForm() {
     setClaudeMd(tplQuery.data);
   }, [template, tplQuery.data]);
 
-  const canSubmit = !isPending && !!name.trim();
+  const profileRequired =
+    Boolean(settings.data?.firecrawl.configured) || (profiles.data?.length ?? 0) > 0;
+  const dependenciesReady = settings.data !== undefined && profiles.data !== undefined;
+  const canSubmit =
+    dependenciesReady && !isPending && !!name.trim() && (!profileRequired || !!defaultProfileId);
   const submit = () => {
     if (!canSubmit) return;
-    create({ name: name.trim(), template, harness, claudeMd });
+    create({
+      name: name.trim(),
+      template,
+      harness,
+      claudeMd,
+      defaultProfileId: defaultProfileId || null,
+    });
   };
 
   const selectedTemplate = TEMPLATES.find((t) => t.value === template) ?? TEMPLATES[0];
+  const selectedProfile = confirmedProfiles.find((profile) => profile.id === defaultProfileId);
+  const profileOptions: PickerOption[] = confirmedProfiles.map((profile) => ({
+    value: profile.id,
+    icon: <FileText className="size-3.5" />,
+    label: profile.name,
+    hint: profile.roleTarget,
+  }));
 
   return (
     // ⌘/Ctrl+Enter creates from anywhere in the form (the Dialog handles Escape).
@@ -205,9 +234,22 @@ function NewAgentForm() {
             value={template}
             onValueChange={setTemplate}
           />
+          {profileOptions.length > 0 && (
+            <PickerPill
+              icon={<FileText className="size-3.5" />}
+              label={selectedProfile?.name ?? "Candidate Profile"}
+              options={profileOptions}
+              value={defaultProfileId}
+              onValueChange={setDefaultProfileId}
+            />
+          )}
         </div>
         <span className="px-1 text-[11px] text-muted-foreground/50">
-          {isPending ? "Creating…" : "⌘↵ to create"}
+          {isPending
+            ? "Creating…"
+            : profileRequired && !defaultProfileId
+              ? "Confirm a Candidate Profile first"
+              : "⌘↵ to create"}
         </span>
       </div>
     </form>

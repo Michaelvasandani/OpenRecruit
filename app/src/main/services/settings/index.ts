@@ -15,7 +15,7 @@ import { bus } from "../event-bus";
 const FIRECRAWL_API_KEY = "firecrawl_api_key";
 const FIRECRAWL_READINESS = "firecrawl_readiness";
 const FIRECRAWL_SAFE_FAILURE = "firecrawl_safe_failure";
-const FIRECRAWL_CREDENTIALS_URL = "https://api.firecrawl.dev/v1/team/credits";
+const FIRECRAWL_CREDENTIALS_URL = "https://api.firecrawl.dev/v2/team/credit-usage";
 const FIRECRAWL_PROBE_TIMEOUT_MS = 10_000;
 
 /** The only provider response detail the credential test needs. Bodies and

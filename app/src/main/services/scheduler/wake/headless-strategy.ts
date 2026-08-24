@@ -1,5 +1,6 @@
 import { type ChildProcess, spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
+import { StringDecoder } from "node:string_decoder";
 import { hostLog } from "../../../host/log";
 import type { AgentRegistry } from "../../agents/registry";
 import { analytics } from "../../analytics";
@@ -45,7 +46,7 @@ export class HeadlessRunStrategy implements HeadlessWakeStrategy {
      *  `ANTHROPIC_API_KEY` from its env) rather than bill the API. Read live from
      *  settings so a toggle applies to the next run without a restart. Defaults to
      *  subscription (the safe, no-surprise-bill default). */
-    private useSubscriptionAuth: () => boolean = () => true,
+    private shouldUseSubscriptionAuth: () => boolean = () => true,
   ) {}
 
   /** EC1 "Stop task" / max-runtime kill: SIGTERM the running headless child; its exit
@@ -112,7 +113,7 @@ export class HeadlessRunStrategy implements HeadlessWakeStrategy {
     // needs no prefix: it self-identifies as `<channel source="opentrade">`.
     const startedAt = Date.now();
     const wakePrompt = formatWakePrompt(prompt, startedAt);
-    const stripEnvKeys = this.useSubscriptionAuth() ? harness.subscriptionAuthStrip : [];
+    const stripEnvKeys = this.shouldUseSubscriptionAuth() ? harness.subscriptionAuthStrip : [];
     // This strategy is the CLI-child transport; the routing strategy only sends it
     // harnesses whose headless transport IS a CLI child (i.e. defines headlessArgs).
     if (!harness.headlessArgs) {
@@ -138,8 +139,9 @@ export class HeadlessRunStrategy implements HeadlessWakeStrategy {
       stdio: ["ignore", "ignore", "pipe"],
     });
     let stderrTail = "";
+    const stderrDecoder = new StringDecoder("utf8");
     child.stderr?.on("data", (chunk) => {
-      stderrTail = (stderrTail + chunk.toString()).slice(-STDERR_TAIL_CHARS);
+      stderrTail = (stderrTail + stderrDecoder.write(chunk)).slice(-STDERR_TAIL_CHARS);
     });
     this.children.set(agentId, child);
     // Durable single-writer marker (crash recovery, E1): exists while this child is
@@ -166,6 +168,7 @@ export class HeadlessRunStrategy implements HeadlessWakeStrategy {
       settle("spawnFail");
     });
     child.on("exit", (code) => {
+      stderrTail = (stderrTail + stderrDecoder.end()).slice(-STDERR_TAIL_CHARS);
       // Log the stderr tail on any non-zero exit so failures are diagnosable (a fast
       // resume-fail from a real billing/auth error otherwise reads as a bare `code=1`).
       if (code !== 0) {

@@ -194,6 +194,30 @@ describe("SettingsService", () => {
     expect((await s.testFirecrawlApiKey()).readiness).toBe("not_configured");
   });
 
+  test("verifies Firecrawl keys through the current v2 credit-usage endpoint", async () => {
+    const originalFetch = globalThis.fetch;
+    let request: { url: string; authorization: string | null } | undefined;
+    globalThis.fetch = async (input, init) => {
+      request = {
+        url: String(input),
+        authorization: new Headers(init?.headers).get("authorization"),
+      };
+      return new Response(null, { status: 200 });
+    };
+    try {
+      const s = new SettingsService(memDb());
+      const result = await s.testFirecrawlApiKey({ apiKey: "fc-current-secret" });
+
+      expect(result.readiness).toBe("ready");
+      expect(request).toEqual({
+        url: "https://api.firecrawl.dev/v2/team/credit-usage",
+        authorization: "Bearer fc-current-secret",
+      });
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
   test("does not apply a stale test result after a concurrent replacement", async () => {
     let resolveProbe: ((response: { status: number }) => void) | undefined;
     const s = new SettingsService(memDb(), {

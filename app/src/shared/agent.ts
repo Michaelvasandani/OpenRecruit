@@ -53,6 +53,8 @@ export const CreateAgentInput = z.strictObject({
   name: z.string().min(1).max(80),
   template: z.string().default("default"),
   harness: HarnessId.default("claude"),
+  /** Confirmed Candidate Profile used by the recruiting Scout and its Runs. */
+  defaultProfileId: z.string().min(1).nullable().optional(),
   /**
    * The agent's CLAUDE.md **specialty section** (strategy persona/principles), as
    * edited in the New Agent dialog — NOT the shared prefix, which the registry

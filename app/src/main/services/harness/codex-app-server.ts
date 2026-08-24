@@ -3,6 +3,7 @@ import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, rmSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
+import { StringDecoder } from "node:string_decoder";
 import WebSocket from "ws";
 import { OPENTRADE_HOME } from "../../db/client";
 import { hostLog } from "../../host/log";
@@ -171,10 +172,12 @@ export class CodexAppServerManager {
       stdio: ["ignore", "ignore", "pipe"],
     });
     let stderrTail = "";
+    const stderrDecoder = new StringDecoder("utf8");
     child.stderr?.on("data", (c) => {
-      stderrTail = (stderrTail + c.toString()).slice(-2000);
+      stderrTail = (stderrTail + stderrDecoder.write(c)).slice(-2000);
     });
     child.on("exit", (code) => {
+      stderrTail = (stderrTail + stderrDecoder.end()).slice(-2000);
       this.servers.delete(agentId);
       if (this.stopping) return;
       const fast = Date.now() - startedAt < FAST_CRASH_MS;

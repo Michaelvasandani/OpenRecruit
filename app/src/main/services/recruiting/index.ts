@@ -274,6 +274,8 @@ export type CreateScoutCommand = {
   sourceIds?: string[];
   defaultProfileId?: string | null;
   resumableSessionRef?: string | null;
+  /** Local harness identity used by the authenticated MCP boundary. */
+  legacyAgentId?: string | null;
   idempotencyKey: string;
 };
 
@@ -936,6 +938,7 @@ export class RecruitingApplication {
       sourceSelectionSpecified: explicitSourceSelection,
       defaultProfileId: command.defaultProfileId ?? null,
       resumableSessionRef: command.resumableSessionRef ?? null,
+      legacyAgentId: command.legacyAgentId?.trim() || null,
     };
     assertSafeMaterial(normalized.strategyMaterial, "Discovery Strategy");
     assertSafeMaterial(normalized.policyMaterial, "Scout Policy");
@@ -992,7 +995,7 @@ export class RecruitingApplication {
           defaultProfileId: normalized.defaultProfileId,
           lifecycleState: "active",
           resumableSessionRef: normalized.resumableSessionRef,
-          legacyAgentId: null,
+          legacyAgentId: normalized.legacyAgentId,
           revision: 0,
           createdAt: at,
           archivedAt: null,

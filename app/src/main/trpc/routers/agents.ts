@@ -18,9 +18,28 @@ export const agentsRouter = router({
     .input(z.object({ template: z.string() }))
     .query(({ ctx, input }) => ctx.registry.templateClaudeMd(input.template)),
 
-  create: publicProcedure
-    .input(CreateAgentInput)
-    .mutation(({ ctx, input }) => ctx.registry.create(input)),
+  create: publicProcedure.input(CreateAgentInput).mutation(({ ctx, input }) => {
+    const agent = ctx.registry.create(input);
+    try {
+      ctx.recruiting.createScout({
+        name: agent.name,
+        harness: agent.harness,
+        instructionPath: `agents/${agent.slug}`,
+        defaultProfileId: input.defaultProfileId ?? null,
+        resumableSessionRef: agent.lastSessionId,
+        legacyAgentId: agent.id,
+        idempotencyKey: `local-agent:${agent.id}`,
+      });
+    } catch (error) {
+      // Do not leave the local half of a Scout behind when domain validation
+      // rejects the composite creation (for example, a stale Profile choice).
+      if (!ctx.recruiting.resolveScoutForAgent(agent.id)) {
+        ctx.registry.discardFailedCreation(agent.id);
+      }
+      throw error;
+    }
+    return agent;
+  }),
 
   update: publicProcedure
     .input(

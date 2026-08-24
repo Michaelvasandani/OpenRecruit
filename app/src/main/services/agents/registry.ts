@@ -1,4 +1,4 @@
-import { cpSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { cpSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join, relative, sep } from "node:path";
 import type {
   Agent,
@@ -170,7 +170,20 @@ export class AgentRegistry {
       template: templateOf(input.template),
       harness: input.harness,
     });
-    return this.get(id)!;
+    const created = this.get(id);
+    if (!created) throw new Error(`created agent ${id} could not be loaded`);
+    return created;
+  }
+
+  /** Compensate a failed composite New Scout creation. This is only called while
+   * the freshly scaffolded harness has never been returned to the Candidate. */
+  discardFailedCreation(id: string): void {
+    const agent = this.get(id);
+    if (!agent) return;
+    this.db.delete(agentsTable).where(eq(agentsTable.id, id)).run();
+    rmSync(this.agentDir(agent), { recursive: true, force: true });
+    this.executionStates.delete(id);
+    this.broadcast();
   }
 
   private scaffoldFolder(
