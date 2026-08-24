@@ -494,6 +494,7 @@ export function ScoutRunsScreen() {
                   onClick={() =>
                     deleteEvidence.mutate({
                       scope: { kind: "all" },
+                      expectedRevision: evidence.data?.revision,
                       idempotencyKey: `delete-all-evidence-${crypto.randomUUID()}`,
                     })
                   }
@@ -523,6 +524,7 @@ export function ScoutRunsScreen() {
                           onClick={() =>
                             deleteEvidence.mutate({
                               scope: { kind: "source", sourceId: source.id },
+                              expectedRevision: evidence.data?.revision,
                               idempotencyKey: `delete-source-evidence-${source.id}-${crypto.randomUUID()}`,
                             })
                           }
@@ -555,6 +557,7 @@ export function ScoutRunsScreen() {
                         onClick={() =>
                           deleteEvidence.mutate({
                             scope: { kind: "item", sourceItemId: item.sourceItemId },
+                            expectedRevision: evidence.data?.revision,
                             idempotencyKey: `delete-evidence-${item.sourceItemId}-${crypto.randomUUID()}`,
                           })
                         }
