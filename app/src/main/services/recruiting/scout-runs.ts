@@ -2972,6 +2972,7 @@ function toSourceAttemptSummary(
   row: SourceAttemptRow,
   items: FeedItem[] = [],
 ): { summary: SourceAttemptSummaryValue; items: FeedItem[] } {
+  const audit = parseSourceAttemptAudit(row.requestedScope);
   return {
     summary: SourceAttemptSummary.parse({
       id: row.id,
@@ -2987,11 +2988,44 @@ function toSourceAttemptSummary(
       pageCount: row.pageCount,
       retryAt: row.retryAt,
       safeFailure: row.safeFailure,
+      provider: audit.provider,
+      retryDisposition: audit.retryDisposition,
+      errorCategory: audit.errorCategory,
+      attemptCount: audit.attemptCount,
       startedAt: row.startedAt,
       completedAt: row.completedAt,
     }),
     items,
   };
+}
+
+function parseSourceAttemptAudit(value: string): {
+  provider: string | null;
+  retryDisposition: "not_retried" | "recovered" | "exhausted" | "mixed" | null;
+  errorCategory: string | null;
+  attemptCount: number | undefined;
+} {
+  try {
+    const parsed = JSON.parse(value) as Record<string, unknown>;
+    const provider = typeof parsed.provider === "string" ? parsed.provider : null;
+    const retryDisposition =
+      parsed.retryDisposition === "not_retried" ||
+      parsed.retryDisposition === "recovered" ||
+      parsed.retryDisposition === "exhausted" ||
+      parsed.retryDisposition === "mixed"
+        ? parsed.retryDisposition
+        : null;
+    const errorCategory = typeof parsed.errorCategory === "string" ? parsed.errorCategory : null;
+    const attemptCount =
+      typeof parsed.attemptCount === "number" &&
+      Number.isInteger(parsed.attemptCount) &&
+      parsed.attemptCount >= 0
+        ? parsed.attemptCount
+        : undefined;
+    return { provider, retryDisposition, errorCategory, attemptCount };
+  } catch {
+    return { provider: null, retryDisposition: null, errorCategory: null, attemptCount: undefined };
+  }
 }
 
 function conditionalHeaders(access: SourceAccessRow): Record<string, string> {

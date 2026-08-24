@@ -278,8 +278,16 @@ export class LocalApiServer {
     } catch (error) {
       const code =
         error && typeof error === "object" && "code" in error ? String(error.code) : "CONFLICT";
+      const category =
+        error && typeof error === "object" && "category" in error
+          ? String(error.category)
+          : undefined;
       const message = error instanceof Error ? error.message : "Web Search could not complete";
-      return json(res, code === "NOT_FOUND" ? 404 : 400, { error: message, code });
+      return json(res, code === "NOT_FOUND" ? 404 : 400, {
+        error: message,
+        code,
+        ...(category && category !== "null" ? { category } : {}),
+      });
     }
   }
 
@@ -307,8 +315,16 @@ export class LocalApiServer {
     } catch (error) {
       const code =
         error && typeof error === "object" && "code" in error ? String(error.code) : "CONFLICT";
+      const category =
+        error && typeof error === "object" && "category" in error
+          ? String(error.category)
+          : undefined;
       const message = error instanceof Error ? error.message : "Web Fetch could not complete";
-      return json(res, code === "NOT_FOUND" ? 404 : 400, { error: message, code });
+      return json(res, code === "NOT_FOUND" ? 404 : 400, {
+        error: message,
+        code,
+        ...(category && category !== "null" ? { category } : {}),
+      });
     }
   }
 

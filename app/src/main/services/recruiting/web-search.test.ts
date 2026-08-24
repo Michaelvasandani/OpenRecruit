@@ -97,6 +97,58 @@ describe("host-owned WebSearch", () => {
     expect(JSON.stringify(result)).not.toContain("firecrawl-secret");
   });
 
+  test("records a recovered transient search retry without exposing provider details", async () => {
+    const responses = [
+      new Response("temporary outage", { status: 503 }),
+      new Response(
+        JSON.stringify({
+          id: "safe-request-1",
+          creditsUsed: 2,
+          data: [{ title: "Recovered", url: "https://example.com/recovered" }],
+        }),
+        { status: 200, headers: { "content-type": "application/json" } },
+      ),
+    ];
+    let calls = 0;
+    const provider = new FirecrawlWebSearchProvider(
+      () => "firecrawl-secret",
+      async () => {
+        calls += 1;
+        return responses.shift() ?? new Response("unexpected", { status: 500 });
+      },
+    );
+
+    const result = await provider.search({ query: "recovered", limit: 10, includeDomains: [] });
+
+    expect(calls).toBe(2);
+    expect(result).toMatchObject({
+      requestId: "safe-request-1",
+      creditsUsed: 2,
+      retryCount: 1,
+    });
+    expect(result.retryAt).toEqual(expect.any(Number));
+    expect(JSON.stringify(result)).not.toContain("firecrawl-secret");
+  });
+
+  test("does not retry deterministic search input failures", async () => {
+    let calls = 0;
+    const provider = new FirecrawlWebSearchProvider(
+      () => "firecrawl-secret",
+      async () => {
+        calls += 1;
+        return new Response("invalid input", { status: 422 });
+      },
+    );
+
+    await expect(
+      provider.search({ query: "bad", limit: 10, includeDomains: [] }),
+    ).rejects.toMatchObject({
+      category: "invalid_request",
+      retryCount: 0,
+    });
+    expect(calls).toBe(1);
+  });
+
   test("requires a configured production key and records the safe rejection", async () => {
     const app = new RecruitingApplication(makeDb());
     const profileId = confirmedProfile(app);
@@ -123,6 +175,9 @@ describe("host-owned WebSearch", () => {
         safeFailure: "Web Search Source is not configured",
       }),
     ]);
+    expect(app.listSourceAttempts(run.id)[0]?.requestedScope).toContain(
+      '"errorCategory":"not_configured"',
+    );
   });
 
   test("returns bounded normalized evidence and records a safe Source Attempt", async () => {
@@ -163,8 +218,81 @@ describe("host-owned WebSearch", () => {
       completedAt: 10_000,
     });
     expect(attempt?.requestedScope).toContain('"provider":"deterministic"');
+    expect(attempt?.requestedScope).toContain('"retryDisposition":"not_retried"');
+    expect(attempt?.requestedScope).toContain('"errorCategory":null');
+    expect(attempt).toMatchObject({
+      provider: "deterministic",
+      retryDisposition: "not_retried",
+      errorCategory: null,
+      attemptCount: 1,
+    });
     expect(app.listSignals({ runId: run.id })).toHaveLength(0);
     expect(app.listLeads()).toHaveLength(0);
+  });
+
+  test("distinguishes an empty search success from exhausted transient failure", async () => {
+    const empty = new DeterministicWebSearchProvider({});
+    const emptyApp = new RecruitingApplication(makeDb(), () => 10_000, {
+      provider: empty,
+      webSearchApiKey: () => "test-key",
+    });
+    const profileId = confirmedProfile(emptyApp);
+    const emptyScout = emptyApp.createScout({
+      name: "Empty Search Scout",
+      harness: "codex",
+      instructionPath: "agents/empty-search",
+      defaultProfileId: profileId,
+      sourceIds: [WEB_SEARCH_SOURCE_ID],
+      idempotencyKey: "empty-search-scout",
+    }).value;
+    const emptyRun = emptyApp.launchScoutRun({
+      scoutId: emptyScout.id,
+      idempotencyKey: "empty-search-run",
+    }).value;
+    const emptyResult = await emptyApp.webSearch({ scoutId: emptyScout.id, query: "nothing" });
+    expect(emptyResult.results).toHaveLength(0);
+    expect(emptyApp.getSourceAttempt(emptyResult.sourceAttemptId)).toMatchObject({
+      outcome: "succeeded_empty",
+      errorCategory: null,
+      attemptCount: 1,
+      runId: emptyRun.id,
+    });
+
+    const responses = [
+      new Response("outage", { status: 503 }),
+      new Response("outage", { status: 503 }),
+    ];
+    const transientApp = new RecruitingApplication(makeDb(), () => 10_000, {
+      provider: new FirecrawlWebSearchProvider(
+        () => "test-key",
+        async () => responses.shift() ?? new Response("outage", { status: 503 }),
+      ),
+      webSearchApiKey: () => "test-key",
+    });
+    const transientProfileId = confirmedProfile(transientApp);
+    const transientScout = transientApp.createScout({
+      name: "Transient Search Scout",
+      harness: "codex",
+      instructionPath: "agents/transient-search",
+      defaultProfileId: transientProfileId,
+      sourceIds: [WEB_SEARCH_SOURCE_ID],
+      idempotencyKey: "transient-search-scout",
+    }).value;
+    const transientRun = transientApp.launchScoutRun({
+      scoutId: transientScout.id,
+      idempotencyKey: "transient-search-run",
+    }).value;
+    await expect(
+      transientApp.webSearch({ scoutId: transientScout.id, query: "outage" }),
+    ).rejects.toMatchObject({
+      category: "exhausted_transient_failure",
+    });
+    expect(transientApp.listSourceAttempts(transientRun.id)[0]).toMatchObject({
+      outcome: "transient_failure",
+      errorCategory: "transient_failure",
+      retryDisposition: "exhausted",
+      attemptCount: 2,
+    });
   });
 
   test("defaults and rejects result limits instead of clamping", async () => {

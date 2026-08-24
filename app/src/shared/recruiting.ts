@@ -109,6 +109,14 @@ export const SourceAttemptSummary = z.object({
   pageCount: z.number().int().nonnegative(),
   retryAt: z.number().int().nullable(),
   safeFailure: z.string().nullable(),
+  /** Safe operational fields projected from requestedScope for Source audit. */
+  provider: z.string().nullable().optional(),
+  retryDisposition: z
+    .enum(["not_retried", "recovered", "exhausted", "mixed"])
+    .nullable()
+    .optional(),
+  errorCategory: z.string().nullable().optional(),
+  attemptCount: z.number().int().nonnegative().optional(),
   startedAt: z.number().int(),
   completedAt: z.number().int().nullable(),
 });

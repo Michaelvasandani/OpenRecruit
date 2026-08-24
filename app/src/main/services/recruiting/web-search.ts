@@ -10,7 +10,7 @@ import {
   sourceAttempts,
   sources,
 } from "../../db/schema";
-import { RecruitingError } from "./errors";
+import { RecruitingError, type RecruitingFailureCategory } from "./errors";
 
 const ACTIVE_RUN_STATUSES = ["queued", "preflight", "running", "finalizing"] as const;
 const DEFAULT_RESULT_LIMIT = 10;
@@ -43,6 +43,8 @@ export type WebSearchProviderResult = {
 export type WebSearchProviderResponse = {
   requestId?: string | null;
   creditsUsed?: number | null;
+  retryCount?: number;
+  retryAt?: number | null;
   results: WebSearchProviderResult[];
 };
 
@@ -94,11 +96,19 @@ type WebSearchAttemptDetails = {
   provider: string;
   query: string;
   providerQuery: string;
+  normalizedQuery: string;
   includeDomains: string[];
   unsupportedOperators: string[];
   requestId: string | null;
   creditsUsed: number | null;
   returnedUrls: string[];
+  retryCount: number;
+  retryAt: number | null;
+  retryDisposition: "not_retried" | "recovered" | "exhausted" | "mixed";
+  errorCategory: string | null;
+  attemptCount: number;
+  startedAt: number;
+  completedAt: number | null;
 };
 
 /** A deterministic provider for high-level recruiting tests. It never performs
@@ -138,6 +148,8 @@ export class WebSearchProviderError extends Error {
     message: string,
     readonly requestId: string | null = null,
     readonly creditsUsed: number | null = null,
+    readonly retryCount = 0,
+    readonly retryAt: number | null = null,
   ) {
     super(message);
     this.name = "WebSearchProviderError";
@@ -161,6 +173,8 @@ export class FirecrawlWebSearchProvider implements WebSearchProvider {
       ...(request.includeDomains.length > 0 ? { includeDomains: request.includeDomains } : {}),
     };
     let response: Response | undefined;
+    let retryCount = 0;
+    let retryAt: number | null = null;
     for (let attempt = 0; attempt < 2; attempt++) {
       try {
         response = await this.fetchImpl(FIRECRAWL_SEARCH_URL, {
@@ -174,10 +188,18 @@ export class FirecrawlWebSearchProvider implements WebSearchProvider {
           signal: AbortSignal.timeout(20_000),
         });
       } catch (_error) {
-        if (attempt === 0) continue;
+        if (attempt === 0) {
+          retryCount = 1;
+          retryAt = Date.now();
+          continue;
+        }
         throw new WebSearchProviderError(
           "transient_failure",
           "Firecrawl is temporarily unavailable",
+          null,
+          null,
+          retryCount,
+          retryAt,
         );
       }
       if (response.ok) break;
@@ -187,6 +209,9 @@ export class FirecrawlWebSearchProvider implements WebSearchProvider {
           "authentication",
           "Firecrawl rejected the configured key",
           requestId,
+          null,
+          retryCount,
+          retryAt,
         );
       }
       if (response.status === 400 || response.status === 422) {
@@ -194,6 +219,9 @@ export class FirecrawlWebSearchProvider implements WebSearchProvider {
           "invalid_request",
           "Firecrawl rejected the search request",
           requestId,
+          null,
+          retryCount,
+          retryAt,
         );
       }
       if (![408, 429].includes(response.status) && response.status < 500) {
@@ -201,10 +229,15 @@ export class FirecrawlWebSearchProvider implements WebSearchProvider {
           "provider_failure",
           "Firecrawl could not complete the search",
           requestId,
+          null,
+          retryCount,
+          retryAt,
         );
       }
       if (attempt === 0) {
+        retryCount = 1;
         const retryAfter = boundedRetryAfter(response.headers.get("retry-after"));
+        retryAt = Date.now() + retryAfter;
         if (retryAfter > 0) await delay(retryAfter);
         continue;
       }
@@ -214,10 +247,20 @@ export class FirecrawlWebSearchProvider implements WebSearchProvider {
           ? "Firecrawl is temporarily rate limited"
           : "Firecrawl is temporarily unavailable",
         requestId,
+        null,
+        retryCount,
+        retryAt,
       );
     }
     if (!response?.ok) {
-      throw new WebSearchProviderError("transient_failure", "Firecrawl is temporarily unavailable");
+      throw new WebSearchProviderError(
+        "transient_failure",
+        "Firecrawl is temporarily unavailable",
+        null,
+        null,
+        retryCount,
+        retryAt,
+      );
     }
     let payload: unknown;
     try {
@@ -238,6 +281,8 @@ export class FirecrawlWebSearchProvider implements WebSearchProvider {
     return {
       requestId,
       creditsUsed,
+      retryCount,
+      retryAt,
       results: rawResults.flatMap((raw) => normalizeProviderResult(raw)),
     };
   }
@@ -299,27 +344,42 @@ export class WebSearchApplication {
       provider: providerName(this.provider),
       query: auditQuery(command.query),
       providerQuery: "",
+      normalizedQuery: "",
       includeDomains: [],
       unsupportedOperators: [],
       requestId: null,
       creditsUsed: null,
       returnedUrls: [],
+      retryCount: 0,
+      retryAt: null,
+      retryDisposition: "not_retried",
+      errorCategory: null,
+      attemptCount: 0,
+      startedAt,
+      completedAt: null,
     };
     this.insertAttempt(attemptId, run.id, source.id, initialDetails, startedAt);
     const reject = (
       message: string,
       code: "CONFLICT" | "VALIDATION" | "NOT_FOUND" = "CONFLICT",
+      category: RecruitingFailureCategory = "invalid_input",
     ) => {
-      this.completeAttempt(attemptId, "rejected", initialDetails, message);
-      throw new RecruitingError(code, message);
+      const rejectedDetails = {
+        ...initialDetails,
+        errorCategory: category,
+        retryDisposition: "not_retried" as const,
+      };
+      this.completeAttempt(attemptId, "rejected", rejectedDetails, message);
+      throw new RecruitingError(code, message, category);
     };
     let normalized: ReturnType<typeof normalizeQuery>;
     try {
       normalized = normalizeQuery(command.query, command.limit);
       initialDetails = {
         ...initialDetails,
-        query: normalized.original,
-        providerQuery: normalized.providerQuery,
+        query: auditQuery(normalized.original),
+        providerQuery: redactSensitiveQuery(normalized.providerQuery),
+        normalizedQuery: redactSensitiveQuery(normalized.providerQuery),
         includeDomains: normalized.includeDomains,
         unsupportedOperators: normalized.unsupportedOperators,
       };
@@ -331,12 +391,18 @@ export class WebSearchApplication {
     } catch (error) {
       const message =
         error instanceof RecruitingError ? error.message : "WebSearch request was rejected";
-      return reject(message, "VALIDATION");
+      return reject(message, "VALIDATION", "invalid_input");
     }
-    if (!selected) return reject("Web Search is not enabled for this Scout");
-    if (!access) return reject("Web Search Source Access was not found", "NOT_FOUND");
+    if (!selected)
+      return reject(
+        "Web Search is not enabled for this Scout",
+        "CONFLICT",
+        "disabled_source_access",
+      );
+    if (!access)
+      return reject("Web Search Source Access was not found", "NOT_FOUND", "missing_source_access");
     if (access.readiness === "candidate_disabled")
-      return reject("The Candidate disabled Web Search");
+      return reject("The Candidate disabled Web Search", "CONFLICT", "disabled_source_access");
     let response: WebSearchProviderResponse;
     try {
       response = await this.provider.search({
@@ -350,6 +416,11 @@ export class WebSearchApplication {
         ...initialDetails,
         requestId: providerError?.requestId ?? null,
         creditsUsed: providerError?.creditsUsed ?? null,
+        retryCount: safeRetryCount(providerError?.retryCount),
+        retryAt: safeRetryAt(providerError?.retryAt),
+        retryDisposition: retryDispositionFor(safeRetryCount(providerError?.retryCount), true),
+        errorCategory: providerError?.category ?? "provider_failure",
+        attemptCount: Math.max(1, 1 + safeRetryCount(providerError?.retryCount)),
       };
       const outcome =
         providerError?.category === "rate_limited" ||
@@ -360,7 +431,11 @@ export class WebSearchApplication {
           : "rejected";
       const safeMessage = safeProviderMessage(providerError?.category);
       this.completeAttempt(attemptId, outcome, details, safeMessage);
-      throw new RecruitingError("CONFLICT", safeMessage);
+      throw new RecruitingError(
+        "CONFLICT",
+        safeMessage,
+        recruitingFailureCategory(providerError?.category),
+      );
     }
     const retrievedAt = this.now();
     const results = response.results
@@ -375,6 +450,11 @@ export class WebSearchApplication {
       requestId: safeRequestId(response.requestId),
       creditsUsed: safeCredits(response.creditsUsed),
       returnedUrls: results.map((result) => result.canonicalUrl),
+      retryCount: safeRetryCount(response.retryCount),
+      retryAt: safeRetryAt(response.retryAt),
+      retryDisposition: retryDispositionFor(safeRetryCount(response.retryCount), false),
+      errorCategory: null,
+      attemptCount: Math.max(1, 1 + safeRetryCount(response.retryCount)),
     };
     this.completeAttempt(
       attemptId,
@@ -383,8 +463,8 @@ export class WebSearchApplication {
       null,
     );
     return {
-      query: normalized.original,
-      providerQuery: normalized.providerQuery,
+      query: redactSensitiveQuery(normalized.original),
+      providerQuery: redactSensitiveQuery(normalized.providerQuery),
       appliedDomainRestrictions: normalized.includeDomains,
       unsupportedOperators: normalized.unsupportedOperators,
       sourceAttemptId: attemptId,
@@ -433,14 +513,16 @@ export class WebSearchApplication {
     details: WebSearchAttemptDetails,
     safeFailure: string | null,
   ): void {
+    const completedAt = this.now();
     this.db
       .update(sourceAttempts)
       .set({
-        requestedScope: JSON.stringify(details),
+        requestedScope: JSON.stringify({ ...details, completedAt }),
         outcome,
         itemCount: details.returnedUrls.length,
+        retryAt: details.retryAt,
         safeFailure,
-        completedAt: this.now(),
+        completedAt,
       })
       .where(eq(sourceAttempts.id, id))
       .run();
@@ -603,6 +685,7 @@ function canonicalizeUrl(value: string): string | null {
     const url = new URL(value.trim());
     if ((url.protocol !== "https:" && url.protocol !== "http:") || url.username || url.password)
       return null;
+    if (hasSensitiveQueryParameter(url)) return null;
     url.hash = "";
     return url.toString();
   } catch {
@@ -627,7 +710,14 @@ function normalizeText(value: string, max: number): string {
 
 function auditQuery(value: unknown): string {
   if (typeof value !== "string") return "";
-  return normalizeText(value, MAX_QUERY_LENGTH);
+  return redactSensitiveQuery(normalizeText(value, MAX_QUERY_LENGTH));
+}
+
+function redactSensitiveQuery(value: string): string {
+  return value.replace(
+    /((?:token|secret|password|credential|authorization|api[_-]?key|signature|sig)\s*[:=]\s*)[^\s]+/gi,
+    "$1[redacted]",
+  );
 }
 
 function parsePublishedAt(value: string | number | null | undefined): number | null {
@@ -670,6 +760,24 @@ function safeCredits(value: unknown): number | null {
   return typeof value === "number" && Number.isFinite(value) && value >= 0 ? value : null;
 }
 
+function safeRetryCount(value: unknown): number {
+  return typeof value === "number" && Number.isInteger(value) && value >= 0
+    ? Math.min(value, 1)
+    : 0;
+}
+
+function safeRetryAt(value: unknown): number | null {
+  return typeof value === "number" && Number.isInteger(value) && value >= 0 ? value : null;
+}
+
+function retryDispositionFor(
+  retryCount: number,
+  exhausted: boolean,
+): "not_retried" | "recovered" | "exhausted" {
+  if (retryCount === 0) return "not_retried";
+  return exhausted ? "exhausted" : "recovered";
+}
+
 function safeProviderMessage(category: WebSearchProviderError["category"] | undefined): string {
   switch (category) {
     case "not_configured":
@@ -684,6 +792,25 @@ function safeProviderMessage(category: WebSearchProviderError["category"] | unde
       return "Web Search provider rejected the request";
     default:
       return "Web Search provider could not complete the request";
+  }
+}
+
+function recruitingFailureCategory(
+  category: WebSearchProviderError["category"] | undefined,
+): RecruitingFailureCategory {
+  switch (category) {
+    case "not_configured":
+      return "missing_configuration";
+    case "authentication":
+      return "invalid_authentication";
+    case "rate_limited":
+      return "rate_limited";
+    case "invalid_request":
+      return "invalid_input";
+    case "transient_failure":
+      return "exhausted_transient_failure";
+    default:
+      return "provider_failure";
   }
 }
 
@@ -733,8 +860,15 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 function boundedRetryAfter(value: string | null): number {
   if (!value) return 0;
   const seconds = Number(value);
-  if (!Number.isFinite(seconds)) return 0;
-  return Math.min(2_000, Math.max(0, seconds * 1_000));
+  if (Number.isFinite(seconds)) return Math.min(2_000, Math.max(0, seconds * 1_000));
+  const timestamp = Date.parse(value);
+  return Number.isFinite(timestamp) ? Math.min(2_000, Math.max(0, timestamp - Date.now())) : 0;
+}
+
+function hasSensitiveQueryParameter(url: URL): boolean {
+  return [...url.searchParams.keys()].some((key) =>
+    /(?:token|secret|password|credential|authorization|api[_-]?key|signature|sig)/i.test(key),
+  );
 }
 
 function delay(ms: number): Promise<void> {

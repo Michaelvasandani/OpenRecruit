@@ -12,7 +12,7 @@ import {
   sourceAttempts,
   sources,
 } from "../../db/schema";
-import { RecruitingError } from "./errors";
+import { RecruitingError, type RecruitingFailureCategory } from "./errors";
 
 const ACTIVE_RUN_STATUSES = ["queued", "preflight", "running", "finalizing"] as const;
 const DEFAULT_CONTENT_LIMIT = 12_000;
@@ -130,14 +130,20 @@ export type WebFetchApplicationOptions = {
 type WebFetchAttemptDetails = {
   operation: "web_fetch";
   provider: string;
+  requestedUrls: string[];
   urls: string[];
   contentLimit: number | null;
   requestIds: string[];
   creditsUsed: number[];
   retryCount: number;
   retryAt: number | null;
+  retryDisposition: "not_retried" | "recovered" | "exhausted" | "mixed";
+  attemptCount: number;
   returnedUrls: string[];
   errorCategories: string[];
+  errorCategory: string | null;
+  startedAt: number;
+  completedAt: number | null;
 };
 
 /** A deterministic provider for high-level recruiting tests. It never performs
@@ -211,6 +217,9 @@ export class FirecrawlWebFetchProvider implements WebFetchProvider {
           "authentication",
           "Firecrawl rejected the configured key",
           requestId,
+          null,
+          retryCount,
+          retryAt,
         );
       }
       if (response.status === 400 || response.status === 422) {
@@ -218,6 +227,9 @@ export class FirecrawlWebFetchProvider implements WebFetchProvider {
           "invalid_request",
           "Firecrawl rejected the page request",
           requestId,
+          null,
+          retryCount,
+          retryAt,
         );
       }
       if (response.status === 404) {
@@ -225,6 +237,9 @@ export class FirecrawlWebFetchProvider implements WebFetchProvider {
           "not_found",
           "Firecrawl could not find the page",
           requestId,
+          null,
+          retryCount,
+          retryAt,
         );
       }
       if (response.status !== 408 && response.status !== 429 && response.status < 500) {
@@ -232,6 +247,9 @@ export class FirecrawlWebFetchProvider implements WebFetchProvider {
           "provider_failure",
           "Firecrawl could not fetch the page",
           requestId,
+          null,
+          retryCount,
+          retryAt,
         );
       }
       if (attempt === 0) {
@@ -264,6 +282,9 @@ export class FirecrawlWebFetchProvider implements WebFetchProvider {
         "malformed_content",
         "Firecrawl returned an invalid page response",
         requestId,
+        null,
+        retryCount,
+        retryAt,
       );
     }
     const value = asRecord(payload);
@@ -279,6 +300,9 @@ export class FirecrawlWebFetchProvider implements WebFetchProvider {
         "malformed_content",
         "Firecrawl returned no page content",
         requestId,
+        null,
+        retryCount,
+        retryAt,
       );
     }
     const metadata = asRecord(data?.metadata);
@@ -329,22 +353,34 @@ export class WebFetchApplication {
     let details: WebFetchAttemptDetails = {
       operation: "web_fetch",
       provider: providerName(this.provider),
+      requestedUrls: auditUrls(command.urls),
       urls: auditUrls(command.urls),
       contentLimit: null,
       requestIds: [],
       creditsUsed: [],
       retryCount: 0,
       retryAt: null,
+      retryDisposition: "not_retried",
+      attemptCount: 0,
       returnedUrls: [],
       errorCategories: [],
+      errorCategory: null,
+      startedAt,
+      completedAt: null,
     };
     this.insertAttempt(attemptId, context.run.id, context.source.id, details, startedAt);
     const reject = (
       message: string,
       code: "CONFLICT" | "VALIDATION" | "NOT_FOUND" = "CONFLICT",
+      category: RecruitingFailureCategory = "invalid_input",
     ) => {
-      this.completeAttempt(attemptId, "rejected", details, message, 0);
-      throw new RecruitingError(code, message);
+      const rejectedDetails = {
+        ...details,
+        errorCategory: category,
+        retryDisposition: "not_retried" as const,
+      };
+      this.completeAttempt(attemptId, "rejected", rejectedDetails, message, 0);
+      throw new RecruitingError(code, message, category);
     };
     let normalized: NormalizedFetchRequest;
     try {
@@ -359,18 +395,28 @@ export class WebFetchApplication {
     } catch (error) {
       const message =
         error instanceof RecruitingError ? error.message : "WebFetch request was rejected";
-      return reject(message, "VALIDATION");
+      return reject(message, "VALIDATION", "invalid_url");
     }
-    if (!context.selected) return reject("Web Search is not enabled for this Scout");
-    if (!context.access) return reject("Web Search Source Access was not found", "NOT_FOUND");
+    if (!context.selected)
+      return reject(
+        "Web Search is not enabled for this Scout",
+        "CONFLICT",
+        "disabled_source_access",
+      );
+    if (!context.access)
+      return reject("Web Search Source Access was not found", "NOT_FOUND", "missing_source_access");
     if (context.access.readiness === "candidate_disabled")
-      return reject("The Candidate disabled Web Search");
+      return reject("The Candidate disabled Web Search", "CONFLICT", "disabled_source_access");
     if (context.access.readiness !== "ready" && context.access.readiness !== "not_configured") {
-      return reject(`Web Search Source is ${context.access.readiness}`);
+      return reject(`Web Search Source is ${context.access.readiness}`, "CONFLICT", "not_ready");
     }
     const settings = this.webSearchSettings?.();
     if (settings && (!settings.configured || settings.readiness !== "ready")) {
-      return reject(settings.safeFailure ?? "Web Search Source is not ready");
+      return reject(
+        settings.safeFailure ?? "Web Search Source is not ready",
+        "CONFLICT",
+        "not_ready",
+      );
     }
 
     const retrievedAt = this.now();
@@ -403,7 +449,13 @@ export class WebFetchApplication {
             creditsUsed === null ? details.creditsUsed : [...details.creditsUsed, creditsUsed],
           retryCount: details.retryCount + safeRetryCount(page.retryCount),
           retryAt: safeRetryAt(page.retryAt) ?? details.retryAt,
-          returnedUrls: [...details.returnedUrls, canonicalUrl],
+          retryDisposition: mergeRetryDisposition(
+            details.retryDisposition,
+            page.retryCount ?? 0,
+            false,
+          ),
+          attemptCount: details.attemptCount + 1 + safeRetryCount(page.retryCount),
+          returnedUrls: [...details.returnedUrls, auditUrl(canonicalUrl)],
         };
         outcomes.push({
           requestedUrl: entry.requestedUrl,
@@ -432,7 +484,14 @@ export class WebFetchApplication {
             creditsUsed === null ? details.creditsUsed : [...details.creditsUsed, creditsUsed],
           retryCount: details.retryCount + safeRetryCount(providerError.retryCount),
           retryAt: safeRetryAt(providerError.retryAt) ?? details.retryAt,
+          retryDisposition: mergeRetryDisposition(
+            details.retryDisposition,
+            providerError.retryCount,
+            true,
+          ),
+          attemptCount: details.attemptCount + 1 + safeRetryCount(providerError.retryCount),
           errorCategories: [...details.errorCategories, providerError.category],
+          errorCategory: mergeErrorCategory(details.errorCategory, providerError.category),
         };
         outcomes.push({
           requestedUrl: entry.requestedUrl,
@@ -512,16 +571,17 @@ export class WebFetchApplication {
     safeFailure: string | null,
     itemCount: number,
   ): void {
+    const completedAt = this.now();
     this.db
       .update(sourceAttempts)
       .set({
-        requestedScope: JSON.stringify(details),
+        requestedScope: JSON.stringify({ ...details, completedAt }),
         outcome,
         itemCount,
         pageCount: details.urls.length,
         retryAt: details.retryAt,
         safeFailure,
-        completedAt: this.now(),
+        completedAt,
       })
       .where(eq(sourceAttempts.id, id))
       .run();
@@ -607,6 +667,7 @@ function canonicalizePublicUrl(value: string): string | null {
     const url = new URL(value.trim());
     if ((url.protocol !== "https:" && url.protocol !== "http:") || url.username || url.password)
       return null;
+    if (hasSensitiveQueryParameter(url)) return null;
     const hostname = url.hostname.toLowerCase().replace(/^\[|\]$/g, "");
     if (isPrivateHostname(hostname)) return null;
     url.hash = "";
@@ -708,9 +769,30 @@ function normalizeTitle(value: string | null | undefined): string | null {
 
 function auditUrls(value: unknown): string[] {
   if (!Array.isArray(value)) return [];
-  return value
-    .filter((url): url is string => typeof url === "string")
-    .map((url) => url.trim().slice(0, 2_000));
+  return value.filter((url): url is string => typeof url === "string").map((url) => auditUrl(url));
+}
+
+function auditUrl(value: string): string {
+  const trimmed = value.trim().slice(0, 2_000);
+  try {
+    const url = new URL(trimmed);
+    for (const key of url.searchParams.keys()) {
+      if (
+        /(?:token|secret|password|credential|authorization|api[_-]?key|signature|sig)/i.test(key)
+      ) {
+        url.searchParams.set(key, "[redacted]");
+      }
+    }
+    return url.toString().slice(0, 2_000);
+  } catch {
+    return trimmed;
+  }
+}
+
+function hasSensitiveQueryParameter(url: URL): boolean {
+  return [...url.searchParams.keys()].some((key) =>
+    /(?:token|secret|password|credential|authorization|api[_-]?key|signature|sig)/i.test(key),
+  );
 }
 
 function providerName(provider: WebFetchProvider): string {
@@ -777,6 +859,23 @@ function safeRetryCount(value: unknown): number {
 
 function safeRetryAt(value: unknown): number | null {
   return typeof value === "number" && Number.isInteger(value) && value >= 0 ? value : null;
+}
+
+function mergeRetryDisposition(
+  current: WebFetchAttemptDetails["retryDisposition"],
+  retryCount: number,
+  failed: boolean,
+): WebFetchAttemptDetails["retryDisposition"] {
+  const next = retryCount === 0 ? "not_retried" : failed ? "exhausted" : "recovered";
+  if (current === "not_retried") return next;
+  if (next === "not_retried") return "mixed";
+  if (current === next) return current;
+  return "mixed";
+}
+
+function mergeErrorCategory(current: string | null, next: string): string {
+  if (!current) return next;
+  return current === next ? current : "mixed";
 }
 
 function delay(ms: number): Promise<void> {

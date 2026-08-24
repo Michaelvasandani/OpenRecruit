@@ -130,6 +130,25 @@ describe("host-owned WebFetch", () => {
     expect(result.retryAt).toBeGreaterThan(0);
   });
 
+  test("does not retry deterministic Firecrawl authentication failures", async () => {
+    let calls = 0;
+    const provider = new FirecrawlWebFetchProvider(
+      () => "firecrawl-secret",
+      async () => {
+        calls += 1;
+        return new Response("invalid key", {
+          status: 401,
+          headers: { "x-request-id": "safe-auth-request" },
+        });
+      },
+    );
+
+    await expect(
+      provider.fetch({ url: "https://example.com/job", contentLimit: 12_000 }),
+    ).rejects.toMatchObject({ category: "authentication", retryCount: 0 });
+    expect(calls).toBe(1);
+  });
+
   test("returns bounded untrusted outcomes per URL and preserves partial success", async () => {
     const { app, provider, scout, run } = fixture();
     const result = await app.webFetch({
@@ -181,6 +200,8 @@ describe("host-owned WebFetch", () => {
     expect(attempt?.requestedScope).not.toContain("Untrusted job-page evidence");
     expect(attempt?.requestedScope).toContain('"operation":"web_fetch"');
     expect(attempt?.requestedScope).toContain('"retryCount":1');
+    expect(attempt?.requestedScope).toContain('"retryDisposition":"mixed"');
+    expect(attempt?.requestedScope).toContain('"errorCategories":["not_found"]');
     expect(attempt?.retryAt).toBe(10_005);
     expect(app.listSignals({ runId: run.id })).toHaveLength(0);
     expect(app.listLeads()).toHaveLength(0);
@@ -197,6 +218,7 @@ describe("host-owned WebFetch", () => {
       ["https://169.254.169.254/latest/meta-data"],
       ["ftp://example.com/not-http"],
       ["https://user:password@example.com/secret"],
+      ["https://example.com/secret?api_key=firecrawl-secret"],
       Array.from({ length: 6 }, (_, index) => `https://example.com/${index}`),
     ];
     for (const urls of invalidRequests) {
