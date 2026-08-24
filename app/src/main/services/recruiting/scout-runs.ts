@@ -676,7 +676,7 @@ export class ScoutRunApplication {
       });
     }
     if (response.status === 429) {
-      const retryAt = startedAt + (response.retryAfterMs ?? 60_000);
+      const retryAt = startedAt + Math.max(0, response.retryAfterMs ?? 60_000);
       return finish("rate_limited", {
         retryAt,
         safeFailure: "The Source asked OpenRecruit to retry later",
@@ -1478,7 +1478,7 @@ function readinessPatchForResponse(
     };
   }
   if (response.status === 429) {
-    const retryAt = at + (response.retryAfterMs ?? 60_000);
+    const retryAt = at + Math.max(0, response.retryAfterMs ?? 60_000);
     return {
       readiness: "rate_limited",
       safeFailure: "The Source asked OpenRecruit to retry later",
