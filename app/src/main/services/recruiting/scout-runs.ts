@@ -445,7 +445,7 @@ export class ScoutRunApplication {
         `Source ${source.id} is not selected for Run ${run.id}; named Sources are never replaced`,
       );
     }
-    const budget = normalizeBudget(command.budget);
+    const budget = normalizeBudget(command.budget ?? storedBudget(run.budget));
     const requestedScope = JSON.stringify({
       maxItems: budget.maxItems,
       maxPages: budget.maxPages,
@@ -1311,6 +1311,15 @@ function normalizeBudget(value: Partial<RunBudget> | undefined): RunBudget {
   if (result.maxWallClockMs < 1000)
     throw new RecruitingError("VALIDATION", "Run wall-clock budget must be at least one second");
   return result;
+}
+
+function storedBudget(value: string): Partial<RunBudget> | undefined {
+  try {
+    const parsed = JSON.parse(value) as Partial<RunBudget>;
+    return parsed && typeof parsed === "object" ? parsed : undefined;
+  } catch {
+    return undefined;
+  }
 }
 
 function requireConfirmedProfile(db: RecruitingDb, id: string) {
