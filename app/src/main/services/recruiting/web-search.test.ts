@@ -149,6 +149,49 @@ describe("host-owned WebSearch", () => {
     expect(calls).toBe(1);
   });
 
+  test("rejects malformed non-empty Firecrawl result arrays", async () => {
+    const provider = new FirecrawlWebSearchProvider(
+      () => "firecrawl-secret",
+      async () =>
+        new Response(JSON.stringify({ id: "safe-malformed", creditsUsed: 2, data: [{}] }), {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        }),
+    );
+
+    await expect(
+      provider.search({ query: "job", limit: 10, includeDomains: [] }),
+    ).rejects.toMatchObject({
+      category: "provider_failure",
+      requestId: "safe-malformed",
+      creditsUsed: 2,
+      retryCount: 0,
+    });
+  });
+
+  test("retains safe retry provenance when Firecrawl returns malformed JSON", async () => {
+    const responses = [
+      new Response("outage", { status: 503 }),
+      new Response("{not-json", {
+        status: 200,
+        headers: { "x-request-id": "safe-invalid-json" },
+      }),
+    ];
+    const provider = new FirecrawlWebSearchProvider(
+      () => "firecrawl-secret",
+      async () => responses.shift() ?? new Response("unexpected", { status: 500 }),
+    );
+
+    await expect(
+      provider.search({ query: "job", limit: 10, includeDomains: [] }),
+    ).rejects.toMatchObject({
+      category: "provider_failure",
+      requestId: "safe-invalid-json",
+      retryCount: 1,
+      retryAt: expect.any(Number),
+    });
+  });
+
   test("requires a configured production key and records the safe rejection", async () => {
     const app = new RecruitingApplication(makeDb());
     const profileId = confirmedProfile(app);

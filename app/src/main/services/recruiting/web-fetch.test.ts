@@ -207,6 +207,20 @@ describe("host-owned WebFetch", () => {
     expect(app.listLeads()).toHaveLength(0);
   });
 
+  test("audits a batch with ordinary and retried pages as mixed", async () => {
+    const { app, scout } = fixture();
+    const result = await app.webFetch({
+      scoutId: scout.id,
+      urls: ["https://example.com/first", "https://example.com/second"],
+    });
+
+    expect(app.getSourceAttempt(result.sourceAttemptId)).toMatchObject({
+      outcome: "succeeded_with_items",
+      retryDisposition: "mixed",
+      retryAt: 10_005,
+    });
+  });
+
   test("rejects invalid, private, and out-of-range requests before provider access", async () => {
     const { app, provider, scout } = fixture();
     const invalidRequests = [

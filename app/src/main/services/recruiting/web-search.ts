@@ -269,6 +269,10 @@ export class FirecrawlWebSearchProvider implements WebSearchProvider {
       throw new WebSearchProviderError(
         "provider_failure",
         "Firecrawl returned an invalid response",
+        safeRequestId(response.headers.get("x-request-id")),
+        null,
+        retryCount,
+        retryAt,
       );
     }
     const value = payload as Record<string, unknown>;
@@ -278,12 +282,33 @@ export class FirecrawlWebSearchProvider implements WebSearchProvider {
       safeRequestId(value.requestId);
     const creditsUsed = safeCredits(value.creditsUsed);
     const rawResults = findResults(value);
+    if (rawResults === null) {
+      throw new WebSearchProviderError(
+        "provider_failure",
+        "Firecrawl returned an invalid response",
+        requestId,
+        creditsUsed,
+        retryCount,
+        retryAt,
+      );
+    }
+    const results = rawResults.filter(isRecord).flatMap((raw) => normalizeProviderResult(raw));
+    if (rawResults.length > 0 && results.length === 0) {
+      throw new WebSearchProviderError(
+        "provider_failure",
+        "Firecrawl returned an invalid response",
+        requestId,
+        creditsUsed,
+        retryCount,
+        retryAt,
+      );
+    }
     return {
       requestId,
       creditsUsed,
       retryCount,
       retryAt,
-      results: rawResults.flatMap((raw) => normalizeProviderResult(raw)),
+      results,
     };
   }
 }
@@ -842,7 +867,7 @@ function recruitingFailureCategory(
   }
 }
 
-function findResults(payload: Record<string, unknown>): Record<string, unknown>[] {
+function findResults(payload: Record<string, unknown>): unknown[] | null {
   const candidates = [
     payload.results,
     payload.data,
@@ -850,9 +875,9 @@ function findResults(payload: Record<string, unknown>): Record<string, unknown>[
     (payload.data as Record<string, unknown> | null)?.results,
   ];
   for (const candidate of candidates) {
-    if (Array.isArray(candidate)) return candidate.filter(isRecord);
+    if (Array.isArray(candidate)) return candidate;
   }
-  return [];
+  return null;
 }
 
 function normalizeProviderResult(value: Record<string, unknown>): WebSearchProviderResult[] {

@@ -453,6 +453,7 @@ export class WebFetchApplication {
             details.retryDisposition,
             page.retryCount ?? 0,
             false,
+            details.attemptCount > 0,
           ),
           attemptCount: details.attemptCount + 1 + safeRetryCount(page.retryCount),
           returnedUrls: [...details.returnedUrls, auditUrl(canonicalUrl)],
@@ -488,6 +489,7 @@ export class WebFetchApplication {
             details.retryDisposition,
             providerError.retryCount,
             true,
+            details.attemptCount > 0,
           ),
           attemptCount: details.attemptCount + 1 + safeRetryCount(providerError.retryCount),
           errorCategories: [...details.errorCategories, providerError.category],
@@ -867,10 +869,10 @@ function mergeRetryDisposition(
   current: WebFetchAttemptDetails["retryDisposition"],
   retryCount: number,
   failed: boolean,
+  hasPriorOutcome: boolean,
 ): WebFetchAttemptDetails["retryDisposition"] {
   const next = retryCount === 0 ? "not_retried" : failed ? "exhausted" : "recovered";
-  if (current === "not_retried") return next;
-  if (next === "not_retried") return "mixed";
+  if (!hasPriorOutcome) return next;
   if (current === next) return current;
   return "mixed";
 }
