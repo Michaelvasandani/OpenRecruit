@@ -1,5 +1,5 @@
 import type { Agent } from "@shared/agent";
-import { CalendarClock, FileUser, Loader2, Plus, Settings, X } from "lucide-react";
+import { CalendarClock, FileUser, Loader2, PlayCircle, Plus, Settings, X } from "lucide-react";
 import { type CSSProperties, useEffect, useState } from "react";
 import { useAgents } from "../../hooks/useAgents";
 import { useScouts } from "../../hooks/useScouts";
@@ -109,6 +109,20 @@ export function AgentSidebar() {
       </div>
 
       <div className="px-2 pb-2">
+        <button
+          type="button"
+          onClick={() => setView("runs")}
+          disabled={!backendConnected}
+          className={cn(
+            "mb-1 flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-sm hover:bg-sidebar-accent",
+            view === "runs"
+              ? "bg-sidebar-accent font-medium text-sidebar-foreground"
+              : "text-muted-foreground",
+            !backendConnected && "pointer-events-none opacity-50",
+          )}
+        >
+          <PlayCircle className="size-4" /> Scout Runs
+        </button>
         <button
           type="button"
           onClick={() => setView("profiles")}

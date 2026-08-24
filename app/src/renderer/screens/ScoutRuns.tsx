@@ -1,0 +1,297 @@
+import { Loader2, PlayCircle, RefreshCw } from "lucide-react";
+import { useEffect, useState } from "react";
+import { Button } from "../components/ui/button";
+import { Card } from "../components/ui/card";
+import { Label } from "../components/ui/label";
+import { Textarea } from "../components/ui/textarea";
+import { trpc } from "../lib/trpc";
+import { cn } from "../lib/utils";
+
+/**
+ * Safe Run center projection. It deliberately renders snapshots and structured
+ * outcomes only; provider transcripts and credentials never cross tRPC.
+ */
+export function ScoutRunsScreen() {
+  const utils = trpc.useUtils();
+  const scouts = trpc.recruiting.scouts.useQuery();
+  const sources = trpc.recruiting.sources.useQuery();
+  const profiles = trpc.recruiting.profiles.useQuery();
+  const [selectedScoutId, setSelectedScoutId] = useState<string | undefined>();
+  const [strategyMaterial, setStrategyMaterial] = useState("");
+  const [policyMaterial, setPolicyMaterial] = useState("");
+  const [defaultProfileId, setDefaultProfileId] = useState<string | null>(null);
+  const [profileOverrideId, setProfileOverrideId] = useState<string | null>(null);
+  const [sourceIds, setSourceIds] = useState<string[]>([]);
+  const selectedId = selectedScoutId ?? scouts.data?.[0]?.id;
+  const runs = trpc.recruiting.scoutRuns.useQuery(
+    selectedId ? { scoutId: selectedId } : undefined,
+    {
+      enabled: Boolean(selectedId),
+    },
+  );
+  trpc.recruiting.onChanged.useSubscription(undefined, {
+    onData: (event) => {
+      if (
+        event.reason === "resync" ||
+        event.kind === "run" ||
+        event.kind === "scout" ||
+        event.kind === "source"
+      ) {
+        void utils.recruiting.scoutRuns.invalidate();
+        void utils.recruiting.scouts.invalidate();
+        void utils.recruiting.sources.invalidate();
+      }
+    },
+  });
+  const launch = trpc.recruiting.launchScoutRun.useMutation({
+    onSuccess: () => {
+      void utils.recruiting.scoutRuns.invalidate();
+      void utils.recruiting.scouts.invalidate();
+    },
+  });
+  const selected = scouts.data?.find((scout) => scout.id === selectedId);
+  const update = trpc.recruiting.updateScout.useMutation({
+    onSuccess: () => {
+      void utils.recruiting.scouts.invalidate();
+    },
+  });
+  useEffect(() => {
+    if (!selected) return;
+    setStrategyMaterial(selected.strategyMaterial);
+    setPolicyMaterial(selected.policyMaterial);
+    setDefaultProfileId(selected.defaultProfileId);
+    setProfileOverrideId(null);
+    setSourceIds(selected.sourceIds);
+  }, [selected]);
+
+  return (
+    <main className="flex min-w-0 flex-1 flex-col overflow-y-auto bg-background p-6">
+      <div className="mx-auto flex w-full max-w-6xl flex-col gap-5">
+        <div className="flex items-start justify-between gap-3">
+          <div>
+            <h1 className="text-lg font-semibold">Scout Run Center</h1>
+            <p className="mt-1 text-sm text-muted-foreground">
+              Launch bounded, Profile-pinned discovery Runs and inspect safe structured history.
+            </p>
+          </div>
+          <RefreshCw
+            className={cn("size-4 text-muted-foreground", runs.isFetching && "animate-spin")}
+          />
+        </div>
+        <div className="grid gap-5 lg:grid-cols-[18rem_1fr]">
+          <Card className="flex flex-col gap-2 p-3">
+            <span className="px-2 pb-1 text-xs font-medium uppercase tracking-wider text-muted-foreground">
+              Scouts
+            </span>
+            {scouts.isLoading && <Loader2 className="mx-auto my-4 size-4 animate-spin" />}
+            {scouts.data?.length === 0 && (
+              <p className="px-2 py-3 text-sm text-muted-foreground">No Scouts yet.</p>
+            )}
+            {scouts.data?.map((scout) => (
+              <button
+                type="button"
+                key={scout.id}
+                onClick={() => setSelectedScoutId(scout.id)}
+                className={cn(
+                  "rounded-md px-2 py-2 text-left hover:bg-muted",
+                  selected?.id === scout.id && "bg-muted",
+                )}
+              >
+                <span className="block truncate text-sm font-medium">{scout.name}</span>
+                <span className="block truncate text-xs text-muted-foreground">
+                  {scout.sourceIds.length} Source{scout.sourceIds.length === 1 ? "" : "s"} ·{" "}
+                  {scout.harness}
+                </span>
+              </button>
+            ))}
+          </Card>
+          <div className="flex flex-col gap-5">
+            {selected ? (
+              <Card className="flex flex-col gap-3 p-5">
+                <div className="flex items-start justify-between gap-3">
+                  <div>
+                    <h2 className="text-sm font-medium">{selected.name}</h2>
+                    <p className="mt-1 text-xs text-muted-foreground">
+                      {selected.defaultProfileId
+                        ? "Default Profile selected"
+                        : "Default Profile required"}{" "}
+                      · {selected.sourceIds.length} explicit Sources
+                    </p>
+                  </div>
+                  <Button
+                    type="button"
+                    size="sm"
+                    disabled={
+                      launch.isPending ||
+                      !selected.defaultProfileId ||
+                      selected.sourceIds.length === 0
+                    }
+                    onClick={() =>
+                      launch.mutate({
+                        scoutId: selected.id,
+                        profileOverrideId,
+                        idempotencyKey: `manual-run-${crypto.randomUUID()}`,
+                      })
+                    }
+                  >
+                    {launch.isPending ? (
+                      <Loader2 className="size-4 animate-spin" />
+                    ) : (
+                      <PlayCircle className="size-4" />
+                    )}
+                    Launch manual Run
+                  </Button>
+                </div>
+                <div className="grid gap-3 sm:grid-cols-2">
+                  <div className="flex flex-col gap-1">
+                    <Label>Discovery Strategy</Label>
+                    <Textarea
+                      value={strategyMaterial}
+                      onChange={(event) => setStrategyMaterial(event.target.value)}
+                      rows={4}
+                    />
+                  </div>
+                  <div className="flex flex-col gap-1">
+                    <Label>Scout Policy</Label>
+                    <Textarea
+                      value={policyMaterial}
+                      onChange={(event) => setPolicyMaterial(event.target.value)}
+                      rows={4}
+                    />
+                  </div>
+                </div>
+                <div className="grid gap-3 sm:grid-cols-2">
+                  <div className="flex flex-col gap-1">
+                    <Label htmlFor="default-profile">Default confirmed Candidate Profile</Label>
+                    <select
+                      id="default-profile"
+                      value={defaultProfileId ?? ""}
+                      onChange={(event) => setDefaultProfileId(event.target.value || null)}
+                      className="h-9 rounded-md border border-input bg-background px-3 text-sm"
+                    >
+                      <option value="">Select a confirmed Profile</option>
+                      {profiles.data
+                        ?.filter((profile) => profile.state === "confirmed")
+                        .map((profile) => (
+                          <option key={profile.id} value={profile.id}>
+                            {profile.name} · {profile.roleTarget}
+                          </option>
+                        ))}
+                    </select>
+                  </div>
+                  <div className="flex flex-col gap-1">
+                    <Label htmlFor="profile-override">One-run Profile Override (optional)</Label>
+                    <select
+                      id="profile-override"
+                      value={profileOverrideId ?? ""}
+                      onChange={(event) => setProfileOverrideId(event.target.value || null)}
+                      className="h-9 rounded-md border border-input bg-background px-3 text-sm"
+                    >
+                      <option value="">Use Scout default</option>
+                      {profiles.data
+                        ?.filter((profile) => profile.state === "confirmed")
+                        .map((profile) => (
+                          <option key={profile.id} value={profile.id}>
+                            {profile.name} · {profile.roleTarget}
+                          </option>
+                        ))}
+                    </select>
+                  </div>
+                  <div className="flex flex-col gap-1">
+                    <Label>Explicit Sources</Label>
+                    <div className="flex flex-wrap gap-2">
+                      {sources.data?.map((source) => (
+                        <label key={source.id} className="flex items-center gap-1 text-xs">
+                          <input
+                            type="checkbox"
+                            checked={sourceIds.includes(source.id)}
+                            onChange={(event) =>
+                              setSourceIds((current) =>
+                                event.target.checked
+                                  ? [...new Set([...current, source.id])]
+                                  : current.filter((id) => id !== source.id),
+                              )
+                            }
+                          />
+                          {source.name}
+                        </label>
+                      ))}
+                    </div>
+                  </div>
+                </div>
+                <div className="flex items-center justify-between gap-3">
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    disabled={update.isPending}
+                    onClick={() =>
+                      update.mutate({
+                        scoutId: selected.id,
+                        expectedRevision: selected.revision,
+                        strategyMaterial,
+                        policyMaterial,
+                        defaultProfileId,
+                        sourceIds,
+                        idempotencyKey: `scout-update-${crypto.randomUUID()}`,
+                      })
+                    }
+                  >
+                    {update.isPending ? <Loader2 className="size-4 animate-spin" /> : null}
+                    Save Scout configuration
+                  </Button>
+                  {update.error && (
+                    <p className="text-xs text-destructive">{update.error.message}</p>
+                  )}
+                </div>
+                {launch.error && <p className="text-xs text-destructive">{launch.error.message}</p>}
+                <div className="text-xs text-muted-foreground">
+                  Selected Sources:{" "}
+                  {selected.sourceIds
+                    .map((id) => sources.data?.find((source) => source.id === id)?.name ?? id)
+                    .join(", ") || "none"}
+                </div>
+              </Card>
+            ) : (
+              <Card className="p-5 text-sm text-muted-foreground">
+                Select a Scout to inspect Runs.
+              </Card>
+            )}
+            <Card className="flex flex-col gap-3 p-5">
+              <h2 className="text-sm font-medium">Run history</h2>
+              {runs.isLoading && <Loader2 className="size-4 animate-spin" />}
+              {runs.data?.length === 0 && (
+                <p className="text-sm text-muted-foreground">No Runs yet.</p>
+              )}
+              {runs.data?.map((run) => (
+                <div key={run.id} className="rounded-md border border-border p-3 text-xs">
+                  <div className="flex items-center justify-between gap-2">
+                    <span className="font-medium">
+                      {run.status} · {run.trigger}
+                    </span>
+                    <span className="text-muted-foreground">
+                      {new Date(run.createdAt).toLocaleString()}
+                    </span>
+                  </div>
+                  <p className="mt-1 text-muted-foreground">
+                    Profile Version: {run.profileVersionId ?? "not pinned"} · Sources:{" "}
+                    {run.sourceIds.length} · Phase: {run.phase}
+                  </p>
+                  {run.safeFailure && <p className="mt-1 text-destructive">{run.safeFailure}</p>}
+                  <details className="mt-2">
+                    <summary className="cursor-pointer text-muted-foreground">
+                      Pinned Run inputs
+                    </summary>
+                    <pre className="mt-2 max-h-48 overflow-auto whitespace-pre-wrap rounded bg-muted p-2">
+                      {run.profileSnapshot}\n{run.strategySnapshot}\n{run.policySnapshot}
+                    </pre>
+                  </details>
+                </div>
+              ))}
+            </Card>
+          </div>
+        </div>
+      </div>
+    </main>
+  );
+}

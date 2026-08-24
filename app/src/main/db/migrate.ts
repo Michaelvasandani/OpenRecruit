@@ -34,7 +34,7 @@ export interface MigrationDb {
 }
 
 /** Bump on every schema change, with a matching entry in MIGRATIONS. */
-export const SCHEMA_VERSION = 7;
+export const SCHEMA_VERSION = 8;
 
 const MIGRATIONS: Record<number, (db: MigrationDb) => void> = {
   // v2 — headless turn limit: per-agent unattended-turn counter + on/off toggle.
@@ -91,6 +91,12 @@ const MIGRATIONS: Record<number, (db: MigrationDb) => void> = {
     addColumnIfMissing(db, "profiles", "draft_structured", "TEXT");
     addColumnIfMissing(db, "profiles", "draft_provenance", "TEXT");
     addColumnIfMissing(db, "profiles", "revision", "INTEGER NOT NULL DEFAULT 0");
+  },
+  // v8 — Scout-editable policy/strategy material and Run override snapshots.
+  8: (db) => {
+    addColumnIfMissing(db, "scouts", "strategy_material", "TEXT NOT NULL DEFAULT ''");
+    addColumnIfMissing(db, "scouts", "policy_material", "TEXT NOT NULL DEFAULT ''");
+    addColumnIfMissing(db, "scout_runs", "override_snapshot", "TEXT");
   },
 };
 

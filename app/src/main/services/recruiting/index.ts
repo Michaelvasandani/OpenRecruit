@@ -1,13 +1,36 @@
 import { createHash, randomUUID } from "node:crypto";
 import { type RecruitingInvalidation, ScoutHarness, type ScoutSummary } from "@shared/recruiting";
-import { and, asc, eq, sql } from "drizzle-orm";
+import { and, asc, eq, inArray, sql } from "drizzle-orm";
 import type { Db } from "../../db/client";
-import { commandReceipts, domainClock, scouts } from "../../db/schema";
+import {
+  commandReceipts,
+  domainClock,
+  profiles,
+  scoutSources,
+  scouts,
+  sources,
+} from "../../db/schema";
 import { bus } from "../event-bus";
+import { assertSafeMaterial } from "./contract";
 import { RecruitingError } from "./errors";
 import type { ConfirmProfileCommand, ImportProfileCommand, UpdateDraftCommand } from "./profile";
 import { CandidateProfileApplication } from "./profile";
+import {
+  type AdvanceScoutRunCommand,
+  type CreateSourceCommand,
+  type LaunchScoutRunCommand,
+  ScoutRunApplication,
+  type SetScoutSourcesCommand,
+} from "./scout-runs";
 
+export {
+  assertSafeMaterial,
+  PROHIBITED_RECRUITING_CAPABILITIES,
+  RECRUITING_OPERATIONS,
+  recruitingOperationsFor,
+  recruitingProviderInstructions,
+  validateRecruitingOperation,
+} from "./contract";
 export { RecruitingError } from "./errors";
 export type {
   ConfirmProfileCommand,
@@ -19,12 +42,22 @@ export type {
   UpdateDraftCommand,
 } from "./profile";
 export { CandidateProfileApplication } from "./profile";
+export type {
+  AdvanceScoutRunCommand,
+  CreateSourceCommand,
+  LaunchScoutRunCommand,
+  SetScoutSourcesCommand,
+} from "./scout-runs";
+export { DEFAULT_RUN_BUDGET, ScoutRunApplication } from "./scout-runs";
 
 export type CreateScoutCommand = {
   name: string;
   harness: ScoutHarness;
   instructionPath: string;
   strategyPath?: string | null;
+  strategyMaterial?: string;
+  policyMaterial?: string;
+  sourceIds?: string[];
   defaultProfileId?: string | null;
   resumableSessionRef?: string | null;
   idempotencyKey: string;
@@ -33,6 +66,19 @@ export type CreateScoutCommand = {
 export type ArchiveScoutCommand = {
   scoutId: string;
   expectedRevision: number;
+  idempotencyKey: string;
+};
+
+export type UpdateScoutCommand = {
+  scoutId: string;
+  expectedRevision: number;
+  name?: string;
+  instructionPath?: string;
+  strategyPath?: string | null;
+  strategyMaterial?: string;
+  policyMaterial?: string;
+  defaultProfileId?: string | null;
+  sourceIds?: string[];
   idempotencyKey: string;
 };
 
@@ -47,7 +93,7 @@ type ReceiptLookup = {
   payloadHash: string;
 };
 
-type RecruitingDb = Pick<Db, "select" | "insert" | "update">;
+type RecruitingDb = Pick<Db, "select" | "insert" | "update" | "delete">;
 
 /**
  * The single deep Recruiting write/read boundary. Adapters (tRPC, the future
@@ -57,12 +103,14 @@ type RecruitingDb = Pick<Db, "select" | "insert" | "update">;
  */
 export class RecruitingApplication {
   private readonly profileApplication: CandidateProfileApplication;
+  private readonly scoutRuns: ScoutRunApplication;
 
   constructor(
     private readonly db: Db,
     private readonly now: () => number = Date.now,
   ) {
     this.profileApplication = new CandidateProfileApplication(db, { now });
+    this.scoutRuns = new ScoutRunApplication(db, now);
   }
 
   listProfiles() {
@@ -97,6 +145,51 @@ export class RecruitingApplication {
     return this.profileApplication.confirmProfile(command);
   }
 
+  createSource(command: CreateSourceCommand) {
+    return this.scoutRuns.createSource(command);
+  }
+
+  listSources() {
+    return this.scoutRuns.listSources();
+  }
+
+  getSource(id: string) {
+    return this.scoutRuns.getSource(id);
+  }
+
+  setScoutSources(command: SetScoutSourcesCommand) {
+    return this.scoutRuns.setScoutSources(command);
+  }
+
+  launchScoutRun(command: LaunchScoutRunCommand) {
+    return this.scoutRuns.launchScoutRun(command);
+  }
+
+  /** Alias used by UI/agent adapters: a manual launch always performs preflight. */
+  runScout(command: LaunchScoutRunCommand) {
+    return this.launchScoutRun(command);
+  }
+
+  createScoutRun(command: LaunchScoutRunCommand) {
+    return this.launchScoutRun(command);
+  }
+
+  launchRun(command: LaunchScoutRunCommand) {
+    return this.launchScoutRun(command);
+  }
+
+  listScoutRuns(scoutId?: string) {
+    return this.scoutRuns.listScoutRuns(scoutId);
+  }
+
+  getScoutRun(id: string) {
+    return this.scoutRuns.getScoutRun(id);
+  }
+
+  advanceScoutRun(command: AdvanceScoutRunCommand) {
+    return this.scoutRuns.advanceScoutRun(command);
+  }
+
   listScouts(): ScoutSummary[] {
     return this.db
       .select()
@@ -104,12 +197,12 @@ export class RecruitingApplication {
       .where(eq(scouts.lifecycleState, "active"))
       .orderBy(asc(scouts.createdAt), asc(scouts.id))
       .all()
-      .map(toScoutSummary);
+      .map((row) => toScoutSummary(this.db, row));
   }
 
   getScout(id: string): ScoutSummary | null {
     const row = this.db.select().from(scouts).where(eq(scouts.id, id)).get();
-    return row ? toScoutSummary(row) : null;
+    return row ? toScoutSummary(this.db, row) : null;
   }
 
   createScout(command: CreateScoutCommand): CommandResult<ScoutSummary> {
@@ -118,9 +211,16 @@ export class RecruitingApplication {
       harness: ScoutHarness.parse(command.harness),
       instructionPath: command.instructionPath.trim(),
       strategyPath: command.strategyPath ?? null,
+      strategyMaterial: command.strategyMaterial?.trim() ?? "",
+      policyMaterial: command.policyMaterial?.trim() ?? "",
+      sourceIds: [
+        ...new Set((command.sourceIds ?? []).map((id) => id.trim()).filter(Boolean)),
+      ].sort(),
       defaultProfileId: command.defaultProfileId ?? null,
       resumableSessionRef: command.resumableSessionRef ?? null,
     };
+    assertSafeMaterial(normalized.strategyMaterial, "Discovery Strategy");
+    assertSafeMaterial(normalized.policyMaterial, "Scout Policy");
     if (!normalized.name || !normalized.instructionPath || !command.idempotencyKey.trim()) {
       throw new RecruitingError(
         "VALIDATION",
@@ -139,6 +239,25 @@ export class RecruitingApplication {
 
       const id = randomUUID();
       const at = this.now();
+      assertSourceIdsExist(tx, normalized.sourceIds);
+      if (normalized.defaultProfileId !== null) {
+        const profile = tx
+          .select()
+          .from(profiles)
+          .where(eq(profiles.id, normalized.defaultProfileId))
+          .get();
+        if (!profile || profile.state !== "confirmed" || !profile.currentVersionId) {
+          throw new RecruitingError(
+            "VALIDATION",
+            "A Scout default must be a confirmed Candidate Profile",
+          );
+        }
+      } else if (normalized.sourceIds.length > 0 || tx.select().from(profiles).limit(1).get()) {
+        throw new RecruitingError(
+          "VALIDATION",
+          "Every configured Scout requires a default confirmed Candidate Profile",
+        );
+      }
       tx.insert(scouts)
         .values({
           id,
@@ -146,6 +265,8 @@ export class RecruitingApplication {
           harness: normalized.harness,
           instructionPath: normalized.instructionPath,
           strategyPath: normalized.strategyPath,
+          strategyMaterial: normalized.strategyMaterial,
+          policyMaterial: normalized.policyMaterial,
           defaultProfileId: normalized.defaultProfileId,
           lifecycleState: "active",
           resumableSessionRef: normalized.resumableSessionRef,
@@ -155,7 +276,10 @@ export class RecruitingApplication {
           archivedAt: null,
         })
         .run();
-      const value = toScoutSummary(requireScout(tx, id));
+      for (const sourceId of normalized.sourceIds) {
+        tx.insert(scoutSources).values({ scoutId: id, sourceId, selectedAt: at }).run();
+      }
+      const value = toScoutSummary(tx, requireScout(tx, id));
       const revision = advanceRevision(tx);
       writeReceipt(tx, {
         scopeKind: "scout",
@@ -169,6 +293,111 @@ export class RecruitingApplication {
         completedAt: at,
       });
       notification = { revision, kind: "scout", ids: [id], reason: "scout_created", at };
+      return { value, revision, replayed: false };
+    });
+    if (notification) bus.emitEvent("recruiting:changed", notification);
+    return outcome;
+  }
+
+  updateScout(command: UpdateScoutCommand): CommandResult<ScoutSummary> {
+    if (!command.idempotencyKey.trim())
+      throw new RecruitingError("VALIDATION", "Idempotency key is required");
+    const sourceIds = command.sourceIds
+      ? [...new Set(command.sourceIds.map((id) => id.trim()).filter(Boolean))].sort()
+      : undefined;
+    const normalized = {
+      scoutId: command.scoutId,
+      expectedRevision: command.expectedRevision,
+      name: command.name?.trim(),
+      instructionPath: command.instructionPath?.trim(),
+      strategyPath: command.strategyPath,
+      strategyMaterial: command.strategyMaterial?.trim(),
+      policyMaterial: command.policyMaterial?.trim(),
+      defaultProfileId: command.defaultProfileId,
+      sourceIds,
+    };
+    if (normalized.name !== undefined && !normalized.name)
+      throw new RecruitingError("VALIDATION", "Scout name is required");
+    if (normalized.instructionPath !== undefined && !normalized.instructionPath)
+      throw new RecruitingError("VALIDATION", "Scout instruction path is required");
+    if (normalized.strategyMaterial !== undefined)
+      assertSafeMaterial(normalized.strategyMaterial, "Discovery Strategy");
+    if (normalized.policyMaterial !== undefined)
+      assertSafeMaterial(normalized.policyMaterial, "Scout Policy");
+    const payloadHash = hashPayload(normalized);
+    let notification: RecruitingInvalidation | undefined;
+    const outcome = this.db.transaction((tx) => {
+      const previous = findReceipt(tx, "scout", command.scoutId, "update", command.idempotencyKey);
+      if (previous) {
+        assertReceiptPayload(previous, payloadHash);
+        return {
+          value: parseResult<ScoutSummary>(previous.result),
+          revision: currentRevision(tx),
+          replayed: true,
+        };
+      }
+      const row = requireScout(tx, command.scoutId);
+      if (row.revision !== command.expectedRevision)
+        throw new RecruitingError(
+          "CONFLICT",
+          `Scout ${row.id} is at revision ${row.revision}; expected ${command.expectedRevision}`,
+        );
+      if (sourceIds) assertSourceIdsExist(tx, sourceIds);
+      if (normalized.defaultProfileId !== undefined && normalized.defaultProfileId !== null) {
+        const profile = tx
+          .select()
+          .from(profiles)
+          .where(eq(profiles.id, normalized.defaultProfileId))
+          .get();
+        if (!profile || profile.state !== "confirmed" || !profile.currentVersionId) {
+          throw new RecruitingError(
+            "VALIDATION",
+            "A Scout default must be a confirmed Candidate Profile",
+          );
+        }
+      }
+      const at = this.now();
+      tx.update(scouts)
+        .set({
+          ...(normalized.name !== undefined ? { name: normalized.name } : {}),
+          ...(normalized.instructionPath !== undefined
+            ? { instructionPath: normalized.instructionPath }
+            : {}),
+          ...(normalized.strategyPath !== undefined
+            ? { strategyPath: normalized.strategyPath }
+            : {}),
+          ...(normalized.strategyMaterial !== undefined
+            ? { strategyMaterial: normalized.strategyMaterial }
+            : {}),
+          ...(normalized.policyMaterial !== undefined
+            ? { policyMaterial: normalized.policyMaterial }
+            : {}),
+          ...(normalized.defaultProfileId !== undefined
+            ? { defaultProfileId: normalized.defaultProfileId }
+            : {}),
+          revision: row.revision + 1,
+        })
+        .where(eq(scouts.id, row.id))
+        .run();
+      if (sourceIds) {
+        tx.delete(scoutSources).where(eq(scoutSources.scoutId, row.id)).run();
+        for (const sourceId of sourceIds)
+          tx.insert(scoutSources).values({ scoutId: row.id, sourceId, selectedAt: at }).run();
+      }
+      const value = toScoutSummary(tx, requireScout(tx, row.id));
+      const revision = advanceRevision(tx);
+      writeReceipt(tx, {
+        scopeKind: "scout",
+        scopeId: row.id,
+        commandKind: "update",
+        idempotencyKey: command.idempotencyKey,
+        payloadHash,
+        status: "succeeded",
+        result: JSON.stringify(value),
+        createdAt: at,
+        completedAt: at,
+      });
+      notification = { revision, kind: "scout", ids: [row.id], reason: "scout_updated", at };
       return { value, revision, replayed: false };
     });
     if (notification) bus.emitEvent("recruiting:changed", notification);
@@ -205,7 +434,7 @@ export class RecruitingApplication {
         .set({ lifecycleState: "archived", archivedAt: at, revision: row.revision + 1 })
         .where(eq(scouts.id, command.scoutId))
         .run();
-      const value = toScoutSummary(requireScout(tx, command.scoutId));
+      const value = toScoutSummary(tx, requireScout(tx, command.scoutId));
       const revision = advanceRevision(tx);
       writeReceipt(tx, {
         scopeKind: "scout",
@@ -236,20 +465,41 @@ export class RecruitingApplication {
   }
 }
 
-function toScoutSummary(row: typeof scouts.$inferSelect): ScoutSummary {
+function toScoutSummary(db: RecruitingDb, row: typeof scouts.$inferSelect): ScoutSummary {
   return {
     id: row.id,
     name: row.name,
     harness: ScoutHarness.parse(row.harness),
     instructionPath: row.instructionPath,
     strategyPath: row.strategyPath,
+    strategyMaterial: row.strategyMaterial ?? "",
+    policyMaterial: row.policyMaterial ?? "",
     defaultProfileId: row.defaultProfileId,
+    sourceIds: db
+      .select({ sourceId: scoutSources.sourceId })
+      .from(scoutSources)
+      .where(eq(scoutSources.scoutId, row.id))
+      .orderBy(asc(scoutSources.selectedAt), asc(scoutSources.sourceId))
+      .all()
+      .map((item) => item.sourceId),
     lifecycleState: row.lifecycleState === "archived" ? "archived" : "active",
     resumableSessionRef: row.resumableSessionRef,
     legacyAgentId: row.legacyAgentId,
     revision: row.revision,
     createdAt: row.createdAt,
   };
+}
+
+function assertSourceIdsExist(db: RecruitingDb, sourceIds: string[]): void {
+  if (sourceIds.length === 0) return;
+  const rows = db
+    .select({ id: sources.id })
+    .from(sources)
+    .where(inArray(sources.id, sourceIds))
+    .all();
+  const existing = new Set(rows.map((row) => row.id));
+  const missing = sourceIds.find((id) => !existing.has(id));
+  if (missing) throw new RecruitingError("VALIDATION", `Source ${missing} was not found`);
 }
 
 function hashPayload(value: unknown): string {

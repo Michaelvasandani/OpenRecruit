@@ -249,4 +249,18 @@ describe("db migrations", () => {
       revision: 0,
     });
   });
+
+  test("v8 adds Scout material and Run override snapshot columns to an existing v7 database", () => {
+    const db = new Database(":memory:");
+    const m = wrap(db);
+    db.exec(SCHEMA_DDL);
+    db.exec("PRAGMA user_version = 7");
+    migrate(m, { fresh: false });
+
+    expect(userVersion(m)).toBe(SCHEMA_VERSION);
+    expect(columns(db, "scouts")).toEqual(
+      expect.arrayContaining(["strategy_material", "policy_material"]),
+    );
+    expect(columns(db, "scout_runs")).toContain("override_snapshot");
+  });
 });

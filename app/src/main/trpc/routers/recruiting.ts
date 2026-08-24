@@ -39,12 +39,139 @@ export const recruitingRouter = router({
         harness: ScoutHarness,
         instructionPath: z.string().min(1),
         strategyPath: z.string().nullable().optional(),
+        strategyMaterial: z.string().max(100_000).optional(),
+        policyMaterial: z.string().max(100_000).optional(),
+        sourceIds: z.array(z.string().min(1)).max(100).optional(),
         defaultProfileId: z.string().nullable().optional(),
         resumableSessionRef: z.string().nullable().optional(),
         idempotencyKey: z.string().min(1),
       }),
     )
     .mutation(({ ctx, input }) => command(() => ctx.recruiting.createScout(input))),
+
+  updateScout: publicProcedure
+    .input(
+      z.object({
+        scoutId: z.string().min(1),
+        expectedRevision: z.number().int().nonnegative(),
+        name: z.string().trim().min(1).max(120).optional(),
+        instructionPath: z.string().trim().min(1).optional(),
+        strategyPath: z.string().nullable().optional(),
+        strategyMaterial: z.string().max(100_000).optional(),
+        policyMaterial: z.string().max(100_000).optional(),
+        defaultProfileId: z.string().nullable().optional(),
+        sourceIds: z.array(z.string().min(1)).max(100).optional(),
+        idempotencyKey: z.string().trim().min(1).max(200),
+      }),
+    )
+    .mutation(({ ctx, input }) => command(() => ctx.recruiting.updateScout(input))),
+
+  sources: publicProcedure.query(({ ctx }) => ctx.recruiting.listSources()),
+
+  source: publicProcedure
+    .input(z.object({ id: z.string().min(1) }))
+    .query(({ ctx, input }) => ctx.recruiting.getSource(input.id)),
+
+  createSource: publicProcedure
+    .input(
+      z.object({
+        kind: z.string().trim().min(1).max(40),
+        name: z.string().trim().min(1).max(160),
+        config: z.record(z.string(), z.unknown()).optional(),
+        idempotencyKey: z.string().trim().min(1).max(200),
+      }),
+    )
+    .mutation(({ ctx, input }) => command(() => ctx.recruiting.createSource(input))),
+
+  setScoutSources: publicProcedure
+    .input(
+      z.object({
+        scoutId: z.string().min(1),
+        expectedRevision: z.number().int().nonnegative(),
+        sourceIds: z.array(z.string().min(1)).max(100),
+        idempotencyKey: z.string().trim().min(1).max(200),
+      }),
+    )
+    .mutation(({ ctx, input }) => command(() => ctx.recruiting.setScoutSources(input))),
+
+  scoutRuns: publicProcedure
+    .input(z.object({ scoutId: z.string().min(1).optional() }).optional())
+    .query(({ ctx, input }) => ctx.recruiting.listScoutRuns(input?.scoutId)),
+
+  scoutRun: publicProcedure
+    .input(z.object({ id: z.string().min(1) }))
+    .query(({ ctx, input }) => ctx.recruiting.getScoutRun(input.id)),
+
+  launchScoutRun: publicProcedure
+    .input(
+      z.object({
+        scoutId: z.string().min(1),
+        profileOverrideId: z.string().nullable().optional(),
+        strategyOverride: z.string().max(100_000).nullable().optional(),
+        policyOverride: z.string().max(100_000).nullable().optional(),
+        budget: z
+          .object({
+            maxItems: z.number().int().positive().max(10_000_000).optional(),
+            maxPages: z.number().int().positive().max(10_000_000).optional(),
+            maxWallClockMs: z.number().int().positive().max(10_000_000).optional(),
+            maxSpendCents: z.number().int().nonnegative().max(10_000_000).optional(),
+          })
+          .optional(),
+        trigger: z
+          .enum(["manual", "scheduled", "source_event", "revisit", "explicit_request"])
+          .optional(),
+        idempotencyKey: z.string().trim().min(1).max(200),
+      }),
+    )
+    .mutation(({ ctx, input }) => command(() => ctx.recruiting.launchScoutRun(input))),
+
+  /** Provider-neutral adapter seam: all execution starts from the same bounded preflight. */
+  runScout: publicProcedure
+    .input(
+      z.object({
+        scoutId: z.string().min(1),
+        profileOverrideId: z.string().nullable().optional(),
+        strategyOverride: z.string().max(100_000).nullable().optional(),
+        policyOverride: z.string().max(100_000).nullable().optional(),
+        budget: z.record(z.string(), z.number().int().nonnegative()).optional(),
+        idempotencyKey: z.string().trim().min(1).max(200),
+      }),
+    )
+    .mutation(({ ctx, input }) => command(() => ctx.recruiting.runScout(input))),
+
+  advanceScoutRun: publicProcedure
+    .input(
+      z.object({
+        runId: z.string().min(1),
+        status: z.enum([
+          "queued",
+          "preflight",
+          "running",
+          "finalizing",
+          "completed",
+          "incomplete",
+          "failed",
+          "cancelled",
+        ]),
+        phase: z.enum(["preflight", "discovery", "finalization"]).optional(),
+        checkpoint: z.string().max(100_000).nullable().optional(),
+        safeFailure: z.string().max(10_000).nullable().optional(),
+        expectedStatus: z
+          .enum([
+            "queued",
+            "preflight",
+            "running",
+            "finalizing",
+            "completed",
+            "incomplete",
+            "failed",
+            "cancelled",
+          ])
+          .optional(),
+        idempotencyKey: z.string().trim().min(1).max(200),
+      }),
+    )
+    .mutation(({ ctx, input }) => command(() => ctx.recruiting.advanceScoutRun(input))),
 
   importProfile: publicProcedure
     .input(

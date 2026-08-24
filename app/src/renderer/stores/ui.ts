@@ -2,7 +2,7 @@ import { create } from "zustand";
 
 export type RightTab = "portfolio" | "activity" | "monitor";
 /** Top-level pane: the agent workspace, the full-screen Scheduled view, or Settings. */
-export type AppView = "agents" | "scheduled" | "settings" | "profiles";
+export type AppView = "agents" | "scheduled" | "settings" | "profiles" | "runs";
 
 interface UIState {
   selectedAgentId: string | null;

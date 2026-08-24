@@ -14,7 +14,13 @@ export const ScoutSummary = z.object({
   harness: ScoutHarness,
   instructionPath: z.string(),
   strategyPath: z.string().nullable(),
+  /** Candidate-editable Discovery Strategy material, never provider-specific. */
+  strategyMaterial: z.string(),
+  /** Candidate-editable policy material; host invariants are always enforced. */
+  policyMaterial: z.string(),
   defaultProfileId: z.string().nullable(),
+  /** Explicit Source selections. An empty set means the Scout has no run-ready Sources. */
+  sourceIds: z.array(z.string()),
   lifecycleState: ScoutLifecycle,
   resumableSessionRef: z.string().nullable(),
   legacyAgentId: z.string().nullable(),
@@ -22,6 +28,67 @@ export const ScoutSummary = z.object({
   createdAt: z.number().int(),
 });
 export type ScoutSummary = z.infer<typeof ScoutSummary>;
+
+export const SourceReadiness = z.enum([
+  "not_configured",
+  "ready",
+  "reauthentication_required",
+  "rate_limited",
+  "blocked",
+  "degraded",
+  "candidate_disabled",
+]);
+export type SourceReadiness = z.infer<typeof SourceReadiness>;
+
+/** Safe Source projection. Configuration is opaque and never contains auth material. */
+export const SourceSummary = z.object({
+  id: z.string().min(1),
+  kind: z.string().min(1),
+  name: z.string().min(1),
+  readiness: SourceReadiness,
+  safeFailure: z.string().nullable(),
+  createdAt: z.number().int(),
+  updatedAt: z.number().int(),
+});
+export type SourceSummary = z.infer<typeof SourceSummary>;
+
+export const ScoutRunStatus = z.enum([
+  "queued",
+  "preflight",
+  "running",
+  "finalizing",
+  "completed",
+  "incomplete",
+  "failed",
+  "cancelled",
+]);
+export type ScoutRunStatus = z.infer<typeof ScoutRunStatus>;
+
+export const ScoutRunPhase = z.enum(["preflight", "discovery", "finalization"]);
+export type ScoutRunPhase = z.infer<typeof ScoutRunPhase>;
+
+/** Safe desktop projection of a bounded Run; snapshots contain Candidate-approved
+ * material only and never provider transcripts or credentials. */
+export const ScoutRunSummary = z.object({
+  id: z.string().min(1),
+  scoutId: z.string().min(1),
+  trigger: z.enum(["manual", "scheduled", "source_event", "revisit", "explicit_request"]),
+  status: ScoutRunStatus,
+  phase: ScoutRunPhase,
+  budget: z.string(),
+  profileVersionId: z.string().nullable(),
+  profileSnapshot: z.string().nullable(),
+  strategySnapshot: z.string().nullable(),
+  policySnapshot: z.string().nullable(),
+  overrideSnapshot: z.string().nullable(),
+  sourceIds: z.array(z.string()),
+  checkpoint: z.string().nullable(),
+  safeFailure: z.string().nullable(),
+  startedAt: z.number().int().nullable(),
+  completedAt: z.number().int().nullable(),
+  createdAt: z.number().int(),
+});
+export type ScoutRunSummary = z.infer<typeof ScoutRunSummary>;
 
 export const RecruitingInvalidation = z.object({
   revision: z.number().int().nonnegative(),

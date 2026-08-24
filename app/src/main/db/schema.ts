@@ -201,6 +201,8 @@ export const scouts = sqliteTable(
     harness: text("harness").notNull().default("claude"),
     instructionPath: text("instruction_path").notNull(),
     strategyPath: text("strategy_path"),
+    strategyMaterial: text("strategy_material").notNull().default(""),
+    policyMaterial: text("policy_material").notNull().default(""),
     instructionHash: text("instruction_hash"),
     strategyHash: text("strategy_hash"),
     defaultProfileId: text("default_profile_id").references(() => profiles.id),
@@ -276,13 +278,19 @@ export const scoutRuns = sqliteTable(
     profileSnapshot: text("profile_snapshot"),
     strategySnapshot: text("strategy_snapshot"),
     policySnapshot: text("policy_snapshot"),
+    overrideSnapshot: text("override_snapshot"),
     checkpoint: text("checkpoint"),
     safeFailure: text("safe_failure"),
     startedAt: integer("started_at"),
     completedAt: integer("completed_at"),
     createdAt: integer("created_at").notNull(),
   },
-  (t) => [index("scout_runs_scout_created").on(t.scoutId, t.createdAt)],
+  (t) => [
+    index("scout_runs_scout_created").on(t.scoutId, t.createdAt),
+    uniqueIndex("scout_runs_one_active")
+      .on(t.scoutId)
+      .where(sql`status IN ('queued', 'preflight', 'running', 'finalizing')`),
+  ],
 );
 
 export const scoutRunCheckpoints = sqliteTable(
