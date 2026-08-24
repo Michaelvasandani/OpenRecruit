@@ -67,6 +67,12 @@ export function ScoutRunsScreen() {
       }
     },
   });
+  trpc.settings.onChanged.useSubscription(undefined, {
+    onData: () => {
+      void utils.recruiting.sources.invalidate();
+      void utils.recruiting.scouts.invalidate();
+    },
+  });
   const launch = trpc.recruiting.launchScoutRun.useMutation({
     onSuccess: () => {
       void utils.recruiting.scoutRuns.invalidate();
@@ -279,6 +285,11 @@ export function ScoutRunsScreen() {
                   </div>
                   <div className="flex flex-col gap-1">
                     <Label>Explicit Sources</Label>
+                    <p className="text-[11px] text-muted-foreground">
+                      Web Search is a logical per-Scout Source Access choice in this local
+                      single-user workspace. It is not cryptographic isolation from a malicious
+                      process running as the same operating-system user.
+                    </p>
                     <div className="flex flex-col gap-2 rounded-md border border-border p-2">
                       <span className="text-[11px] text-muted-foreground">
                         Add a public RSS or Atom feed

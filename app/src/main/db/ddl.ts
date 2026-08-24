@@ -446,4 +446,23 @@ export const SCHEMA_DDL = `
       completed_at INTEGER,
       UNIQUE (scope_kind, scope_id, command_kind, idempotency_key)
     );
+    -- The provider-neutral Web Search Source is a canonical product boundary.
+    -- Its readiness is projected from the host-owned Firecrawl settings lane;
+    -- no credential is stored in this Source row or its Source Access row.
+    INSERT OR IGNORE INTO sources (
+      id, kind, name, config, readiness, safe_failure, created_at, updated_at
+    ) VALUES (
+      'source-web-search', 'web_search', 'Web Search', '{"provider":"firecrawl"}',
+      'not_configured', NULL, 0, 0
+    );
+    INSERT OR IGNORE INTO source_access (
+      id, source_id, account_ref, scope_key, access_mode, readiness, safe_failure,
+      last_checked_at, last_success_at, next_action, retry_at, etag, last_modified,
+      cursor, source_identity, created_at, updated_at
+    ) VALUES (
+      'source-web-search-access', 'source-web-search', '', 'public', 'public',
+      'not_configured', NULL, NULL, NULL,
+      'Configure Firecrawl in Settings before enabling Web Search for a Scout', NULL,
+      NULL, NULL, NULL, NULL, 0, 0
+    );
 `;

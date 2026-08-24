@@ -75,6 +75,23 @@ export type CreateSourceCommand = {
   idempotencyKey: string;
 };
 
+/** Stable identity for the provider-neutral Web Search Source. The backing
+ * provider is an implementation detail of the host-owned Source boundary. */
+export const WEB_SEARCH_SOURCE_ID = "source-web-search";
+export const WEB_SEARCH_SOURCE_KIND = "web_search";
+
+export type WebSearchSettingsProjection = {
+  configured: boolean;
+  readiness: string;
+  safeFailure: string | null;
+};
+
+export type ScoutRunApplicationOptions = {
+  /** Read the safe Firecrawl projection live so key changes affect the next
+   * Source projection without copying authentication material into Recruiting. */
+  webSearchSettings?: () => WebSearchSettingsProjection;
+};
+
 export type CreateRssSourceCommand = {
   name: string;
   url: string;
@@ -238,11 +255,15 @@ type SourceAttemptFinish = (
 export class ScoutRunApplication {
   private readonly httpProvider = new HttpFeedProvider();
   private readonly httpXProvider = new HttpXProvider();
+  private readonly webSearchSettings?: () => WebSearchSettingsProjection;
 
   constructor(
     private readonly db: Db,
     private readonly now: () => number = Date.now,
-  ) {}
+    options: ScoutRunApplicationOptions = {},
+  ) {
+    this.webSearchSettings = options.webSearchSettings;
+  }
 
   createSource(command: CreateSourceCommand): {
     value: SourceSummaryValue;
@@ -254,6 +275,12 @@ export class ScoutRunApplication {
     requireKey(command.idempotencyKey);
     if (!name || !SAFE_SOURCE_KINDS.test(kind)) {
       throw new RecruitingError("VALIDATION", "Source kind and name are required");
+    }
+    if (kind === WEB_SEARCH_SOURCE_KIND) {
+      throw new RecruitingError(
+        "VALIDATION",
+        "Web Search is a canonical Source and cannot be created as a duplicate",
+      );
     }
     const config = sanitizeSourceConfig(command.config ?? {});
     if (kind === "rss" || kind === "atom") {
@@ -390,7 +417,7 @@ export class ScoutRunApplication {
         ),
       )
       .get();
-    return row ? toSourceAccessSummary(row) : null;
+    return row ? this.toSourceAccessSummary(row) : null;
   }
 
   setSourceDisabled(command: SetSourceDisabledCommand): SourceAccessSummaryValue {
@@ -414,7 +441,7 @@ export class ScoutRunApplication {
         .set({ readiness, safeFailure, updatedAt: at })
         .where(eq(sources.id, source.id))
         .run();
-      return toSourceAccessSummary(requireSourceAccess(tx, source.id));
+      return this.toSourceAccessSummary(requireSourceAccess(tx, source.id));
     });
     emitChange(
       currentRevision(this.db),
@@ -441,6 +468,15 @@ export class ScoutRunApplication {
   ): Promise<SourceAccessSummaryValue> {
     const source = requireSource(this.db, command.sourceId);
     ensureSourceAccess(this.db, source.id, this.now());
+    if (source.id === WEB_SEARCH_SOURCE_ID) {
+      // Firecrawl credential readiness is owned by SettingsService. The Source
+      // seam only projects that safe state; it never performs a provider call
+      // or moves the credential into Recruiting persistence.
+      return (
+        this.getSourceAccess(source.id) ??
+        toSourceAccessSummary(requireSourceAccess(this.db, source.id))
+      );
+    }
     if (source.kind === "x") {
       return this.checkXSourceReadiness(source, command.provider as XProvider | undefined);
     }
@@ -1674,12 +1710,69 @@ export class ScoutRunApplication {
       .from(sources)
       .orderBy(asc(sources.createdAt), asc(sources.id))
       .all()
-      .map((row) => toSourceSummary(row, this.getSourceAccess(row.id)));
+      .sort((left, right) => {
+        // The canonical Source is seeded at time zero so migrations can be
+        // deterministic; keep user-created Sources in their historical order
+        // in the Candidate-facing list.
+        if (left.id === WEB_SEARCH_SOURCE_ID) return 1;
+        if (right.id === WEB_SEARCH_SOURCE_ID) return -1;
+        return left.createdAt - right.createdAt || left.id.localeCompare(right.id);
+      })
+      .map((row) => this.toSourceSummary(row));
   }
 
   getSource(id: string): SourceSummaryValue | null {
     const row = this.db.select().from(sources).where(eq(sources.id, id)).get();
-    return row ? toSourceSummary(row, this.getSourceAccess(row.id)) : null;
+    return row ? this.toSourceSummary(row) : null;
+  }
+
+  private toSourceSummary(row: SourceRow): SourceSummaryValue {
+    const access = this.db
+      .select()
+      .from(sourceAccess)
+      .where(eq(sourceAccess.sourceId, row.id))
+      .orderBy(asc(sourceAccess.createdAt), asc(sourceAccess.id))
+      .get();
+    const projectedAccess = access ? this.toSourceAccessSummary(access) : null;
+    return toSourceSummary(this.projectWebSearchSource(row), projectedAccess);
+  }
+
+  private toSourceAccessSummary(row: SourceAccessRow): SourceAccessSummaryValue {
+    return toSourceAccessSummary(this.projectWebSearchAccess(row));
+  }
+
+  private projectWebSearchSource(row: SourceRow): SourceRow {
+    if (row.id !== WEB_SEARCH_SOURCE_ID || !this.webSearchSettings) return row;
+    if (row.readiness === "candidate_disabled") return row;
+    const projection = this.webSearchSettings();
+    const readiness = projection.configured
+      ? safeSourceReadiness(projection.readiness)
+      : "not_configured";
+    return {
+      ...row,
+      readiness,
+      safeFailure: projection.configured ? projection.safeFailure : null,
+    };
+  }
+
+  private projectWebSearchAccess(row: SourceAccessRow): SourceAccessRow {
+    if (row.sourceId !== WEB_SEARCH_SOURCE_ID || !this.webSearchSettings) return row;
+    if (row.readiness === "candidate_disabled") return row;
+    const projection = this.webSearchSettings();
+    const readiness = projection.configured
+      ? safeSourceReadiness(projection.readiness)
+      : "not_configured";
+    return {
+      ...row,
+      readiness,
+      safeFailure: projection.configured ? projection.safeFailure : null,
+      nextAction:
+        readiness === "ready"
+          ? "Web Search is ready; select it in each Scout configuration as needed"
+          : projection.configured
+            ? "Resolve Web Search readiness before enabling it for a Scout"
+            : "Configure Firecrawl in Settings before enabling Web Search for a Scout",
+    };
   }
 
   setScoutSources(command: SetScoutSourcesCommand): {
@@ -2695,6 +2788,11 @@ function toSourceAccessSummary(row: SourceAccessRow): SourceAccessSummaryValue {
     nextAction: row.nextAction,
     retryAt: row.retryAt,
   });
+}
+
+function safeSourceReadiness(value: string): SourceReadinessValue {
+  const parsed = SourceReadiness.safeParse(value);
+  return parsed.success ? parsed.data : "degraded";
 }
 
 function sanitizeSourceConfig(value: Record<string, unknown>): Record<string, unknown> {

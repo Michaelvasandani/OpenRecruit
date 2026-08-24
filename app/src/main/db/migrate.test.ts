@@ -403,4 +403,30 @@ describe("db migrations", () => {
     });
     expect(userVersion(m)).toBe(SCHEMA_VERSION);
   });
+
+  test("v15 seeds the canonical Web Search Source without granting existing Scouts access", () => {
+    const db = new Database(":memory:");
+    const m = wrap(db);
+    db.exec(SCHEMA_DDL);
+    db.exec(`
+      INSERT INTO scouts (id, name, instruction_path, created_at)
+      VALUES ('existing-scout', 'Existing Scout', 'agents/existing', 1);
+      PRAGMA user_version = 14;
+    `);
+
+    migrate(m, { fresh: false });
+
+    expect(
+      db.query("SELECT id, kind, name FROM sources WHERE id = 'source-web-search'").get(),
+    ).toEqual({
+      id: "source-web-search",
+      kind: "web_search",
+      name: "Web Search",
+    });
+    expect(
+      db
+        .query("SELECT count(*) AS count FROM scout_sources WHERE scout_id = 'existing-scout'")
+        .get(),
+    ).toEqual({ count: 0 });
+  });
 });

@@ -48,9 +48,10 @@ async function main() {
   const db = createDb();
   const registry = new AgentRegistry(db);
   registry.resetStatusesOnBoot();
-  const recruiting = new RecruitingApplication(db);
-
   const settings = new SettingsService(db);
+  const recruiting = new RecruitingApplication(db, Date.now, {
+    webSearchSettings: () => settings.get().firecrawl,
+  });
   // Durable Recent ring buffer for the tray (§12.6). Subscribed HERE, before anything
   // that can emit `notify` — the scheduler's boot catch-up sweep (scheduler.start()
   // below) fires wake notifications synchronously.

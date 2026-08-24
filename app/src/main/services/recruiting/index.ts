@@ -81,8 +81,11 @@ import {
   type MergeLeadsCommand,
   type ReadSourceCommand,
   ScoutRunApplication,
+  type ScoutRunApplicationOptions,
   type SetScoutSourcesCommand,
   type SetSourceDisabledCommand,
+  WEB_SEARCH_SOURCE_ID,
+  type WebSearchSettingsProjection,
 } from "./scout-runs";
 
 export type {
@@ -181,11 +184,18 @@ export type {
   LinkSignalToLeadCommand,
   MergeLeadsCommand,
   ReadSourceCommand,
+  ScoutRunApplicationOptions,
   SetScoutSourcesCommand,
   SetSourceDisabledCommand,
   SourceAttemptResult,
+  WebSearchSettingsProjection,
 } from "./scout-runs";
-export { DEFAULT_RUN_BUDGET, ScoutRunApplication } from "./scout-runs";
+export {
+  DEFAULT_RUN_BUDGET,
+  ScoutRunApplication,
+  WEB_SEARCH_SOURCE_ID,
+  WEB_SEARCH_SOURCE_KIND,
+} from "./scout-runs";
 export {
   DeterministicFeedProvider,
   type FeedItem,
@@ -221,6 +231,8 @@ export type CreateScoutCommand = {
   resumableSessionRef?: string | null;
   idempotencyKey: string;
 };
+
+export type RecruitingApplicationOptions = ScoutRunApplicationOptions;
 
 export type ArchiveScoutCommand = {
   scoutId: string;
@@ -268,13 +280,16 @@ export class RecruitingApplication {
   private readonly revisitPlans: RevisitPlanApplication;
   private readonly candidateDecisions: CandidateDecisionApplication;
   private readonly evidence: EvidenceApplication;
+  private readonly webSearchSettings?: () => WebSearchSettingsProjection;
 
   constructor(
     private readonly db: Db,
     private readonly now: () => number = Date.now,
+    options: RecruitingApplicationOptions = {},
   ) {
+    this.webSearchSettings = options.webSearchSettings;
     this.profileApplication = new CandidateProfileApplication(db, { now });
-    this.scoutRuns = new ScoutRunApplication(db, now);
+    this.scoutRuns = new ScoutRunApplication(db, now, options);
     this.candidateDecisions = new CandidateDecisionApplication(db, now);
     this.evidence = new EvidenceApplication(db, now);
     this.fitEvaluations = new FitEvaluationApplication(db, now, (subjectId, at) =>
@@ -823,6 +838,7 @@ export class RecruitingApplication {
   }
 
   createScout(command: CreateScoutCommand): CommandResult<ScoutSummary> {
+    const explicitSourceSelection = command.sourceIds !== undefined;
     const normalized = {
       name: command.name.trim(),
       harness: ScoutHarness.parse(command.harness),
@@ -833,6 +849,7 @@ export class RecruitingApplication {
       sourceIds: [
         ...new Set((command.sourceIds ?? []).map((id) => id.trim()).filter(Boolean)),
       ].sort(),
+      sourceSelectionSpecified: explicitSourceSelection,
       defaultProfileId: command.defaultProfileId ?? null,
       resumableSessionRef: command.resumableSessionRef ?? null,
     };
@@ -856,7 +873,11 @@ export class RecruitingApplication {
 
       const id = randomUUID();
       const at = this.now();
-      assertSourceIdsExist(tx, normalized.sourceIds);
+      const sourceIds =
+        !explicitSourceSelection && this.webSearchSettings?.().configured
+          ? [WEB_SEARCH_SOURCE_ID]
+          : normalized.sourceIds;
+      assertSourceIdsExist(tx, sourceIds);
       if (normalized.defaultProfileId !== null) {
         const profile = tx
           .select()
@@ -869,7 +890,7 @@ export class RecruitingApplication {
             "A Scout default must be a confirmed Candidate Profile",
           );
         }
-      } else if (normalized.sourceIds.length > 0 || tx.select().from(profiles).limit(1).get()) {
+      } else if (sourceIds.length > 0 || tx.select().from(profiles).limit(1).get()) {
         throw new RecruitingError(
           "VALIDATION",
           "Every configured Scout requires a default confirmed Candidate Profile",
@@ -893,7 +914,7 @@ export class RecruitingApplication {
           archivedAt: null,
         })
         .run();
-      for (const sourceId of normalized.sourceIds) {
+      for (const sourceId of sourceIds) {
         tx.insert(scoutSources).values({ scoutId: id, sourceId, selectedAt: at }).run();
       }
       const value = toScoutSummary(tx, requireScout(tx, id));

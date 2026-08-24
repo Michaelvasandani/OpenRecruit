@@ -34,7 +34,7 @@ export interface MigrationDb {
 }
 
 /** Bump on every schema change, with a matching entry in MIGRATIONS. */
-export const SCHEMA_VERSION = 14;
+export const SCHEMA_VERSION = 15;
 
 const MIGRATIONS: Record<number, (db: MigrationDb) => void> = {
   // v2 — headless turn limit: per-agent unattended-turn counter + on/off toggle.
@@ -219,6 +219,31 @@ const MIGRATIONS: Record<number, (db: MigrationDb) => void> = {
   14: (db) => {
     if (hasTable(db, "scout_run_requests")) {
       addColumnIfMissing(db, "scout_run_requests", "wake_delivered_at", "INTEGER");
+    }
+  },
+  // v15 — canonical provider-neutral Web Search Source. Existing Scout rows
+  // deliberately receive no new scout_sources row, so an app update cannot
+  // grant outbound Source Access implicitly.
+  15: (db) => {
+    if (hasTable(db, "sources") && hasTable(db, "source_access")) {
+      db.exec(`
+        INSERT OR IGNORE INTO sources (
+          id, kind, name, config, readiness, safe_failure, created_at, updated_at
+        ) VALUES (
+          'source-web-search', 'web_search', 'Web Search', '{"provider":"firecrawl"}',
+          'not_configured', NULL, 0, 0
+        );
+        INSERT OR IGNORE INTO source_access (
+          id, source_id, account_ref, scope_key, access_mode, readiness, safe_failure,
+          last_checked_at, last_success_at, next_action, retry_at, etag, last_modified,
+          cursor, source_identity, created_at, updated_at
+        ) VALUES (
+          'source-web-search-access', 'source-web-search', '', 'public', 'public',
+          'not_configured', NULL, NULL, NULL,
+          'Configure Firecrawl in Settings before enabling Web Search for a Scout', NULL,
+          NULL, NULL, NULL, NULL, 0, 0
+        );
+      `);
     }
   },
 };
