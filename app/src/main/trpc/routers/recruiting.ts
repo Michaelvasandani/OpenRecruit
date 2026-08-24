@@ -83,6 +83,39 @@ export const recruitingRouter = router({
     )
     .mutation(({ ctx, input }) => command(() => ctx.recruiting.createSource(input))),
 
+  createRssSource: publicProcedure
+    .input(
+      z.object({
+        name: z.string().trim().min(1).max(160),
+        url: z.string().trim().url().max(2_000),
+        idempotencyKey: z.string().trim().min(1).max(200),
+      }),
+    )
+    .mutation(({ ctx, input }) => command(() => ctx.recruiting.createRssSource(input))),
+
+  createFeedSource: publicProcedure
+    .input(
+      z.object({
+        kind: z.enum(["rss", "atom"]),
+        name: z.string().trim().min(1).max(160),
+        url: z.string().trim().url().max(2_000),
+        idempotencyKey: z.string().trim().min(1).max(200),
+      }),
+    )
+    .mutation(({ ctx, input }) => command(() => ctx.recruiting.createFeedSource(input))),
+
+  sourceAccess: publicProcedure
+    .input(z.object({ sourceId: z.string().min(1) }))
+    .query(({ ctx, input }) => ctx.recruiting.getSourceAccess(input.sourceId)),
+
+  setSourceDisabled: publicProcedure
+    .input(z.object({ sourceId: z.string().min(1), disabled: z.boolean() }))
+    .mutation(({ ctx, input }) => command(() => ctx.recruiting.setSourceDisabled(input))),
+
+  checkSourceReadiness: publicProcedure
+    .input(z.object({ sourceId: z.string().min(1) }))
+    .mutation(({ ctx, input }) => commandAsync(() => ctx.recruiting.checkSourceReadiness(input))),
+
   setScoutSources: publicProcedure
     .input(
       z.object({
@@ -101,6 +134,37 @@ export const recruitingRouter = router({
   scoutRun: publicProcedure
     .input(z.object({ id: z.string().min(1) }))
     .query(({ ctx, input }) => ctx.recruiting.getScoutRun(input.id)),
+
+  sourceAttempts: publicProcedure
+    .input(z.object({ runId: z.string().min(1).optional() }).optional())
+    .query(({ ctx, input }) => ctx.recruiting.listSourceAttempts(input?.runId)),
+
+  sourceAttempt: publicProcedure
+    .input(z.object({ id: z.string().min(1) }))
+    .query(({ ctx, input }) => ctx.recruiting.getSourceAttempt(input.id)),
+
+  readSource: publicProcedure
+    .input(
+      z.object({
+        runId: z.string().min(1),
+        sourceId: z.string().min(1),
+        budget: z
+          .object({
+            maxItems: z.number().int().positive().max(10_000_000).optional(),
+            maxPages: z.number().int().positive().max(10_000_000).optional(),
+            maxWallClockMs: z.number().int().positive().max(10_000_000).optional(),
+            maxSpendCents: z.number().int().nonnegative().max(10_000_000).optional(),
+          })
+          .optional(),
+        retry: z
+          .object({
+            maxAttempts: z.number().int().positive().max(3).optional(),
+            baseDelayMs: z.number().int().positive().max(60_000).optional(),
+          })
+          .optional(),
+      }),
+    )
+    .mutation(({ ctx, input }) => commandAsync(() => ctx.recruiting.readSource(input))),
 
   launchScoutRun: publicProcedure
     .input(
@@ -294,6 +358,21 @@ export const recruitingRouter = router({
 function command<T>(run: () => T): T {
   try {
     return run();
+  } catch (error) {
+    if (error instanceof RecruitingError) {
+      throw new TRPCError({
+        code: error.code === "CONFLICT" ? "CONFLICT" : "BAD_REQUEST",
+        message: error.message,
+        cause: error,
+      });
+    }
+    throw error;
+  }
+}
+
+async function commandAsync<T>(run: () => Promise<T>): Promise<T> {
+  try {
+    return await run();
   } catch (error) {
     if (error instanceof RecruitingError) {
       throw new TRPCError({

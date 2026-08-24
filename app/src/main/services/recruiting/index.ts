@@ -17,12 +17,23 @@ import type { ConfirmProfileCommand, ImportProfileCommand, UpdateDraftCommand } 
 import { CandidateProfileApplication } from "./profile";
 import {
   type AdvanceScoutRunCommand,
+  type CheckSourceReadinessCommand,
+  type CreateFeedSourceCommand,
+  type CreateRssSourceCommand,
   type CreateSourceCommand,
   type LaunchScoutRunCommand,
+  type ReadSourceCommand,
   ScoutRunApplication,
   type SetScoutSourcesCommand,
+  type SetSourceDisabledCommand,
 } from "./scout-runs";
 
+export {
+  SourceAccessSummary,
+  SourceAttemptOutcome,
+  SourceAttemptSummary,
+  SourceReadiness,
+} from "@shared/recruiting";
 export {
   assertSafeMaterial,
   PROHIBITED_RECRUITING_CAPABILITIES,
@@ -44,11 +55,27 @@ export type {
 export { CandidateProfileApplication } from "./profile";
 export type {
   AdvanceScoutRunCommand,
+  CheckSourceReadinessCommand,
+  CreateFeedSourceCommand,
+  CreateRssSourceCommand,
   CreateSourceCommand,
   LaunchScoutRunCommand,
+  ReadSourceCommand,
   SetScoutSourcesCommand,
+  SetSourceDisabledCommand,
+  SourceAttemptResult,
 } from "./scout-runs";
 export { DEFAULT_RUN_BUDGET, ScoutRunApplication } from "./scout-runs";
+export {
+  DeterministicFeedProvider,
+  type FeedItem,
+  type FeedProvider,
+  type FeedRequest,
+  type FeedResponse,
+  HttpFeedProvider,
+  parseFeed,
+  validateFeedUrl,
+} from "./source";
 
 export type CreateScoutCommand = {
   name: string;
@@ -149,12 +176,56 @@ export class RecruitingApplication {
     return this.scoutRuns.createSource(command);
   }
 
+  createRssSource(command: CreateRssSourceCommand) {
+    return this.scoutRuns.createRssSource(command);
+  }
+
+  createAtomSource(command: CreateRssSourceCommand) {
+    return this.scoutRuns.createAtomSource(command);
+  }
+
+  createFeedSource(command: CreateFeedSourceCommand) {
+    return this.scoutRuns.createFeedSource(command);
+  }
+
   listSources() {
     return this.scoutRuns.listSources();
   }
 
   getSource(id: string) {
     return this.scoutRuns.getSource(id);
+  }
+
+  getSourceAccess(sourceId: string, accountRef?: string, scopeKey?: string) {
+    return this.scoutRuns.getSourceAccess(sourceId, accountRef, scopeKey);
+  }
+
+  setSourceDisabled(command: SetSourceDisabledCommand) {
+    return this.scoutRuns.setSourceDisabled(command);
+  }
+
+  disableSource(sourceId: string) {
+    return this.scoutRuns.disableSource(sourceId);
+  }
+
+  enableSource(sourceId: string) {
+    return this.scoutRuns.enableSource(sourceId);
+  }
+
+  checkSourceReadiness(command: CheckSourceReadinessCommand) {
+    return this.scoutRuns.checkSourceReadiness(command);
+  }
+
+  readSource(command: ReadSourceCommand) {
+    return this.scoutRuns.readSource(command);
+  }
+
+  listSourceAttempts(runId?: string) {
+    return this.scoutRuns.listSourceAttempts(runId);
+  }
+
+  getSourceAttempt(id: string) {
+    return this.scoutRuns.getSourceAttempt(id);
   }
 
   setScoutSources(command: SetScoutSourcesCommand) {

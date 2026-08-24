@@ -15,6 +15,7 @@ export function ScoutRunsScreen() {
   const utils = trpc.useUtils();
   const scouts = trpc.recruiting.scouts.useQuery();
   const sources = trpc.recruiting.sources.useQuery();
+  const sourceAttempts = trpc.recruiting.sourceAttempts.useQuery();
   const profiles = trpc.recruiting.profiles.useQuery();
   const [selectedScoutId, setSelectedScoutId] = useState<string | undefined>();
   const [strategyMaterial, setStrategyMaterial] = useState("");
@@ -22,6 +23,8 @@ export function ScoutRunsScreen() {
   const [defaultProfileId, setDefaultProfileId] = useState<string | null>(null);
   const [profileOverrideId, setProfileOverrideId] = useState<string | null>(null);
   const [sourceIds, setSourceIds] = useState<string[]>([]);
+  const [feedName, setFeedName] = useState("");
+  const [feedUrl, setFeedUrl] = useState("");
   const selectedId = selectedScoutId ?? scouts.data?.[0]?.id;
   const runs = trpc.recruiting.scoutRuns.useQuery(
     selectedId ? { scoutId: selectedId } : undefined,
@@ -54,6 +57,16 @@ export function ScoutRunsScreen() {
     onSuccess: () => {
       void utils.recruiting.scouts.invalidate();
     },
+  });
+  const createRss = trpc.recruiting.createRssSource.useMutation({
+    onSuccess: () => {
+      setFeedName("");
+      setFeedUrl("");
+      void utils.recruiting.sources.invalidate();
+    },
+  });
+  const checkReadiness = trpc.recruiting.checkSourceReadiness.useMutation({
+    onSuccess: () => void utils.recruiting.sources.invalidate(),
   });
   useEffect(() => {
     if (!selected) return;
@@ -199,24 +212,90 @@ export function ScoutRunsScreen() {
                   </div>
                   <div className="flex flex-col gap-1">
                     <Label>Explicit Sources</Label>
+                    <div className="flex flex-col gap-2 rounded-md border border-border p-2">
+                      <span className="text-[11px] text-muted-foreground">
+                        Add a public RSS or Atom feed
+                      </span>
+                      <input
+                        value={feedName}
+                        onChange={(event) => setFeedName(event.target.value)}
+                        placeholder="Source name"
+                        className="h-8 rounded-md border border-input bg-background px-2 text-xs"
+                      />
+                      <input
+                        value={feedUrl}
+                        onChange={(event) => setFeedUrl(event.target.value)}
+                        placeholder="https://example.com/feed.xml"
+                        type="url"
+                        className="h-8 rounded-md border border-input bg-background px-2 text-xs"
+                      />
+                      <Button
+                        type="button"
+                        size="sm"
+                        variant="outline"
+                        disabled={createRss.isPending || !feedName.trim() || !feedUrl.trim()}
+                        onClick={() =>
+                          createRss.mutate({
+                            name: feedName,
+                            url: feedUrl,
+                            idempotencyKey: `rss-source-${crypto.randomUUID()}`,
+                          })
+                        }
+                      >
+                        {createRss.isPending ? <Loader2 className="size-3" /> : null}
+                        Add RSS/Atom Source
+                      </Button>
+                      {createRss.error && (
+                        <p className="text-[11px] text-destructive">{createRss.error.message}</p>
+                      )}
+                    </div>
                     <div className="flex flex-wrap gap-2">
                       {sources.data?.map((source) => (
-                        <label key={source.id} className="flex items-center gap-1 text-xs">
-                          <input
-                            type="checkbox"
-                            checked={sourceIds.includes(source.id)}
-                            onChange={(event) =>
-                              setSourceIds((current) =>
-                                event.target.checked
-                                  ? [...new Set([...current, source.id])]
-                                  : current.filter((id) => id !== source.id),
-                              )
-                            }
-                          />
-                          {source.name}
-                        </label>
+                        <div key={source.id} className="flex items-center gap-1 text-xs">
+                          <label className="flex items-center gap-1">
+                            <input
+                              type="checkbox"
+                              checked={sourceIds.includes(source.id)}
+                              onChange={(event) =>
+                                setSourceIds((current) =>
+                                  event.target.checked
+                                    ? [...new Set([...current, source.id])]
+                                    : current.filter((id) => id !== source.id),
+                                )
+                              }
+                            />
+                            {source.name}
+                          </label>
+                          <span className="text-muted-foreground">({source.readiness})</span>
+                          <button
+                            type="button"
+                            className="text-primary underline-offset-2 hover:underline"
+                            disabled={checkReadiness.isPending}
+                            onClick={() => checkReadiness.mutate({ sourceId: source.id })}
+                          >
+                            Check
+                          </button>
+                        </div>
                       ))}
                     </div>
+                    {sources.data?.map(
+                      (source) =>
+                        source.access && (
+                          <p
+                            key={`${source.id}-access`}
+                            className="text-[11px] text-muted-foreground"
+                          >
+                            {source.name}: {source.access.nextAction ?? "No next action"}
+                            {source.access.lastSuccessfulCheckAt
+                              ? ` · last success ${new Date(source.access.lastSuccessfulCheckAt).toLocaleString()}`
+                              : " · no successful check yet"}
+                            {source.access.retryAt
+                              ? ` · retry after ${new Date(source.access.retryAt).toLocaleString()}`
+                              : ""}
+                            {source.access.safeFailure ? ` · ${source.access.safeFailure}` : ""}
+                          </p>
+                        ),
+                    )}
                   </div>
                 </div>
                 <div className="flex items-center justify-between gap-3">
@@ -277,6 +356,15 @@ export function ScoutRunsScreen() {
                     Profile Version: {run.profileVersionId ?? "not pinned"} · Sources:{" "}
                     {run.sourceIds.length} · Phase: {run.phase}
                   </p>
+                  {sourceAttempts.data
+                    ?.filter((attempt) => attempt.runId === run.id)
+                    .map((attempt) => (
+                      <p key={attempt.id} className="mt-1 text-muted-foreground">
+                        {attempt.sourceId}: {attempt.outcome} · {attempt.itemCount} items ·{" "}
+                        {attempt.pageCount} page{attempt.pageCount === 1 ? "" : "s"}
+                        {attempt.safeFailure ? ` · ${attempt.safeFailure}` : ""}
+                      </p>
+                    ))}
                   {run.safeFailure && <p className="mt-1 text-destructive">{run.safeFailure}</p>}
                   <details className="mt-2">
                     <summary className="cursor-pointer text-muted-foreground">

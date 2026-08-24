@@ -34,7 +34,7 @@ export interface MigrationDb {
 }
 
 /** Bump on every schema change, with a matching entry in MIGRATIONS. */
-export const SCHEMA_VERSION = 8;
+export const SCHEMA_VERSION = 9;
 
 const MIGRATIONS: Record<number, (db: MigrationDb) => void> = {
   // v2 — headless turn limit: per-agent unattended-turn counter + on/off toggle.
@@ -97,6 +97,17 @@ const MIGRATIONS: Record<number, (db: MigrationDb) => void> = {
     addColumnIfMissing(db, "scouts", "strategy_material", "TEXT NOT NULL DEFAULT ''");
     addColumnIfMissing(db, "scouts", "policy_material", "TEXT NOT NULL DEFAULT ''");
     addColumnIfMissing(db, "scout_runs", "override_snapshot", "TEXT");
+  },
+  // v9 — public Source Access readiness and conditional-feed state. These values
+  // are safe metadata; authentication material remains outside Recruiting rows.
+  9: (db) => {
+    addColumnIfMissing(db, "source_access", "access_mode", "TEXT NOT NULL DEFAULT 'public'");
+    addColumnIfMissing(db, "source_access", "last_success_at", "INTEGER");
+    addColumnIfMissing(db, "source_access", "next_action", "TEXT");
+    addColumnIfMissing(db, "source_access", "etag", "TEXT");
+    addColumnIfMissing(db, "source_access", "last_modified", "TEXT");
+    addColumnIfMissing(db, "source_access", "cursor", "TEXT");
+    addColumnIfMissing(db, "source_access", "source_identity", "TEXT");
   },
 };
 

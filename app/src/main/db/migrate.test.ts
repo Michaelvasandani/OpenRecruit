@@ -263,4 +263,38 @@ describe("db migrations", () => {
     );
     expect(columns(db, "scout_runs")).toContain("override_snapshot");
   });
+
+  test("v9 adds safe Source Access readiness and conditional retrieval columns", () => {
+    const db = new Database(":memory:");
+    const m = wrap(db);
+    db.exec(`
+      CREATE TABLE source_access (
+        id TEXT PRIMARY KEY,
+        source_id TEXT NOT NULL,
+        account_ref TEXT NOT NULL DEFAULT '',
+        scope_key TEXT NOT NULL,
+        readiness TEXT NOT NULL DEFAULT 'not_configured',
+        safe_failure TEXT,
+        last_checked_at INTEGER,
+        retry_at INTEGER,
+        created_at INTEGER NOT NULL,
+        updated_at INTEGER NOT NULL
+      );
+      PRAGMA user_version = 8;
+    `);
+    migrate(m, { fresh: false });
+
+    expect(userVersion(m)).toBe(SCHEMA_VERSION);
+    expect(columns(db, "source_access")).toEqual(
+      expect.arrayContaining([
+        "access_mode",
+        "last_success_at",
+        "next_action",
+        "etag",
+        "last_modified",
+        "cursor",
+        "source_identity",
+      ]),
+    );
+  });
 });

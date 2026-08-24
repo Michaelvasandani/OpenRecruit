@@ -40,6 +40,44 @@ export const SourceReadiness = z.enum([
 ]);
 export type SourceReadiness = z.infer<typeof SourceReadiness>;
 
+export const SourceAccessReadiness = SourceReadiness;
+export type SourceAccessReadiness = z.infer<typeof SourceAccessReadiness>;
+
+/** Outcomes are deliberately exhaustive and safe to render. Raw provider errors
+ * and payloads never cross the Source boundary. */
+export const SourceAttemptOutcome = z.enum([
+  "succeeded_with_items",
+  "succeeded_empty",
+  "not_modified",
+  "partial",
+  "rate_limited",
+  "budget_exhausted",
+  "blocked",
+  "transient_failure",
+  "malformed_content",
+  "timed_out",
+  "unsupported",
+  "cancelled",
+]);
+export type SourceAttemptOutcome = z.infer<typeof SourceAttemptOutcome>;
+
+export const SourceAccessSummary = z.object({
+  id: z.string().min(1),
+  sourceId: z.string().min(1),
+  accountRef: z.string(),
+  scopeKey: z.string(),
+  accessMode: z.enum(["public"]),
+  readiness: SourceAccessReadiness,
+  safeFailure: z.string().nullable(),
+  safeReason: z.string().nullable(),
+  lastCheckedAt: z.number().int().nullable(),
+  lastSuccessAt: z.number().int().nullable(),
+  lastSuccessfulCheckAt: z.number().int().nullable(),
+  nextAction: z.string().nullable(),
+  retryAt: z.number().int().nullable(),
+});
+export type SourceAccessSummary = z.infer<typeof SourceAccessSummary>;
+
 /** Safe Source projection. Configuration is opaque and never contains auth material. */
 export const SourceSummary = z.object({
   id: z.string().min(1),
@@ -47,10 +85,32 @@ export const SourceSummary = z.object({
   name: z.string().min(1),
   readiness: SourceReadiness,
   safeFailure: z.string().nullable(),
+  safeReason: z.string().nullable(),
+  lastCheckedAt: z.number().int().nullable(),
+  lastSuccessAt: z.number().int().nullable(),
+  nextAction: z.string().nullable(),
+  retryAt: z.number().int().nullable(),
+  access: SourceAccessSummary.nullable(),
   createdAt: z.number().int(),
   updatedAt: z.number().int(),
 });
 export type SourceSummary = z.infer<typeof SourceSummary>;
+
+export const SourceAttemptSummary = z.object({
+  id: z.string().min(1),
+  runId: z.string().min(1),
+  sourceId: z.string().min(1),
+  requestedScope: z.string(),
+  cursor: z.string().nullable(),
+  outcome: SourceAttemptOutcome,
+  itemCount: z.number().int().nonnegative(),
+  pageCount: z.number().int().nonnegative(),
+  retryAt: z.number().int().nullable(),
+  safeFailure: z.string().nullable(),
+  startedAt: z.number().int(),
+  completedAt: z.number().int().nullable(),
+});
+export type SourceAttemptSummary = z.infer<typeof SourceAttemptSummary>;
 
 export const ScoutRunStatus = z.enum([
   "queued",
