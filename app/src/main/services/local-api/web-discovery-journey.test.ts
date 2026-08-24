@@ -9,6 +9,7 @@ import type { Db } from "../../db/client";
 import { SCHEMA_DDL } from "../../db/ddl";
 import { type MigrationDb, migrate } from "../../db/migrate";
 import { hostLog } from "../../host/log";
+import { resolveTemplatesDir } from "../agents/paths";
 import { AnalyticsService, type CaptureClient } from "../analytics";
 import { claudeHarness } from "../harness/claude";
 import { createCodexHarness } from "../harness/codex";
@@ -208,6 +209,32 @@ function resultError(response: RpcResponse): string {
   return result?.content?.[0]?.text ?? "";
 }
 
+type ComparableOutcome = {
+  provenance?: {
+    provider?: unknown;
+    requestId?: unknown;
+    sourceId?: unknown;
+    runId?: unknown;
+    scoutId?: unknown;
+  };
+  [key: string]: unknown;
+};
+
+function comparableOutcomes(outcomes: ComparableOutcome[]): unknown[] {
+  return outcomes.map(({ provenance, ...outcome }) => ({
+    ...outcome,
+    ...(provenance
+      ? {
+          provenance: {
+            provider: provenance.provider,
+            requestId: provenance.requestId,
+            sourceId: provenance.sourceId,
+          },
+        }
+      : {}),
+  }));
+}
+
 function fixture() {
   const provider = new JourneySearchProvider();
   const fetchProvider: WebFetchProvider = new DeterministicWebFetchProvider({
@@ -287,10 +314,18 @@ describe("Issue #44 agent-facing web discovery journey", () => {
       expect(lists[0]).toEqual(lists[1]);
       expect(lists[0]?.map((tool) => tool.name)).toEqual(["WebSearch", "WebFetch"]);
 
+      const journeySummaries = {} as Record<
+        Harness,
+        {
+          natural: unknown;
+          ashby: unknown;
+          fetched: unknown;
+        }
+      >;
       for (const harness of ["claude", "codex"] as const) {
         const natural = resultJson<{
           results: Array<{ canonicalUrl: string }>;
-          provenance: unknown;
+          provenance: { provider: string };
         }>(await clients[harness].call("WebSearch", { query: "Find public engineering roles" }));
         expect(natural.results.map((result) => result.canonicalUrl)).toEqual([
           "https://example.com/natural-role",
@@ -310,20 +345,41 @@ describe("Issue #44 agent-facing web discovery journey", () => {
           "https://jobs.ashbyhq.com/acme/forward-deployed-engineer",
         ]);
 
-        const fetched = resultJson<{ outcomes: Array<{ content?: string; trust?: string }> }>(
+        const selectedUrl = ashby.results[0]?.canonicalUrl;
+        expect(selectedUrl).toBeDefined();
+        const fetched = resultJson<{
+          outcomes: Array<{
+            canonicalUrl?: string;
+            content?: string;
+            trust?: string;
+          }>;
+        }>(
           await clients[harness].call("WebFetch", {
-            urls: ["https://jobs.ashbyhq.com/acme/forward-deployed-engineer"],
+            urls: [selectedUrl],
           }),
         );
         expect(fetched.outcomes).toMatchObject([
           { content: "Selected bounded job-page evidence.", trust: "untrusted_evidence" },
         ]);
+        journeySummaries[harness] = {
+          natural: {
+            results: natural.results,
+            provider: natural.provenance.provider,
+          },
+          ashby: {
+            restrictions: ashby.appliedDomainRestrictions,
+            results: ashby.results,
+          },
+          fetched: comparableOutcomes(fetched.outcomes),
+        };
       }
+      expect(journeySummaries.codex).toEqual(journeySummaries.claude);
 
       const providerRequestsBeforeDisabled = provider.requests.length;
       const fetchRequestsBeforeDisabled = (fetchProvider as DeterministicWebFetchProvider).requests
         .length;
       app.disableSource(WEB_SEARCH_SOURCE_ID);
+      const disabledErrors = {} as Record<Harness, { search: string; fetch: string }>;
       for (const harness of ["claude", "codex"] as const) {
         const client = await startMcp(server, scouts[harness].scout.id, harness);
         try {
@@ -337,10 +393,12 @@ describe("Issue #44 agent-facing web discovery journey", () => {
           );
           expect(searchError).toContain("disabled_source_access");
           expect(fetchError).toContain("disabled_source_access");
+          disabledErrors[harness] = { search: searchError, fetch: fetchError };
         } finally {
           client.close();
         }
       }
+      expect(disabledErrors.codex).toEqual(disabledErrors.claude);
       expect(provider.requests).toHaveLength(providerRequestsBeforeDisabled);
       expect((fetchProvider as DeterministicWebFetchProvider).requests).toHaveLength(
         fetchRequestsBeforeDisabled,
@@ -359,7 +417,10 @@ describe("Issue #44 agent-facing web discovery journey", () => {
     const fixtureValue = fixture();
     await fixtureValue.server.start();
     const { app, provider, fetchProvider, scouts, server } = fixtureValue;
-    const client = await startMcp(server, scouts.claude.scout.id, "claude");
+    const clients = {
+      claude: await startMcp(server, scouts.claude.scout.id, "claude"),
+      codex: await startMcp(server, scouts.codex.scout.id, "codex"),
+    };
     try {
       const states = [
         ["missing", "missing_configuration"],
@@ -367,32 +428,46 @@ describe("Issue #44 agent-facing web discovery journey", () => {
         ["rate-limited", "rate_limited"],
         ["transient", "exhausted_transient_failure"],
       ] as const;
-      const categories = new Map<string, string>();
-      for (const [state, category] of states) {
-        const error = resultError(await client.call("WebSearch", { query: `state:${state}` }));
-        expect(error).toContain(category);
-        categories.set(state, error);
-      }
-      expect(new Set(categories.values()).size).toBe(states.length);
+      const failureSummaries = {} as Record<
+        Harness,
+        { errors: Record<string, string>; empty: unknown[]; partial: unknown[] }
+      >;
+      for (const harness of ["claude", "codex"] as const) {
+        const errors: Record<string, string> = {};
+        for (const [state, category] of states) {
+          const error = resultError(
+            await clients[harness].call("WebSearch", { query: `state:${state}` }),
+          );
+          expect(error).toContain(category);
+          errors[state] = error;
+        }
+        expect(new Set(Object.values(errors)).size).toBe(states.length);
 
-      const empty = resultJson<{ results: unknown[] }>(
-        await client.call("WebSearch", { query: "state:empty" }),
-      );
-      expect(empty.results).toEqual([]);
-      const partial = resultJson<{
-        outcomes: Array<{ content?: string; error?: { category: string } }>;
-      }>(
-        await client.call("WebFetch", {
-          urls: [
-            "https://jobs.ashbyhq.com/acme/forward-deployed-engineer",
-            "https://example.com/missing",
-          ],
-        }),
-      );
-      expect(partial.outcomes).toEqual([
-        expect.objectContaining({ content: "Selected bounded job-page evidence." }),
-        expect.objectContaining({ error: expect.objectContaining({ category: "not_found" }) }),
-      ]);
+        const empty = resultJson<{ results: unknown[] }>(
+          await clients[harness].call("WebSearch", { query: "state:empty" }),
+        );
+        expect(empty.results).toEqual([]);
+        const partial = resultJson<{
+          outcomes: Array<{ content?: string; error?: { category: string } }>;
+        }>(
+          await clients[harness].call("WebFetch", {
+            urls: [
+              "https://jobs.ashbyhq.com/acme/forward-deployed-engineer",
+              "https://example.com/missing",
+            ],
+          }),
+        );
+        expect(partial.outcomes).toEqual([
+          expect.objectContaining({ content: "Selected bounded job-page evidence." }),
+          expect.objectContaining({ error: expect.objectContaining({ category: "not_found" }) }),
+        ]);
+        failureSummaries[harness] = {
+          errors,
+          empty: empty.results,
+          partial: comparableOutcomes(partial.outcomes),
+        };
+      }
+      expect(failureSummaries.codex).toEqual(failureSummaries.claude);
       expect(provider.requests.map((request) => request.query)).toEqual(
         expect.arrayContaining([
           "state:missing",
@@ -402,12 +477,13 @@ describe("Issue #44 agent-facing web discovery journey", () => {
           "state:empty",
         ]),
       );
-      expect((fetchProvider as DeterministicWebFetchProvider).requests).toHaveLength(2);
+      expect((fetchProvider as DeterministicWebFetchProvider).requests).toHaveLength(4);
       expect(app.listSourceAttempts().map((attempt) => attempt.outcome)).toEqual(
         expect.arrayContaining(["succeeded_empty", "partial", "rate_limited", "transient_failure"]),
       );
     } finally {
-      client.close();
+      clients.claude.close();
+      clients.codex.close();
       server.stop();
     }
   });
@@ -420,6 +496,9 @@ describe("Issue #44 agent-facing web discovery journey", () => {
       claude: await startMcp(server, scouts.claude.scout.id, "claude"),
       codex: await startMcp(server, scouts.codex.scout.id, "codex"),
     };
+    const capture = new CaptureProbe();
+    const telemetry = new AnalyticsService();
+    telemetry.start({ settings: new SettingsService(makeDb()), client: capture });
     try {
       const responses = await Promise.all(
         (["claude", "codex"] as const).map(async (harness) => [
@@ -434,6 +513,19 @@ describe("Issue #44 agent-facing web discovery journey", () => {
       expect(persisted).not.toContain(HOST_KEY);
       expect(persisted).not.toContain("Selected bounded job-page evidence");
       expect(JSON.stringify(app.listSources())).not.toContain(HOST_KEY);
+
+      const telemetryPayload = JSON.stringify(capture.events);
+      for (const canary of [
+        HOST_KEY,
+        "Find public engineering roles",
+        "https://example.com/natural-role",
+        "Resilient developer tools role",
+        "Natural-language search evidence",
+        "https://jobs.ashbyhq.com/acme/forward-deployed-engineer",
+        "Selected bounded job-page evidence.",
+      ]) {
+        expect(telemetryPayload).not.toContain(canary);
+      }
 
       const agentEnv = buildAgentEnv("issue-44-agent", { FIRECRAWL_API_KEY: HOST_KEY });
       expect(agentEnv.FIRECRAWL_API_KEY).toBeUndefined();
@@ -450,23 +542,25 @@ describe("Issue #44 agent-facing web discovery journey", () => {
           readFileSync(join(codexHome, "hooks.json"), "utf8"),
         ].join("\n");
         expect(generated).not.toContain(HOST_KEY);
+
+        const templatesDir = resolveTemplatesDir();
+        const promptSources = [
+          join(templatesDir, "CLAUDE.prefix.md"),
+          join(templatesDir, "AGENTS.prefix.codex.md"),
+          join(templatesDir, "default", "kickoff.md"),
+        ]
+          .map((path) => readFileSync(path, "utf8"))
+          .join("\n");
+        expect(promptSources).not.toContain(HOST_KEY);
       } finally {
         rmSync(configDir, { recursive: true, force: true });
         rmSync(codexHome, { recursive: true, force: true });
       }
 
-      const capture = new CaptureProbe();
-      const telemetry = new AnalyticsService();
-      telemetry.start({ settings: new SettingsService(makeDb()), client: capture });
-      try {
-        expect(JSON.stringify(capture.events)).not.toContain(HOST_KEY);
-      } finally {
-        await telemetry.shutdown();
-      }
-
       const log = existsSync(hostLog.file) ? readFileSync(hostLog.file, "utf8") : "";
       expect(log).not.toContain(HOST_KEY);
     } finally {
+      await telemetry.shutdown();
       clients.claude.close();
       clients.codex.close();
       server.stop();
