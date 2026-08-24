@@ -242,6 +242,13 @@ describe("host-owned WebSearch", () => {
     expect(normalized.unsupportedOperators).toEqual(["before", "cache"]);
   });
 
+  test("warns for unsupported operators attached to punctuation", () => {
+    const normalized = normalizeQuery("Engineer,before:2026");
+
+    expect(normalized.providerQuery).toBe("Engineer,before:2026");
+    expect(normalized.unsupportedOperators).toEqual(["before"]);
+  });
+
   test("filters provider results that violate a structured site restriction", async () => {
     const provider = new DeterministicWebSearchProvider({
       '"Forward Deployed Engineer"': [

@@ -548,28 +548,31 @@ function validateSiteHostname(value: string): void {
 function findUnsupportedOperators(query: string): string[] {
   const operators: string[] = [];
   let inQuotes = false;
-  let tokenStart = 0;
 
-  const inspect = (token: string) => {
-    const candidate = token.replace(/^[([{]+/, "");
-    const match = candidate.match(/^-?([a-z][a-z0-9_-]*):(?=\S)/i);
-    if (!match?.[1] || /^\w+:\/\//i.test(candidate)) return;
-    const operator = match[1].toLowerCase();
-    if (!SUPPORTED_OPERATORS.has(operator) && !operators.includes(operator)) {
-      operators.push(operator);
+  const inspect = (segment: string) => {
+    const pattern = /(?:^|[^a-z0-9_-])-?([a-z][a-z0-9_-]*):/gi;
+    for (const match of segment.matchAll(pattern)) {
+      const operator = match[1]?.toLowerCase();
+      if (!operator) continue;
+      const matchStart = match.index ?? 0;
+      const operatorStart = matchStart + match[0].lastIndexOf(operator);
+      if (/^[a-z][a-z0-9_-]*:\/\//i.test(segment.slice(operatorStart))) continue;
+      if (!SUPPORTED_OPERATORS.has(operator) && !operators.includes(operator)) {
+        operators.push(operator);
+      }
     }
   };
 
+  let segmentStart = 0;
   for (let index = 0; index <= query.length; index += 1) {
     const character = query[index];
     if (character === '"') {
+      if (!inQuotes) inspect(query.slice(segmentStart, index));
       inQuotes = !inQuotes;
+      segmentStart = index + 1;
       continue;
     }
-    if (index === query.length || (!inQuotes && /\s/.test(character ?? ""))) {
-      if (tokenStart < index) inspect(query.slice(tokenStart, index));
-      tokenStart = index + 1;
-    }
+    if (index === query.length && !inQuotes) inspect(query.slice(segmentStart, index));
   }
   return operators;
 }
