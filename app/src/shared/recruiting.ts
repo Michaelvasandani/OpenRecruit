@@ -252,6 +252,85 @@ export const OpportunitySummary = z.object({
 });
 export type OpportunitySummary = z.infer<typeof OpportunitySummary>;
 
+/** A normalized, safe question shared across Scouts for one subject. */
+export const InvestigationQuestionKey = z.string().min(1).max(2_000);
+export type InvestigationQuestionKey = z.infer<typeof InvestigationQuestionKey>;
+
+export const InvestigationStatus = z.enum(["open", "closed"]);
+export type InvestigationStatus = z.infer<typeof InvestigationStatus>;
+
+/** Reasons are intentionally finite so a rerun is reviewable rather than an
+ * opaque provider assertion. */
+export const InvestigationRerunReason = z.enum([
+  "evidence_changed",
+  "profile_changed",
+  "policy_changed",
+  "freshness_changed",
+  "explicit_request",
+]);
+export type InvestigationRerunReason = z.infer<typeof InvestigationRerunReason>;
+
+export const InvestigationAttemptOutcome = z.enum([
+  "in_progress",
+  "succeeded",
+  "unknown",
+  "conflicted",
+  "blocked",
+  "failed",
+  "cancelled",
+]);
+export type InvestigationAttemptOutcome = z.infer<typeof InvestigationAttemptOutcome>;
+
+/** Evidence considered by an Investigation is a safe reference and claim, not
+ * a provider transcript or raw capture. */
+export const InvestigationEvidence = z.object({
+  signalId: z.string().min(1),
+  claim: z.string().min(1).max(10_000),
+  kind: z.enum(["fact", "inference"]).default("fact"),
+  freshness: FitEvidenceFreshness.default("fresh"),
+});
+export type InvestigationEvidence = z.infer<typeof InvestigationEvidence>;
+
+export const InvestigationAttemptSummary = z.object({
+  id: z.string().min(1),
+  investigationId: z.string().min(1),
+  scoutId: z.string().min(1),
+  runId: z.string().nullable(),
+  questionSnapshot: z.string().min(1),
+  evidence: z.array(InvestigationEvidence),
+  conclusion: z.string().nullable(),
+  uncertainty: z.string().nullable(),
+  outcome: InvestigationAttemptOutcome,
+  rerunReason: InvestigationRerunReason.nullable(),
+  profileVersionId: z.string().nullable(),
+  strategySnapshot: z.string(),
+  policySnapshot: z.string(),
+  freshness: FitEvidenceFreshness,
+  supersedesAttemptId: z.string().nullable(),
+  createdAt: z.number().int(),
+  completedAt: z.number().int().nullable(),
+});
+export type InvestigationAttemptSummary = z.infer<typeof InvestigationAttemptSummary>;
+
+export const InvestigationSummary = z.object({
+  id: z.string().min(1),
+  leadId: z.string().nullable(),
+  opportunityId: z.string().nullable(),
+  questionKey: InvestigationQuestionKey,
+  questionSnapshot: z.string().min(1),
+  status: InvestigationStatus,
+  revision: z.number().int().nonnegative(),
+  latestAttempt: InvestigationAttemptSummary.nullable(),
+  attempts: z.array(InvestigationAttemptSummary),
+  conflicts: z.array(z.string()),
+  createdAt: z.number().int(),
+  updatedAt: z.number().int(),
+});
+export type InvestigationSummary = z.infer<typeof InvestigationSummary>;
+
+export const InvestigationAttemptDecision = z.enum(["started", "reused", "coalesced"]);
+export type InvestigationAttemptDecision = z.infer<typeof InvestigationAttemptDecision>;
+
 /**
  * A transparent, immutable evaluation. There is intentionally no score/rank
  * field: callers must order from these explainable conclusions and Freshness.
@@ -287,6 +366,7 @@ export const LeadContext = z.object({
   signals: z.array(SignalSummary),
   opportunities: z.array(OpportunitySummary).default([]),
   fitEvaluations: z.array(FitEvaluationSummary).default([]),
+  investigations: z.array(InvestigationSummary).default([]),
 });
 export type LeadContext = z.infer<typeof LeadContext>;
 

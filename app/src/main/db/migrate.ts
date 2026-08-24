@@ -34,7 +34,7 @@ export interface MigrationDb {
 }
 
 /** Bump on every schema change, with a matching entry in MIGRATIONS. */
-export const SCHEMA_VERSION = 11;
+export const SCHEMA_VERSION = 12;
 
 const MIGRATIONS: Record<number, (db: MigrationDb) => void> = {
   // v2 — headless turn limit: per-agent unattended-turn counter + on/off toggle.
@@ -140,6 +140,40 @@ const MIGRATIONS: Record<number, (db: MigrationDb) => void> = {
   // canonical Lead. Existing Leads are unmerged by default.
   11: (db) => {
     if (hasTable(db, "leads")) addColumnIfMissing(db, "leads", "merged_into", "TEXT");
+  },
+  // v12 — Investigation attempt lifecycle and safe rerun attribution. Existing
+  // attempt rows remain valid history; new nullable/default columns add context
+  // without rewriting their conclusions.
+  12: (db) => {
+    if (hasTable(db, "investigation_attempts")) {
+      addColumnIfMissing(db, "investigation_attempts", "run_id", "TEXT");
+      addColumnIfMissing(db, "investigation_attempts", "profile_version_id", "TEXT");
+      addColumnIfMissing(db, "investigation_attempts", "rerun_reason", "TEXT");
+      addColumnIfMissing(
+        db,
+        "investigation_attempts",
+        "strategy_snapshot",
+        "TEXT NOT NULL DEFAULT ''",
+      );
+      addColumnIfMissing(
+        db,
+        "investigation_attempts",
+        "policy_snapshot",
+        "TEXT NOT NULL DEFAULT ''",
+      );
+      addColumnIfMissing(
+        db,
+        "investigation_attempts",
+        "freshness",
+        "TEXT NOT NULL DEFAULT 'fresh'",
+      );
+      addColumnIfMissing(db, "investigation_attempts", "supersedes_attempt_id", "TEXT");
+      addColumnIfMissing(db, "investigation_attempts", "completed_at", "INTEGER");
+      db.exec(
+        "CREATE UNIQUE INDEX IF NOT EXISTS investigation_attempts_one_active " +
+          "ON investigation_attempts (investigation_id) WHERE outcome = 'in_progress'",
+      );
+    }
   },
 };
 

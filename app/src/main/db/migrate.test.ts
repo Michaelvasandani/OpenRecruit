@@ -326,4 +326,54 @@ describe("db migrations", () => {
       merged_into: null,
     });
   });
+
+  test("v12 adds Investigation Attempt lifecycle and safe context columns", () => {
+    const db = new Database(":memory:");
+    const m = wrap(db);
+    db.exec(`
+      CREATE TABLE investigation_attempts (
+        id TEXT PRIMARY KEY,
+        investigation_id TEXT NOT NULL,
+        scout_id TEXT NOT NULL,
+        question_snapshot TEXT NOT NULL,
+        evidence TEXT NOT NULL DEFAULT '[]',
+        conclusion TEXT,
+        uncertainty TEXT,
+        outcome TEXT NOT NULL,
+        created_at INTEGER NOT NULL
+      );
+      INSERT INTO investigation_attempts
+        (id, investigation_id, scout_id, question_snapshot, outcome, created_at)
+      VALUES ('attempt-1', 'investigation-1', 'scout-1', 'Question', 'succeeded', 1);
+      PRAGMA user_version = 11;
+    `);
+    db.exec(SCHEMA_DDL);
+    migrate(m, { fresh: false });
+
+    expect(columns(db, "investigation_attempts")).toEqual(
+      expect.arrayContaining([
+        "run_id",
+        "profile_version_id",
+        "rerun_reason",
+        "strategy_snapshot",
+        "policy_snapshot",
+        "freshness",
+        "supersedes_attempt_id",
+        "completed_at",
+      ]),
+    );
+    expect(
+      db
+        .query(
+          "SELECT outcome, strategy_snapshot, policy_snapshot, freshness FROM investigation_attempts",
+        )
+        .get(),
+    ).toEqual({
+      outcome: "succeeded",
+      strategy_snapshot: "",
+      policy_snapshot: "",
+      freshness: "fresh",
+    });
+    expect(userVersion(m)).toBe(SCHEMA_VERSION);
+  });
 });

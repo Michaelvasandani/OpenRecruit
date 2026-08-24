@@ -537,14 +537,27 @@ export const investigationAttempts = sqliteTable(
     scoutId: text("scout_id")
       .notNull()
       .references(() => scouts.id),
+    runId: text("run_id").references(() => scoutRuns.id),
+    profileVersionId: text("profile_version_id").references(() => profileVersions.id),
     questionSnapshot: text("question_snapshot").notNull(),
     evidence: text("evidence").notNull().default("[]"),
     conclusion: text("conclusion"),
     uncertainty: text("uncertainty"),
     outcome: text("outcome").notNull(),
+    rerunReason: text("rerun_reason"),
+    strategySnapshot: text("strategy_snapshot").notNull().default(""),
+    policySnapshot: text("policy_snapshot").notNull().default(""),
+    freshness: text("freshness").notNull().default("fresh"),
+    supersedesAttemptId: text("supersedes_attempt_id"),
+    completedAt: integer("completed_at"),
     createdAt: integer("created_at").notNull(),
   },
-  (t) => [index("investigation_attempts_subject").on(t.investigationId, t.createdAt)],
+  (t) => [
+    index("investigation_attempts_subject").on(t.investigationId, t.createdAt),
+    uniqueIndex("investigation_attempts_one_active")
+      .on(t.investigationId)
+      .where(sql`outcome = 'in_progress'`),
+  ],
 );
 
 export const revisitPlans = sqliteTable(

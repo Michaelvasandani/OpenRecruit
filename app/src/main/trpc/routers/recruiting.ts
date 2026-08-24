@@ -188,6 +188,59 @@ export const recruitingRouter = router({
     .input(z.object({ id: z.string().min(1) }))
     .query(({ ctx, input }) => ctx.recruiting.getLeadContext(input.id)),
 
+  investigations: publicProcedure
+    .input(z.object({ subjectId: z.string().min(1).optional() }).optional())
+    .query(({ ctx, input }) => ctx.recruiting.listInvestigations(input?.subjectId)),
+
+  investigation: publicProcedure
+    .input(z.object({ id: z.string().min(1) }))
+    .query(({ ctx, input }) => ctx.recruiting.getInvestigation(input.id)),
+
+  investigationAttempts: publicProcedure
+    .input(z.object({ investigationId: z.string().min(1) }))
+    .query(({ ctx, input }) => ctx.recruiting.listInvestigationAttempts(input.investigationId)),
+
+  investigationAttempt: publicProcedure
+    .input(z.object({ id: z.string().min(1) }))
+    .query(({ ctx, input }) => ctx.recruiting.getInvestigationAttempt(input.id)),
+
+  createInvestigation: publicProcedure
+    .input(
+      z.object({
+        leadId: z.string().min(1).optional(),
+        opportunityId: z.string().min(1).optional(),
+        question: z.string().trim().min(1).max(2_000),
+        idempotencyKey: z.string().trim().min(1).max(200),
+      }),
+    )
+    .mutation(({ ctx, input }) => command(() => ctx.recruiting.createInvestigation(input))),
+
+  startInvestigationAttempt: publicProcedure
+    .input(investigationAttemptInput())
+    .mutation(({ ctx, input }) => command(() => ctx.recruiting.startInvestigationAttempt(input))),
+
+  recordInvestigationAttempt: publicProcedure
+    .input(
+      investigationAttemptInput().extend({
+        outcome: investigationOutcome().exclude(["in_progress"]),
+      }),
+    )
+    .mutation(({ ctx, input }) => command(() => ctx.recruiting.recordInvestigationAttempt(input))),
+
+  completeInvestigationAttempt: publicProcedure
+    .input(
+      z.object({
+        attemptId: z.string().min(1),
+        outcome: investigationOutcome().exclude(["in_progress"]),
+        conclusion: z.string().max(20_000).nullable().optional(),
+        uncertainty: z.string().max(20_000).nullable().optional(),
+        idempotencyKey: z.string().trim().min(1).max(200),
+      }),
+    )
+    .mutation(({ ctx, input }) =>
+      command(() => ctx.recruiting.completeInvestigationAttempt(input)),
+    ),
+
   linkSignalToLead: publicProcedure
     .input(
       z.object({
@@ -491,6 +544,58 @@ function fitEvaluationInput() {
     unknowns: z.array(z.string().trim().min(1).max(1_000)).max(500).optional(),
     freshness: z.enum(["fresh", "stale"]).optional(),
     nextReconsiderationAt: z.number().int().nullable().optional(),
+    idempotencyKey: z.string().trim().min(1).max(200),
+  });
+}
+
+function investigationOutcome() {
+  return z.enum([
+    "in_progress",
+    "succeeded",
+    "unknown",
+    "conflicted",
+    "blocked",
+    "failed",
+    "cancelled",
+  ] as const);
+}
+
+function investigationAttemptInput() {
+  return z.object({
+    investigationId: z.string().min(1),
+    scoutId: z.string().min(1),
+    runId: z.string().min(1).nullable().optional(),
+    profileVersionId: z.string().min(1).nullable().optional(),
+    questionSnapshot: z.string().trim().min(1).max(2_000).optional(),
+    evidence: z
+      .array(
+        z.union([
+          z.string().min(1),
+          z.object({
+            signalId: z.string().min(1),
+            claim: z.string().trim().min(1).max(10_000),
+            kind: z.enum(["fact", "inference"]).optional(),
+            freshness: z.enum(["fresh", "stale"]).optional(),
+          }),
+        ]),
+      )
+      .max(1_000)
+      .optional(),
+    conclusion: z.string().max(20_000).nullable().optional(),
+    uncertainty: z.string().max(20_000).nullable().optional(),
+    outcome: investigationOutcome().optional(),
+    rerunReason: z
+      .enum([
+        "evidence_changed",
+        "profile_changed",
+        "policy_changed",
+        "freshness_changed",
+        "explicit_request",
+      ])
+      .optional(),
+    strategySnapshot: z.string().max(100_000).optional(),
+    policySnapshot: z.string().max(100_000).optional(),
+    freshness: z.enum(["fresh", "stale"]).optional(),
     idempotencyKey: z.string().trim().min(1).max(200),
   });
 }

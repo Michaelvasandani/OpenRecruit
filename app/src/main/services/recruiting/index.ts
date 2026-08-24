@@ -24,6 +24,13 @@ import {
   FitEvaluationApplication,
   type PromoteLeadCommand,
 } from "./fit";
+import {
+  type CompleteInvestigationAttemptCommand,
+  type CreateInvestigationCommand,
+  InvestigationApplication,
+  type RecordInvestigationAttemptCommand,
+  type StartInvestigationAttemptCommand,
+} from "./investigations";
 import type { ConfirmProfileCommand, ImportProfileCommand, UpdateDraftCommand } from "./profile";
 import { CandidateProfileApplication } from "./profile";
 import {
@@ -43,6 +50,13 @@ import {
 } from "./scout-runs";
 
 export {
+  InvestigationAttemptDecision,
+  InvestigationAttemptOutcome,
+  InvestigationAttemptSummary,
+  InvestigationEvidence,
+  InvestigationRerunReason,
+  InvestigationStatus,
+  InvestigationSummary,
   LeadConflict,
   LeadContext,
   LeadSummary,
@@ -69,6 +83,14 @@ export {
   type FitEvidenceInput,
   type PromoteLeadCommand,
 } from "./fit";
+export {
+  type CompleteInvestigationAttemptCommand,
+  type CreateInvestigationCommand,
+  InvestigationApplication,
+  normalizeQuestionKey,
+  type RecordInvestigationAttemptCommand,
+  type StartInvestigationAttemptCommand,
+} from "./investigations";
 export type {
   ConfirmProfileCommand,
   GitHubFactInput,
@@ -173,6 +195,7 @@ export class RecruitingApplication {
   private readonly profileApplication: CandidateProfileApplication;
   private readonly scoutRuns: ScoutRunApplication;
   private readonly fitEvaluations: FitEvaluationApplication;
+  private readonly investigations: InvestigationApplication;
 
   constructor(
     private readonly db: Db,
@@ -181,6 +204,7 @@ export class RecruitingApplication {
     this.profileApplication = new CandidateProfileApplication(db, { now });
     this.scoutRuns = new ScoutRunApplication(db, now);
     this.fitEvaluations = new FitEvaluationApplication(db, now);
+    this.investigations = new InvestigationApplication(db, now);
   }
 
   listProfiles() {
@@ -306,6 +330,7 @@ export class RecruitingApplication {
     return {
       ...context,
       opportunities,
+      investigations: this.investigations.investigationsForLead(id),
       fitEvaluations: [
         ...this.fitEvaluations.listFitEvaluations(id),
         ...opportunities.flatMap((opportunity) =>
@@ -313,6 +338,50 @@ export class RecruitingApplication {
         ),
       ],
     };
+  }
+
+  createInvestigation(command: CreateInvestigationCommand) {
+    return this.investigations.createInvestigation(command);
+  }
+
+  ensureInvestigation(command: CreateInvestigationCommand) {
+    return this.investigations.ensureInvestigation(command);
+  }
+
+  getOrCreateInvestigation(command: CreateInvestigationCommand) {
+    return this.investigations.getOrCreateInvestigation(command);
+  }
+
+  listInvestigations(subjectId?: string) {
+    return this.investigations.listInvestigations(subjectId);
+  }
+
+  getInvestigation(id: string) {
+    return this.investigations.getInvestigation(id);
+  }
+
+  listInvestigationAttempts(investigationId: string) {
+    return this.investigations.listInvestigationAttempts(investigationId);
+  }
+
+  getInvestigationAttempt(id: string) {
+    return this.investigations.getInvestigationAttempt(id);
+  }
+
+  startInvestigationAttempt(command: StartInvestigationAttemptCommand) {
+    return this.investigations.startInvestigationAttempt(command);
+  }
+
+  requestInvestigationAttempt(command: StartInvestigationAttemptCommand) {
+    return this.investigations.startInvestigationAttempt(command);
+  }
+
+  recordInvestigationAttempt(command: RecordInvestigationAttemptCommand) {
+    return this.investigations.recordInvestigationAttempt(command);
+  }
+
+  completeInvestigationAttempt(command: CompleteInvestigationAttemptCommand) {
+    return this.investigations.completeInvestigationAttempt(command);
   }
 
   createFitEvaluation(command: CreateFitEvaluationCommand): FitEvaluationSummary {

@@ -348,14 +348,24 @@ export const SCHEMA_DDL = `
       id TEXT PRIMARY KEY,
       investigation_id TEXT NOT NULL REFERENCES investigations(id),
       scout_id TEXT NOT NULL REFERENCES scouts(id),
+      run_id TEXT REFERENCES scout_runs(id),
+      profile_version_id TEXT REFERENCES profile_versions(id),
       question_snapshot TEXT NOT NULL,
       evidence TEXT NOT NULL DEFAULT '[]',
       conclusion TEXT,
       uncertainty TEXT,
       outcome TEXT NOT NULL,
+      rerun_reason TEXT,
+      strategy_snapshot TEXT NOT NULL DEFAULT '',
+      policy_snapshot TEXT NOT NULL DEFAULT '',
+      freshness TEXT NOT NULL DEFAULT 'fresh',
+      supersedes_attempt_id TEXT,
+      completed_at INTEGER,
       created_at INTEGER NOT NULL
     );
     CREATE INDEX IF NOT EXISTS investigation_attempts_subject ON investigation_attempts (investigation_id, created_at);
+    CREATE UNIQUE INDEX IF NOT EXISTS investigation_attempts_one_active
+      ON investigation_attempts (investigation_id) WHERE outcome = 'in_progress';
     CREATE TABLE IF NOT EXISTS revisit_plans (
       id TEXT PRIMARY KEY,
       scout_id TEXT NOT NULL REFERENCES scouts(id),
