@@ -129,6 +129,41 @@ describe("Recruiting Revisit Plans and durable Run requests", () => {
     expect(app.listRunRequests(scout.id)).toHaveLength(1);
   });
 
+  test("persists Candidate requests and explicit reconsiderations as distinct durable triggers", () => {
+    const { app, scout } = fixture();
+    const candidate = app.requestCandidateRun({
+      scoutId: scout.id,
+      reason: "Candidate requested a fresh search",
+      idempotencyKey: "candidate-request",
+    });
+    const explicit = app.requestExplicitReconsideration({
+      scoutId: scout.id,
+      reason: "Reconsider the stale conclusion",
+      idempotencyKey: "explicit-reconsideration",
+    });
+    expect(candidate.value.trigger).toBe("candidate_request");
+    expect(explicit.value.trigger).toBe("explicit_request");
+    expect(app.listRunRequests(scout.id)).toHaveLength(2);
+  });
+
+  test("does not enqueue the same dispatched Run wake twice", () => {
+    const { app, scout } = fixture();
+    const wakes: string[] = [];
+    app.setWake({
+      enqueue: (_agentId, prompt) => wakes.push(prompt),
+      wouldDropWake: () => false,
+      awaitPoll: async () => null,
+      onInteractiveUp: () => {},
+      onInteractiveDown: () => {},
+      stop: () => false,
+      stopAll: () => {},
+    });
+    app.requestScheduledRefresh({ scoutId: scout.id, idempotencyKey: "idempotent-wake" });
+    app.processRunRequests();
+    app.processRunRequests();
+    expect(wakes).toHaveLength(1);
+  });
+
   test("records committed checkpoints and exposes Run Center projections", () => {
     const { app, scout, source } = fixture();
     const requested = app.requestScheduledRefresh({
