@@ -83,18 +83,12 @@ export type ErrorSubsystem = z.infer<typeof ErrorSubsystem>;
 export const ErrorSource = z.enum(["uncaught_exception", "unhandled_rejection", "caught"]);
 export type ErrorSource = z.infer<typeof ErrorSource>;
 
-/** Keys of the global AppSettings (kept in sync manually — the enum is the guard). */
+/** Active keys of the global AppSettings (kept in sync manually — the enum is the guard). */
 const settingKey = z.enum([
-  "approvalTimeoutSec",
-  "pollIntervalFocusedSec",
-  "pollIntervalBlurredSec",
-  "defaultApprovalMode",
   "onboardingComplete",
   "telemetryEnabled",
   "maxHeadlessTurns",
   "notifyWakes",
-  "notifyOrders",
-  "notifyApprovals",
   "notifyRestricted",
   "notifyUpdates",
   "showInMenuBar",

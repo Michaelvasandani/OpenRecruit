@@ -150,20 +150,37 @@ describe("AnalyticsService", () => {
     expect(fake.events).toHaveLength(3);
   });
 
-  test("a non-telemetry setting change emits setting_changed (value only for enums/bools)", () => {
+  test("a non-telemetry setting change emits setting_changed", () => {
     const settings = new SettingsService(memDb());
     const fake = new FakeClient();
     makeService(settings, fake);
 
-    settings.update({ defaultApprovalMode: "auto" });
-    settings.update({ approvalTimeoutSec: 120 });
+    settings.update({ maxHeadlessTurns: 120 });
 
     const changes = fake.events.filter((e) => e.event === "setting_changed");
-    expect(changes).toHaveLength(2);
-    expect(changes[0].properties).toMatchObject({ key: "defaultApprovalMode", value: "auto" });
+    expect(changes).toHaveLength(1);
     // Numeric settings carry no value (only the key).
-    expect(changes[1].properties?.key).toBe("approvalTimeoutSec");
-    expect(changes[1].properties).not.toHaveProperty("value");
+    expect(changes[0].properties?.key).toBe("maxHeadlessTurns");
+    expect(changes[0].properties).not.toHaveProperty("value");
+  });
+
+  test("legacy broker/order setting keys never produce analytics", () => {
+    const settings = new SettingsService(memDb());
+    const fake = new FakeClient();
+    makeService(settings, fake);
+
+    expect(() =>
+      settings.update({
+        approvalTimeoutSec: 120,
+        pollIntervalFocusedSec: 3,
+        pollIntervalBlurredSec: 8,
+        defaultApprovalMode: "auto",
+        notifyOrders: false,
+        notifyApprovals: false,
+      } as never),
+    ).toThrow();
+
+    expect(fake.events.filter((e) => e.event === "setting_changed")).toHaveLength(0);
   });
 
   test("trackError sends only the class name + frames — never the message", () => {

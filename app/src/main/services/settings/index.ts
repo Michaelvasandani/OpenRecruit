@@ -1,18 +1,12 @@
-import { ApprovalMode } from "@shared/agent";
 import { type AppSettings, DEFAULT_SETTINGS, SettingsUpdate } from "@shared/settings";
 import { eq } from "drizzle-orm";
 import type { Db } from "../../db/client";
 import { settings as settingsTable } from "../../db/schema";
 import { bus } from "../event-bus";
 
-/** kv keys backing each AppSettings field. The inherited approval-related keys remain
- * readable for old settings rows, even though the recruiting host no longer consumes
- * them on an active path. */
+/** kv keys backing each active AppSettings field. Legacy settings rows are deliberately
+ * left untouched so a later migration can recover them without this API consuming them. */
 const KEYS: Record<keyof AppSettings, string> = {
-  approvalTimeoutSec: "approval_timeout_sec",
-  pollIntervalFocusedSec: "poll_interval_focused_sec",
-  pollIntervalBlurredSec: "poll_interval_blurred_sec",
-  defaultApprovalMode: "default_approval_mode",
   onboardingComplete: "onboarding_complete",
   telemetryEnabled: "telemetry_enabled",
   headlessTurnLimitEnabled: "headless_turn_limit_enabled",
@@ -20,8 +14,6 @@ const KEYS: Record<keyof AppSettings, string> = {
   maxHeadlessRunMinutes: "max_headless_run_minutes",
   backgroundAllowApiKey: "background_allow_api_key",
   notifyWakes: "notify_wakes",
-  notifyOrders: "notify_orders",
-  notifyApprovals: "notify_approvals",
   notifyRestricted: "notify_restricted",
   notifyUpdates: "notify_updates",
   notifyMutedAgents: "notify_muted_agents",
@@ -39,22 +31,6 @@ export class SettingsService {
 
   get(): AppSettings {
     return {
-      approvalTimeoutSec: this.readNumber(
-        KEYS.approvalTimeoutSec,
-        DEFAULT_SETTINGS.approvalTimeoutSec,
-      ),
-      pollIntervalFocusedSec: this.readNumber(
-        KEYS.pollIntervalFocusedSec,
-        DEFAULT_SETTINGS.pollIntervalFocusedSec,
-      ),
-      pollIntervalBlurredSec: this.readNumber(
-        KEYS.pollIntervalBlurredSec,
-        DEFAULT_SETTINGS.pollIntervalBlurredSec,
-      ),
-      defaultApprovalMode: this.readApprovalMode(
-        KEYS.defaultApprovalMode,
-        DEFAULT_SETTINGS.defaultApprovalMode,
-      ),
       onboardingComplete: this.readBool(
         KEYS.onboardingComplete,
         DEFAULT_SETTINGS.onboardingComplete,
@@ -74,8 +50,6 @@ export class SettingsService {
         DEFAULT_SETTINGS.backgroundAllowApiKey,
       ),
       notifyWakes: this.readBool(KEYS.notifyWakes, DEFAULT_SETTINGS.notifyWakes),
-      notifyOrders: this.readBool(KEYS.notifyOrders, DEFAULT_SETTINGS.notifyOrders),
-      notifyApprovals: this.readBool(KEYS.notifyApprovals, DEFAULT_SETTINGS.notifyApprovals),
       notifyRestricted: this.readBool(KEYS.notifyRestricted, DEFAULT_SETTINGS.notifyRestricted),
       notifyUpdates: this.readBool(KEYS.notifyUpdates, DEFAULT_SETTINGS.notifyUpdates),
       notifyMutedAgents: this.readStringArray(
@@ -120,14 +94,6 @@ export class SettingsService {
     this.write(key, value);
   }
 
-  // ---- convenience for services (ms where the consumer wants ms) ----
-  get pollIntervalFocusedMs(): number {
-    return this.get().pollIntervalFocusedSec * 1000;
-  }
-  get pollIntervalBlurredMs(): number {
-    return this.get().pollIntervalBlurredSec * 1000;
-  }
-
   // ---- internals ----
 
   private readRaw(key: string): string | undefined {
@@ -151,11 +117,6 @@ export class SettingsService {
     const v = this.readRaw(key);
     if (v === undefined) return fallback;
     return v === "1" || v === "true";
-  }
-
-  private readApprovalMode(key: string, fallback: AppSettings["defaultApprovalMode"]) {
-    const parsed = ApprovalMode.safeParse(this.readRaw(key));
-    return parsed.success ? parsed.data : fallback;
   }
 
   private readStringArray(key: string, fallback: string[]): string[] {

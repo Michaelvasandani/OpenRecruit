@@ -1,6 +1,6 @@
 import { Database } from "bun:sqlite";
 import { describe, expect, test } from "bun:test";
-import { DEFAULT_SETTINGS } from "@shared/settings";
+import { AppSettings, DEFAULT_SETTINGS, SettingsUpdate } from "@shared/settings";
 import { drizzle } from "drizzle-orm/bun-sqlite";
 import type { Db } from "../../db/client";
 import * as schema from "../../db/schema";
@@ -20,31 +20,67 @@ describe("SettingsService", () => {
     expect(s.get()).toEqual(DEFAULT_SETTINGS);
   });
 
+  test("does not expose legacy broker/order settings or aliases", () => {
+    const db = memDb();
+    db.insert(schema.settings)
+      .values([
+        { key: "approval_timeout_sec", value: "120" },
+        { key: "poll_interval_focused_sec", value: "3" },
+        { key: "poll_interval_blurred_sec", value: "8" },
+        { key: "default_approval_mode", value: "auto" },
+        { key: "notify_orders", value: "0" },
+        { key: "notify_approvals", value: "0" },
+      ])
+      .run();
+
+    const s = new SettingsService(db);
+    const active = s.get();
+    const legacyFields = [
+      "approvalTimeoutSec",
+      "pollIntervalFocusedSec",
+      "pollIntervalBlurredSec",
+      "defaultApprovalMode",
+      "notifyOrders",
+      "notifyApprovals",
+    ];
+
+    for (const field of legacyFields) {
+      expect(active).not.toHaveProperty(field);
+      expect(AppSettings.shape).not.toHaveProperty(field);
+      expect(SettingsUpdate.shape).not.toHaveProperty(field);
+      expect(SettingsUpdate.safeParse({ [field]: true }).success).toBe(false);
+    }
+
+    // The expand/contract boundary is non-destructive: legacy rows remain recoverable
+    // even though no active settings API reads or writes them.
+    expect(db.select().from(schema.settings).all()).toEqual(
+      expect.arrayContaining([
+        { key: "approval_timeout_sec", value: "120" },
+        { key: "default_approval_mode", value: "auto" },
+        { key: "notify_orders", value: "0" },
+      ]),
+    );
+  });
+
   test("update persists and round-trips, coercing booleans/numbers", () => {
     const s = new SettingsService(memDb());
     const next = s.update({
-      approvalTimeoutSec: 120,
-      pollIntervalFocusedSec: 3,
-      defaultApprovalMode: "auto",
       onboardingComplete: true,
+      maxHeadlessTurns: 24,
     });
-    expect(next.approvalTimeoutSec).toBe(120);
-    expect(next.pollIntervalFocusedSec).toBe(3);
-    expect(next.defaultApprovalMode).toBe("auto");
     expect(next.onboardingComplete).toBe(true);
-    // Unset fields keep their defaults.
-    expect(next.pollIntervalBlurredSec).toBe(DEFAULT_SETTINGS.pollIntervalBlurredSec);
+    expect(next.maxHeadlessTurns).toBe(24);
     // A fresh service over the same store reads the same values.
     expect(s.get()).toEqual(next);
   });
 
   test("partial update leaves other keys untouched", () => {
     const s = new SettingsService(memDb());
-    s.update({ approvalTimeoutSec: 600 });
-    s.update({ defaultApprovalMode: "auto" });
+    s.update({ maxHeadlessTurns: 600 });
+    s.update({ telemetryEnabled: false });
     const v = s.get();
-    expect(v.approvalTimeoutSec).toBe(600);
-    expect(v.defaultApprovalMode).toBe("auto");
+    expect(v.maxHeadlessTurns).toBe(600);
+    expect(v.telemetryEnabled).toBe(false);
   });
 
   test("telemetryEnabled defaults on and round-trips off", () => {
@@ -61,17 +97,9 @@ describe("SettingsService", () => {
     expect(s.get().showInMenuBar).toBe(false);
   });
 
-  test("ms convenience getters convert seconds", () => {
-    const s = new SettingsService(memDb());
-    s.update({ pollIntervalFocusedSec: 7, pollIntervalBlurredSec: 12 });
-    expect(s.pollIntervalFocusedMs).toBe(7000);
-    expect(s.pollIntervalBlurredMs).toBe(12000);
-  });
-
   test("rejects out-of-bounds values", () => {
     const s = new SettingsService(memDb());
-    expect(() => s.update({ approvalTimeoutSec: 5 })).toThrow();
-    expect(() => s.update({ pollIntervalFocusedSec: 0 })).toThrow();
+    expect(() => s.update({ maxHeadlessTurns: 0 })).toThrow();
   });
 
   test("getOrCreate generates once then reuses (stable token across restarts)", () => {

@@ -32,15 +32,9 @@ export interface CaptureClient {
 
 /** Non-telemetry AppSettings keys we surface as `setting_changed`. */
 const REPORTABLE_SETTING_KEYS = [
-  "approvalTimeoutSec",
-  "pollIntervalFocusedSec",
-  "pollIntervalBlurredSec",
-  "defaultApprovalMode",
   "onboardingComplete",
   "maxHeadlessTurns",
   "notifyWakes",
-  "notifyOrders",
-  "notifyApprovals",
   "notifyRestricted",
   "notifyUpdates",
   "showInMenuBar",
@@ -233,10 +227,10 @@ export class AnalyticsService {
     for (const key of REPORTABLE_SETTING_KEYS) {
       if (prev[key] === next[key]) continue;
       const value = next[key];
-      if (typeof value === "boolean" || key === "defaultApprovalMode") {
+      if (typeof value === "boolean") {
         this.track("setting_changed", {
           key,
-          value: value as boolean | AppSettings["defaultApprovalMode"],
+          value,
         });
       } else {
         this.track("setting_changed", { key });
