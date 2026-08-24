@@ -6,6 +6,7 @@ export type AppView = "agents" | "scheduled" | "settings" | "profiles" | "runs";
 
 interface UIState {
   selectedAgentId: string | null;
+  selectedScoutId: string | null;
   rightTab: RightTab;
   view: AppView;
   /** Whether the New Agent configuration dialog is open. */
@@ -13,6 +14,7 @@ interface UIState {
   /** Hide dollar balances in the Portfolio pane (masked as ****). Session-only. */
   balancesHidden: boolean;
   select: (id: string | null) => void;
+  selectScout: (id: string | null) => void;
   setRightTab: (tab: RightTab) => void;
   setView: (view: AppView) => void;
   openNewAgent: () => void;
@@ -22,11 +24,13 @@ interface UIState {
 
 export const useUIStore = create<UIState>((set) => ({
   selectedAgentId: null,
+  selectedScoutId: null,
   rightTab: "portfolio",
   view: "agents",
   newAgentOpen: false,
   balancesHidden: false,
   select: (id) => set({ selectedAgentId: id }),
+  selectScout: (id) => set({ selectedScoutId: id }),
   setRightTab: (tab) => set({ rightTab: tab }),
   setView: (view) => set({ view }),
   openNewAgent: () => set({ newAgentOpen: true }),

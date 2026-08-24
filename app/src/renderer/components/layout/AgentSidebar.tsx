@@ -2,7 +2,6 @@ import type { Agent } from "@shared/agent";
 import { CalendarClock, FileUser, Loader2, PlayCircle, Plus, Settings, X } from "lucide-react";
 import { type CSSProperties, useEffect, useState } from "react";
 import { useAgents } from "../../hooks/useAgents";
-import { useScouts } from "../../hooks/useScouts";
 import { trpc } from "../../lib/trpc";
 import { cn } from "../../lib/utils";
 import { useConnectionStore } from "../../stores/connection";
@@ -14,10 +13,13 @@ import { UpdateButton } from "./UpdateButton";
 
 export function AgentSidebar() {
   const agents = useAgents();
-  const scouts = useScouts();
-  const runCenters = trpc.recruiting.scoutRunCenters.useQuery();
+  const reviewSidebar = trpc.recruiting.review.sidebar.useQuery();
+  const scouts = reviewSidebar.data?.scouts ?? [];
+  const utils = trpc.useUtils();
   const selectedId = useUIStore((s) => s.selectedAgentId);
+  const selectedScoutId = useUIStore((s) => s.selectedScoutId);
   const select = useUIStore((s) => s.select);
+  const selectScout = useUIStore((s) => s.selectScout);
   const view = useUIStore((s) => s.view);
   const setView = useUIStore((s) => s.setView);
   const openNewAgent = useUIStore((s) => s.openNewAgent);
@@ -25,6 +27,14 @@ export function AgentSidebar() {
   const [pendingDelete, setPendingDelete] = useState<Agent | null>(null);
 
   const archiveAgent = trpc.agents.archive.useMutation();
+
+  trpc.recruiting.onChanged.useSubscription(undefined, {
+    onData: (event) => {
+      if (event.reason === "resync" || event.kind) {
+        void utils.recruiting.review.sidebar.invalidate();
+      }
+    },
+  });
 
   // Selecting an agent always returns to the agent workspace from Settings.
   const openAgent = (id: string) => {
@@ -93,24 +103,72 @@ export function AgentSidebar() {
         </span>
       </div>
       <div className="px-2 pb-2">
-        {scouts.length === 0 && (
+        {!backendConnected && reviewSidebar.data && (
+          <p className="mb-1 rounded-md border border-warning/30 bg-warning/10 px-2 py-1 text-[10px] text-warning">
+            Scout summaries are stale while reconnecting.
+          </p>
+        )}
+        {reviewSidebar.isLoading && (
+          <div className="flex items-center gap-2 px-2 py-2 text-xs text-muted-foreground">
+            <Loader2 className="size-3.5 animate-spin" /> Loading Scouts…
+          </div>
+        )}
+        {reviewSidebar.error && !reviewSidebar.data && (
+          <div className="rounded-md border border-destructive/30 px-2 py-2 text-xs text-destructive">
+            Scout sidebar unavailable. Select Run Center to retry.
+          </div>
+        )}
+        {!reviewSidebar.isLoading && !reviewSidebar.error && scouts.length === 0 && (
           <p className="px-2 py-1 text-sm text-muted-foreground">No Scouts yet.</p>
         )}
-        {scouts.map((scout) => (
-          <div
-            key={scout.id}
-            className="flex items-center gap-2 rounded-md px-2 py-1.5 text-sm text-sidebar-foreground"
-            title={scout.instructionPath}
+        {scouts.map((entry) => (
+          <button
+            type="button"
+            key={entry.scout.id}
+            onClick={() => {
+              selectScout(entry.scout.id);
+              setView("runs");
+            }}
+            className={cn(
+              "flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-sm text-sidebar-foreground hover:bg-sidebar-accent",
+              view === "runs" &&
+                selectedScoutId === entry.scout.id &&
+                "bg-sidebar-accent font-medium",
+            )}
+            title={entry.scout.instructionPath}
           >
-            <span className="size-2 rounded-full bg-emerald-500" aria-hidden="true" />
-            <span className="min-w-0 flex-1 truncate">{scout.name}</span>
-            <span className="text-[10px] uppercase text-muted-foreground">
-              {runCenters.data?.find((center) => center.scoutId === scout.id)?.dueRevisitCount
-                ? `${runCenters.data.find((center) => center.scoutId === scout.id)?.dueRevisitCount} due`
-                : scout.harness}
+            <span
+              className={cn(
+                "size-2 rounded-full",
+                entry.activeRun ? "bg-amber-500" : "bg-emerald-500",
+              )}
+              aria-hidden="true"
+            />
+            <span className="min-w-0 flex-1 truncate">
+              <span className="block truncate">{entry.scout.name}</span>
+              <span className="block truncate text-[10px] text-muted-foreground">
+                {entry.activeRun?.status ?? entry.latestRun?.status ?? "No Run"} · last{" "}
+                {entry.lastRunAt ? new Date(entry.lastRunAt).toLocaleDateString() : "—"} · next{" "}
+                {entry.nextRunAt ? new Date(entry.nextRunAt).toLocaleDateString() : "manual"}
+              </span>
             </span>
-          </div>
+            <span className="text-[10px] uppercase text-muted-foreground">
+              {entry.freshLeadCount > 0 ? `${entry.freshLeadCount} fresh` : entry.scout.harness}
+              <span className="block normal-case">
+                src {entry.sourceReadiness.ready}/{entry.sourceReadiness.total}
+              </span>
+            </span>
+            {entry.dueRevisitCount > 0 && (
+              <span className="text-[10px] text-warning">{entry.dueRevisitCount} due</span>
+            )}
+          </button>
         ))}
+        {reviewSidebar.data && reviewSidebar.data.sourceReadiness.total > 0 && (
+          <p className="px-2 pt-1 text-[10px] text-muted-foreground">
+            Sources ready {reviewSidebar.data.sourceReadiness.ready}/
+            {reviewSidebar.data.sourceReadiness.total}
+          </p>
+        )}
       </div>
 
       <div className="px-2 pb-2">

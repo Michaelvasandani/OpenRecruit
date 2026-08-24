@@ -3,8 +3,22 @@ import {
   type FitEvaluationSummary,
   type OpportunitySummary,
   type RecruitingInvalidation,
+  type ReviewLeadPanelProjection,
+  ReviewLeadPanelProjection as ReviewLeadPanelProjectionSchema,
+  type ReviewScoutRunCenterProjection,
+  ReviewScoutRunCenterProjection as ReviewScoutRunCenterProjectionSchema,
+  type ReviewSidebarProjection,
+  ReviewSidebarProjection as ReviewSidebarProjectionSchema,
   ScoutHarness,
+  type ScoutRunActivity,
+  ScoutRunActivity as ScoutRunActivitySchema,
+  type ScoutRunCheckpointSummary,
+  type ScoutRunSummary,
   type ScoutSummary,
+  type SignalSummary,
+  type SourceAttemptSummary,
+  type SourceReadinessAggregate,
+  type SourceSummary,
 } from "@shared/recruiting";
 import { and, asc, eq, inArray, sql } from "drizzle-orm";
 import type { Db } from "../../db/client";
@@ -646,6 +660,153 @@ export class RecruitingApplication {
     return this.revisitPlans.listScoutRunCenters();
   }
 
+  /**
+   * Candidate-facing Variant B sidebar projection. The projection deliberately
+   * joins Scout, Run, Lead, Revisit Plan, and Source read models here so the
+   * renderer never has to synthesize operational authority from several
+   * independently fetched tables.
+   */
+  reviewSidebar(): ReviewSidebarProjection {
+    const generatedAt = this.now();
+    const sources = this.listSources();
+    const scouts = this.listScouts().map((scout) => {
+      const center = this.getScoutRunCenter(scout.id);
+      const sourceRows = sources.filter((source) => scout.sourceIds.includes(source.id));
+      return {
+        scout,
+        activeRun: center.activeRunId === null ? null : this.getScoutRun(center.activeRunId),
+        latestRun: center.lastRun,
+        lastRunAt: center.lastRun?.completedAt ?? center.lastRun?.createdAt ?? null,
+        nextRunAt: center.nextRunAt,
+        freshLeadCount: this.freshLeadsForScout(scout.id, generatedAt).length,
+        dueRevisitCount: center.dueRevisitCount,
+        sourceReadiness: sourceReadinessAggregate(sourceRows),
+      };
+    });
+    return ReviewSidebarProjectionSchema.parse({
+      revision: this.revision(),
+      generatedAt,
+      scouts,
+      sourceReadiness: sourceReadinessAggregate(sources),
+    });
+  }
+
+  getReviewSidebar(): ReviewSidebarProjection {
+    return this.reviewSidebar();
+  }
+
+  /**
+   * One authoritative Run Center snapshot. Activity is reconstructed from
+   * normalized committed records, which gives the renderer a useful timeline
+   * after a reconnect without ever exposing provider output or transcripts.
+   */
+  reviewScoutRunCenter(scoutId: string): ReviewScoutRunCenterProjection | null {
+    const scout = this.getScout(scoutId);
+    if (!scout) return null;
+    const generatedAt = this.now();
+    const center = this.getScoutRunCenter(scoutId);
+    const recentRuns = this.listScoutRuns(scoutId).slice(0, 20);
+    const sourceAttempts = recentRuns.flatMap((run) => this.listSourceAttempts(run.id));
+    const signals = recentRuns.flatMap((run) => this.listSignals({ runId: run.id }));
+    const signalIds = new Set(signals.map((signal) => signal.id));
+    const freshLeads = this.freshLeadsForScout(scoutId, generatedAt).filter((lead) =>
+      lead.signalIds.some((signalId) => signalIds.has(signalId)),
+    );
+    const checkpoints = recentRuns.flatMap((run) => this.listScoutRunCheckpoints(run.id));
+    const activeRun = center.activeRunId ? this.getScoutRun(center.activeRunId) : null;
+    const latestRun = center.lastRun;
+    const activity = buildRunActivity({
+      recentRuns,
+      sourceAttempts,
+      signals,
+      checkpoints,
+      leads: freshLeads,
+    });
+    return ReviewScoutRunCenterProjectionSchema.parse({
+      revision: this.revision(),
+      generatedAt,
+      scoutId,
+      scout,
+      activeRun,
+      latestRun,
+      lastRunAt: latestRun?.completedAt ?? latestRun?.createdAt ?? null,
+      nextRunAt: center.nextRunAt,
+      dueRevisitCount: center.dueRevisitCount,
+      pendingRequestCount: center.pendingRequestCount,
+      activity,
+      signals,
+      sourceAttempts,
+      freshLeads,
+      checkpoints,
+      recentRuns,
+      sources: this.listSources().filter((source) => scout.sourceIds.includes(source.id)),
+    });
+  }
+
+  getReviewScoutRunCenter(scoutId: string): ReviewScoutRunCenterProjection | null {
+    return this.reviewScoutRunCenter(scoutId);
+  }
+
+  /**
+   * The Lead context projection keeps the canonical Lead as the parent while
+   * joining related Opportunity, Investigation, Fit, Decision, Revisit, and
+   * Source read models. All labels remain derived in the renderer.
+   */
+  reviewLeadPanel(id: string): ReviewLeadPanelProjection | null {
+    const generatedAt = this.now();
+    const context = this.getLeadContext(id);
+    if (!context) return null;
+    const opportunityIds = new Set(context.opportunities.map((opportunity) => opportunity.id));
+    const investigationIds = new Set(
+      context.investigations.map((investigation) => investigation.id),
+    );
+    const revisitPlans = this.listRevisitPlans().filter(
+      (plan) =>
+        plan.leadId === id ||
+        (plan.opportunityId !== null && opportunityIds.has(plan.opportunityId)) ||
+        (plan.investigationId !== null && investigationIds.has(plan.investigationId)),
+    );
+    const sourceReadiness = this.listSources().filter((source) =>
+      context.lead.sourceIds.includes(source.id),
+    );
+    const signalCounts = new Map<string, number>();
+    for (const signal of context.signals) {
+      for (const attribution of signal.attributions) {
+        signalCounts.set(attribution.scoutId, (signalCounts.get(attribution.scoutId) ?? 0) + 1);
+      }
+    }
+    const attributions = context.lead.scoutIds.map((scoutId) => ({
+      scoutId,
+      scoutName: this.getScout(scoutId)?.name ?? scoutId,
+      signalCount: signalCounts.get(scoutId) ?? 0,
+    }));
+    return ReviewLeadPanelProjectionSchema.parse({
+      revision: this.revision(),
+      generatedAt,
+      lead: context.lead,
+      attributions,
+      signals: context.signals,
+      opportunities: context.opportunities,
+      fitEvaluations: context.fitEvaluations,
+      investigations: context.investigations,
+      candidateDecisions: context.candidateDecisions,
+      decisionState: context.decisionState,
+      revisitPlans,
+      sourceReadiness,
+    });
+  }
+
+  getReviewLeadPanel(id: string): ReviewLeadPanelProjection | null {
+    return this.reviewLeadPanel(id);
+  }
+
+  private freshLeadsForScout(scoutId: string, at = this.now()) {
+    const cutoff = at - FRESH_LEAD_WINDOW_MS;
+    return this.listLeads().filter(
+      (lead) => lead.scoutIds.includes(scoutId) && lead.updatedAt >= cutoff,
+    );
+  }
+
   listScouts(): ScoutSummary[] {
     return this.db
       .select()
@@ -919,6 +1080,137 @@ export class RecruitingApplication {
   revision(): number {
     return currentRevision(this.db);
   }
+}
+
+const FRESH_LEAD_WINDOW_MS = 7 * 24 * 60 * 60 * 1_000;
+
+function sourceReadinessAggregate(sources: SourceSummary[]): SourceReadinessAggregate {
+  const counts: Record<string, number> = {};
+  for (const source of sources) counts[source.readiness] = (counts[source.readiness] ?? 0) + 1;
+  const ready = counts.ready ?? 0;
+  return {
+    total: sources.length,
+    ready,
+    needsAttention: sources.length - ready,
+    counts,
+  };
+}
+
+function buildRunActivity(input: {
+  recentRuns: ScoutRunSummary[];
+  sourceAttempts: SourceAttemptSummary[];
+  signals: SignalSummary[];
+  checkpoints: ScoutRunCheckpointSummary[];
+  leads: ReturnType<RecruitingApplication["listLeads"]>;
+}): ScoutRunActivity[] {
+  const items: ScoutRunActivity[] = [];
+  for (const run of input.recentRuns) {
+    items.push(
+      ScoutRunActivitySchema.parse({
+        id: `${run.id}:created`,
+        runId: run.id,
+        kind: "run_created",
+        phase: run.phase,
+        at: run.createdAt,
+        sourceId: null,
+        sourceAttemptId: null,
+        signalId: null,
+        leadId: null,
+        outcome: null,
+        message: "Scout Run created with bounded inputs",
+      }),
+    );
+    if (run.status !== "queued") {
+      items.push(
+        ScoutRunActivitySchema.parse({
+          id: `${run.id}:status:${run.status}`,
+          runId: run.id,
+          kind: "run_status_changed",
+          phase: run.phase,
+          at: run.completedAt ?? run.startedAt ?? run.createdAt,
+          sourceId: null,
+          sourceAttemptId: null,
+          signalId: null,
+          leadId: null,
+          outcome: null,
+          message: `Run is ${run.status}`,
+        }),
+      );
+    }
+  }
+  for (const checkpoint of input.checkpoints) {
+    items.push(
+      ScoutRunActivitySchema.parse({
+        id: checkpoint.id,
+        runId: checkpoint.runId,
+        kind: "checkpoint_committed",
+        phase: checkpoint.phase,
+        at: checkpoint.createdAt,
+        sourceId: null,
+        sourceAttemptId: null,
+        signalId: null,
+        leadId: null,
+        outcome: null,
+        message: `Checkpoint ${checkpoint.sequence} committed`,
+      }),
+    );
+  }
+  for (const attempt of input.sourceAttempts) {
+    items.push(
+      ScoutRunActivitySchema.parse({
+        id: attempt.id,
+        runId: attempt.runId,
+        kind: "source_attempt_completed",
+        phase: "discovery",
+        at: attempt.completedAt ?? attempt.startedAt,
+        sourceId: attempt.sourceId,
+        sourceAttemptId: attempt.id,
+        signalId: null,
+        leadId: null,
+        outcome: attempt.outcome,
+        message: `Source Attempt ${attempt.outcome}`,
+      }),
+    );
+  }
+  for (const signal of input.signals) {
+    items.push(
+      ScoutRunActivitySchema.parse({
+        id: signal.id,
+        runId: signal.runId,
+        kind: "signal_recorded",
+        phase: "discovery",
+        at: signal.observedAt,
+        sourceId: signal.sourceId,
+        sourceAttemptId: signal.sourceAttemptId,
+        signalId: signal.id,
+        leadId: null,
+        outcome: null,
+        message: "Signal recorded with safe provenance",
+      }),
+    );
+  }
+  for (const lead of input.leads) {
+    for (const signalId of lead.signalIds) {
+      const signal = input.signals.find((candidate) => candidate.id === signalId);
+      if (!signal) continue;
+      items.push(
+        ScoutRunActivitySchema.parse({
+          id: `${lead.id}:${signal.id}:linked`,
+          runId: signal.runId,
+          kind: "lead_linked",
+          phase: "discovery",
+          at: lead.updatedAt,
+          sourceId: signal.sourceId,
+          sourceAttemptId: signal.sourceAttemptId,
+          signalId: signal.id,
+          leadId: lead.id,
+          outcome: null,
+          message: "Signal linked to canonical Lead",
+        }),
+      );
+    }
+  }
+  return items.sort((left, right) => right.at - left.at || right.id.localeCompare(left.id));
 }
 
 function toScoutSummary(db: RecruitingDb, row: typeof scouts.$inferSelect): ScoutSummary {

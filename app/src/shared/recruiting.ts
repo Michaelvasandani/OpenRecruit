@@ -587,6 +587,109 @@ export const ScoutRunCenterProjection = z.object({
 });
 export type ScoutRunCenterProjection = z.infer<typeof ScoutRunCenterProjection>;
 
+/** Structured operational activity for the Run Center. These entries are
+ * derived from committed Run records and normalized Source outcomes; they are
+ * intentionally not provider logs or transcripts. */
+export const ScoutRunActivityKind = z.enum([
+  "run_created",
+  "run_status_changed",
+  "checkpoint_committed",
+  "source_attempt_completed",
+  "signal_recorded",
+  "lead_linked",
+]);
+export type ScoutRunActivityKind = z.infer<typeof ScoutRunActivityKind>;
+
+export const ScoutRunActivity = z.object({
+  id: z.string().min(1),
+  runId: z.string().min(1),
+  kind: ScoutRunActivityKind,
+  phase: ScoutRunPhase,
+  at: z.number().int(),
+  sourceId: z.string().nullable(),
+  sourceAttemptId: z.string().nullable(),
+  signalId: z.string().nullable(),
+  leadId: z.string().nullable(),
+  outcome: SourceAttemptOutcome.nullable(),
+  message: z.string().min(1),
+});
+export type ScoutRunActivity = z.infer<typeof ScoutRunActivity>;
+
+export const SourceReadinessAggregate = z.object({
+  total: z.number().int().nonnegative(),
+  ready: z.number().int().nonnegative(),
+  needsAttention: z.number().int().nonnegative(),
+  counts: z.record(z.string(), z.number().int().nonnegative()),
+});
+export type SourceReadinessAggregate = z.infer<typeof SourceReadinessAggregate>;
+
+export const ReviewSidebarScout = z.object({
+  scout: ScoutSummary,
+  activeRun: ScoutRunSummary.nullable(),
+  latestRun: ScoutRunSummary.nullable(),
+  lastRunAt: z.number().int().nullable(),
+  nextRunAt: z.number().int().nullable(),
+  freshLeadCount: z.number().int().nonnegative(),
+  dueRevisitCount: z.number().int().nonnegative(),
+  sourceReadiness: SourceReadinessAggregate,
+});
+export type ReviewSidebarScout = z.infer<typeof ReviewSidebarScout>;
+
+/** Candidate-facing sidebar projection. It is a read model, not a persisted
+ * domain state; revision/generatedAt let reconnecting renderers identify the
+ * authoritative snapshot they are displaying. */
+export const ReviewSidebarProjection = z.object({
+  revision: z.number().int().nonnegative(),
+  generatedAt: z.number().int(),
+  scouts: z.array(ReviewSidebarScout),
+  sourceReadiness: SourceReadinessAggregate,
+});
+export type ReviewSidebarProjection = z.infer<typeof ReviewSidebarProjection>;
+
+export const ReviewScoutRunCenterProjection = z.object({
+  revision: z.number().int().nonnegative(),
+  generatedAt: z.number().int(),
+  scoutId: z.string().min(1),
+  scout: ScoutSummary,
+  activeRun: ScoutRunSummary.nullable(),
+  latestRun: ScoutRunSummary.nullable(),
+  lastRunAt: z.number().int().nullable(),
+  nextRunAt: z.number().int().nullable(),
+  dueRevisitCount: z.number().int().nonnegative(),
+  pendingRequestCount: z.number().int().nonnegative(),
+  activity: z.array(ScoutRunActivity),
+  signals: z.array(SignalSummary),
+  sourceAttempts: z.array(SourceAttemptSummary),
+  freshLeads: z.array(LeadSummary),
+  checkpoints: z.array(ScoutRunCheckpointSummary),
+  recentRuns: z.array(ScoutRunSummary),
+  sources: z.array(SourceSummary),
+});
+export type ReviewScoutRunCenterProjection = z.infer<typeof ReviewScoutRunCenterProjection>;
+
+export const ReviewLeadScoutAttribution = z.object({
+  scoutId: z.string().min(1),
+  scoutName: z.string().min(1),
+  signalCount: z.number().int().nonnegative(),
+});
+export type ReviewLeadScoutAttribution = z.infer<typeof ReviewLeadScoutAttribution>;
+
+export const ReviewLeadPanelProjection = z.object({
+  revision: z.number().int().nonnegative(),
+  generatedAt: z.number().int(),
+  lead: LeadSummary,
+  attributions: z.array(ReviewLeadScoutAttribution),
+  signals: z.array(SignalSummary),
+  opportunities: z.array(OpportunitySummary),
+  fitEvaluations: z.array(FitEvaluationSummary),
+  investigations: z.array(InvestigationSummary),
+  candidateDecisions: z.array(CandidateDecisionSummary),
+  decisionState: CandidateDecisionState,
+  revisitPlans: z.array(RevisitPlanSummary),
+  sourceReadiness: z.array(SourceSummary),
+});
+export type ReviewLeadPanelProjection = z.infer<typeof ReviewLeadPanelProjection>;
+
 export const RecruitingInvalidation = z.object({
   revision: z.number().int().nonnegative(),
   kind: z.enum(["scout", "run", "source", "lead", "review"]),

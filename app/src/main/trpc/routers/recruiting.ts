@@ -14,6 +14,27 @@ import { publicProcedure, router } from "../trpc";
 export const recruitingRouter = router({
   scouts: publicProcedure.query(({ ctx }) => ctx.recruiting.listScouts()),
 
+  /** Purpose-built Variant B read projections. Keep these under one review
+   * namespace so the renderer never composes authority from persistence-shaped
+   * lists. */
+  review: router({
+    sidebar: publicProcedure.query(({ ctx }) => ctx.recruiting.reviewSidebar()),
+    scoutRunCenter: publicProcedure
+      .input(z.object({ scoutId: z.string().min(1) }))
+      .query(({ ctx, input }) => ctx.recruiting.reviewScoutRunCenter(input.scoutId)),
+    leadPanel: publicProcedure
+      .input(z.object({ id: z.string().min(1) }))
+      .query(({ ctx, input }) => ctx.recruiting.reviewLeadPanel(input.id)),
+  }),
+
+  reviewSidebar: publicProcedure.query(({ ctx }) => ctx.recruiting.reviewSidebar()),
+  reviewScoutRunCenter: publicProcedure
+    .input(z.object({ scoutId: z.string().min(1) }))
+    .query(({ ctx, input }) => ctx.recruiting.reviewScoutRunCenter(input.scoutId)),
+  reviewLeadPanel: publicProcedure
+    .input(z.object({ id: z.string().min(1) }))
+    .query(({ ctx, input }) => ctx.recruiting.reviewLeadPanel(input.id)),
+
   profiles: publicProcedure.query(({ ctx }) => ctx.recruiting.listProfiles()),
 
   profile: publicProcedure

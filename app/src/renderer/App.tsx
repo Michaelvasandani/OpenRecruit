@@ -11,8 +11,8 @@ import { cn } from "./lib/utils";
 import { BackendFailed } from "./screens/BackendFailed";
 import { CandidateProfilesScreen } from "./screens/CandidateProfiles";
 import { Onboarding } from "./screens/Onboarding";
+import { ReviewWorkspaceScreen } from "./screens/ReviewWorkspace";
 import { ScheduledScreen } from "./screens/Scheduled";
-import { ScoutRunsScreen } from "./screens/ScoutRuns";
 import { SettingsScreen } from "./screens/Settings";
 import { useConnectionStore } from "./stores/connection";
 import { useUIStore } from "./stores/ui";
@@ -55,7 +55,7 @@ export function App() {
         {view === "scheduled" && <ScheduledScreen />}
         {view === "settings" && <SettingsScreen />}
         {view === "profiles" && <CandidateProfilesScreen />}
-        {view === "runs" && <ScoutRunsScreen />}
+        {view === "runs" && <ReviewWorkspaceScreen />}
       </div>
       <NewAgentDialog />
     </div>
