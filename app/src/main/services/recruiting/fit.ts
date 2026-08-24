@@ -76,6 +76,7 @@ export class FitEvaluationApplication {
   constructor(
     private readonly db: Db,
     private readonly now: () => number = Date.now,
+    private readonly candidateDecisionGuard?: (subjectId: string, at: number) => void,
   ) {}
 
   createFitEvaluation(command: CreateFitEvaluationCommand): FitEvaluationSummary {
@@ -331,6 +332,7 @@ export class FitEvaluationApplication {
         );
       }
       const at = this.now();
+      this.candidateDecisionGuard?.(command.leadId, at);
       let row: OpportunityRow | undefined;
       if (command.opportunityId) {
         row = tx

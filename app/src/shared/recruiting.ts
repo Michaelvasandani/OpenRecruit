@@ -252,6 +252,36 @@ export const OpportunitySummary = z.object({
 });
 export type OpportunitySummary = z.infer<typeof OpportunitySummary>;
 
+export const CandidateDecisionKind = z.enum([
+  "correction",
+  "prohibition",
+  "dismissal",
+  "reversal",
+  "review_outcome",
+  "reconsideration",
+]);
+export type CandidateDecisionKind = z.infer<typeof CandidateDecisionKind>;
+
+export const CandidateDecisionSummary = z.object({
+  id: z.string().min(1),
+  leadId: z.string().nullable(),
+  opportunityId: z.string().nullable(),
+  kind: CandidateDecisionKind,
+  detail: z.record(z.string(), z.unknown()),
+  expectedRevision: z.number().int().nonnegative(),
+  createdAt: z.number().int(),
+});
+export type CandidateDecisionSummary = z.infer<typeof CandidateDecisionSummary>;
+
+export const CandidateDecisionState = z.object({
+  resurfacingSuppressed: z.boolean(),
+  latestDismissalId: z.string().nullable(),
+  reconsiderationRequested: z.boolean(),
+  protectedCorrectionIds: z.array(z.string()),
+  explicitProhibitionIds: z.array(z.string()),
+});
+export type CandidateDecisionState = z.infer<typeof CandidateDecisionState>;
+
 /** A normalized, safe question shared across Scouts for one subject. */
 export const InvestigationQuestionKey = z.string().min(1).max(2_000);
 export type InvestigationQuestionKey = z.infer<typeof InvestigationQuestionKey>;
@@ -367,6 +397,14 @@ export const LeadContext = z.object({
   opportunities: z.array(OpportunitySummary).default([]),
   fitEvaluations: z.array(FitEvaluationSummary).default([]),
   investigations: z.array(InvestigationSummary).default([]),
+  candidateDecisions: z.array(CandidateDecisionSummary).default([]),
+  decisionState: CandidateDecisionState.default({
+    resurfacingSuppressed: false,
+    latestDismissalId: null,
+    reconsiderationRequested: false,
+    protectedCorrectionIds: [],
+    explicitProhibitionIds: [],
+  }),
 });
 export type LeadContext = z.infer<typeof LeadContext>;
 

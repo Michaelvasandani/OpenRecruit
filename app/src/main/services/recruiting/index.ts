@@ -18,6 +18,11 @@ import {
 } from "../../db/schema";
 import { bus } from "../event-bus";
 import type { WakeTransport } from "../scheduler/wake/types";
+import {
+  CandidateDecisionApplication,
+  type RecordCandidateDecisionCommand,
+  type RequestCandidateReconsiderationCommand,
+} from "./candidate-decisions";
 import { assertSafeMaterial } from "./contract";
 import { RecruitingError } from "./errors";
 import {
@@ -79,6 +84,15 @@ export {
   SourceAttemptSummary,
   SourceReadiness,
 } from "@shared/recruiting";
+export {
+  CANDIDATE_DECISION_KINDS,
+  CandidateDecisionApplication,
+  type CandidateDecisionDetail,
+  type CandidateDecisionKind,
+  type CandidateDecisionSummary,
+  type RecordCandidateDecisionCommand,
+  type RequestCandidateReconsiderationCommand,
+} from "./candidate-decisions";
 export {
   assertSafeMaterial,
   PROHIBITED_RECRUITING_CAPABILITIES,
@@ -221,6 +235,7 @@ export class RecruitingApplication {
   private readonly fitEvaluations: FitEvaluationApplication;
   private readonly investigations: InvestigationApplication;
   private readonly revisitPlans: RevisitPlanApplication;
+  private readonly candidateDecisions: CandidateDecisionApplication;
 
   constructor(
     private readonly db: Db,
@@ -228,13 +243,23 @@ export class RecruitingApplication {
   ) {
     this.profileApplication = new CandidateProfileApplication(db, { now });
     this.scoutRuns = new ScoutRunApplication(db, now);
-    this.fitEvaluations = new FitEvaluationApplication(db, now);
+    this.candidateDecisions = new CandidateDecisionApplication(db, now);
+    this.fitEvaluations = new FitEvaluationApplication(db, now, (subjectId, at) =>
+      this.candidateDecisions.requireCurrentSupportingEvidence(subjectId, at),
+    );
     this.investigations = new InvestigationApplication(db, now);
     this.revisitPlans = new RevisitPlanApplication(
       db,
       (command) => this.scoutRuns.launchScoutRun(command),
       (runId) => this.scoutRuns.getScoutRun(runId),
       now,
+      (target) =>
+        (target.leadId
+          ? this.candidateDecisions.getDecisionState(target.leadId)
+          : target.opportunityId
+            ? this.candidateDecisions.getDecisionState(target.opportunityId)
+            : { resurfacingSuppressed: false }
+        ).resurfacingSuppressed,
     );
   }
 
@@ -372,7 +397,37 @@ export class RecruitingApplication {
           this.fitEvaluations.listFitEvaluations(opportunity.id),
         ),
       ],
+      candidateDecisions: this.candidateDecisions.listForLead(id),
+      decisionState: this.candidateDecisions.getDecisionState(id),
     };
+  }
+
+  getLeadPanel(id: string) {
+    return this.getLeadContext(id);
+  }
+
+  recordCandidateDecision(command: RecordCandidateDecisionCommand) {
+    return this.candidateDecisions.recordCandidateDecision(command);
+  }
+
+  recordDecision(command: RecordCandidateDecisionCommand) {
+    return this.recordCandidateDecision(command);
+  }
+
+  requestCandidateReconsideration(command: RequestCandidateReconsiderationCommand) {
+    return this.candidateDecisions.requestCandidateReconsideration(command);
+  }
+
+  listCandidateDecisions(subjectId: string) {
+    return this.candidateDecisions.listCandidateDecisions(subjectId);
+  }
+
+  listDecisions(subjectId: string) {
+    return this.candidateDecisions.listDecisions(subjectId);
+  }
+
+  getCandidateDecision(id: string) {
+    return this.candidateDecisions.getCandidateDecision(id);
   }
 
   createInvestigation(command: CreateInvestigationCommand) {

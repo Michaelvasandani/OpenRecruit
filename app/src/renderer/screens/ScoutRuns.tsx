@@ -32,6 +32,7 @@ export function ScoutRunsScreen() {
   const [sourceIds, setSourceIds] = useState<string[]>([]);
   const [feedName, setFeedName] = useState("");
   const [feedUrl, setFeedUrl] = useState("");
+  const [decisionNote, setDecisionNote] = useState("");
   const selectedId = selectedScoutId ?? scouts.data?.[0]?.id;
   const runs = trpc.recruiting.scoutRuns.useQuery(
     selectedId ? { scoutId: selectedId } : undefined,
@@ -83,6 +84,18 @@ export function ScoutRunsScreen() {
   });
   const checkReadiness = trpc.recruiting.checkSourceReadiness.useMutation({
     onSuccess: () => void utils.recruiting.sources.invalidate(),
+  });
+  const recordDecision = trpc.recruiting.recordCandidateDecision.useMutation({
+    onSuccess: () => {
+      setDecisionNote("");
+      void leadContext.refetch();
+      void utils.recruiting.leads.invalidate();
+    },
+    onError: () => {
+      // A stale panel is recoverable: refetch authoritative state so the
+      // Candidate can retry with the current Lead revision.
+      void leadContext.refetch();
+    },
   });
   useEffect(() => {
     if (!selected) return;
@@ -566,6 +579,69 @@ export function ScoutRunsScreen() {
                             </details>
                           </div>
                         ))
+                      )}
+                    </div>
+                    <div className="mt-2 rounded border border-border p-2">
+                      <div className="flex items-center justify-between gap-2">
+                        <div className="text-xs font-medium">Candidate Decisions</div>
+                        {leadContext.data.decisionState.resurfacingSuppressed && (
+                          <span className="text-[10px] text-warning">Resurfacing suppressed</span>
+                        )}
+                      </div>
+                      <Textarea
+                        className="mt-2"
+                        value={decisionNote}
+                        onChange={(event) => setDecisionNote(event.target.value)}
+                        placeholder="Optional correction or review note"
+                        rows={2}
+                      />
+                      <div className="mt-2 flex flex-wrap gap-2">
+                        {(["correction", "dismissal", "reversal", "review_outcome"] as const).map(
+                          (kind) => (
+                            <Button
+                              key={kind}
+                              type="button"
+                              size="sm"
+                              variant={kind === "dismissal" ? "destructive" : "outline"}
+                              disabled={recordDecision.isPending}
+                              onClick={() =>
+                                recordDecision.mutate({
+                                  leadId: leadContext.data?.lead.id ?? "",
+                                  kind,
+                                  detail: decisionNote ? { note: decisionNote } : {},
+                                  expectedRevision: leadContext.data?.lead.revision ?? 0,
+                                  idempotencyKey: `candidate-decision-${crypto.randomUUID()}`,
+                                })
+                              }
+                            >
+                              {kind.replace("_", " ")}
+                            </Button>
+                          ),
+                        )}
+                      </div>
+                      {recordDecision.error && (
+                        <p className="mt-2 text-xs text-destructive">
+                          {recordDecision.error.message} Refreshing the Lead revision…
+                        </p>
+                      )}
+                      {leadContext.data.candidateDecisions.length === 0 ? (
+                        <p className="mt-2 text-xs text-muted-foreground">
+                          No Candidate review history.
+                        </p>
+                      ) : (
+                        <div className="mt-2 grid gap-1 text-xs">
+                          {leadContext.data.candidateDecisions.map((decision) => (
+                            <div key={decision.id} className="rounded bg-muted p-2">
+                              <span className="font-medium">{decision.kind.replace("_", " ")}</span>
+                              <span className="text-muted-foreground">
+                                {" · "}revision {decision.expectedRevision} · {decision.createdAt}
+                              </span>
+                              {typeof decision.detail.note === "string" && (
+                                <p className="mt-1 text-muted-foreground">{decision.detail.note}</p>
+                              )}
+                            </div>
+                          ))}
+                        </div>
                       )}
                     </div>
                   </>

@@ -101,6 +101,7 @@ export class RevisitPlanApplication {
     private readonly launchRun: LaunchPinnedRun,
     private readonly summarizeRun: (runId: string) => ScoutRunSummaryValue | null,
     private readonly now: () => number = Date.now,
+    private readonly isSuppressed?: (target: RevisitTarget) => boolean,
   ) {}
 
   setWake(wake: WakeTransport): void {
@@ -490,6 +491,21 @@ export class RevisitPlanApplication {
           nextAttemptAt: sourceBlock.retryAt,
           safeFailure: sourceBlock.message,
           completedAt: sourceBlock.terminal ? this.now() : null,
+        });
+        continue;
+      }
+      const candidateTarget = {
+        leadId: candidate.leadId ?? undefined,
+        opportunityId: candidate.opportunityId ?? undefined,
+        sourceId: candidate.sourceId ?? undefined,
+        investigationId: candidate.investigationId ?? undefined,
+      };
+      if (candidate.trigger !== "explicit_request" && this.isSuppressed?.(candidateTarget)) {
+        this.updateRequest(candidate.id, {
+          status: "blocked",
+          nextAttemptAt: null,
+          safeFailure: "Candidate dismissal suppresses ordinary resurfacing",
+          completedAt: this.now(),
         });
         continue;
       }

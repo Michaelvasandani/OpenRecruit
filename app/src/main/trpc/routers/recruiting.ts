@@ -252,6 +252,60 @@ export const recruitingRouter = router({
     .input(z.object({ id: z.string().min(1) }))
     .query(({ ctx, input }) => ctx.recruiting.getLeadContext(input.id)),
 
+  leadPanel: publicProcedure
+    .input(z.object({ id: z.string().min(1) }))
+    .query(({ ctx, input }) => ctx.recruiting.getLeadPanel(input.id)),
+
+  candidateDecisions: publicProcedure
+    .input(z.object({ subjectId: z.string().min(1) }))
+    .query(({ ctx, input }) => ctx.recruiting.listCandidateDecisions(input.subjectId)),
+
+  recordCandidateDecision: publicProcedure
+    .input(
+      z
+        .object({
+          leadId: z.string().min(1).optional(),
+          opportunityId: z.string().min(1).optional(),
+          kind: z.enum([
+            "correction",
+            "prohibition",
+            "dismissal",
+            "reversal",
+            "review_outcome",
+            "reconsideration",
+          ]),
+          detail: z.record(z.string(), z.unknown()).optional(),
+          expectedRevision: z.number().int().nonnegative(),
+          idempotencyKey: z.string().trim().min(1).max(200),
+        })
+        .refine(
+          (input) => Boolean(input.leadId) !== Boolean(input.opportunityId),
+          "A Candidate Decision must target exactly one Lead or Opportunity",
+        ),
+    )
+    .mutation(({ ctx, input }) => command(() => ctx.recruiting.recordCandidateDecision(input))),
+
+  requestCandidateReconsideration: publicProcedure
+    .input(
+      z
+        .object({
+          leadId: z.string().min(1).optional(),
+          opportunityId: z.string().min(1).optional(),
+          evidenceSignalIds: z.array(z.string().min(1)).min(1).max(500),
+          reason: z.string().trim().max(2_000).optional(),
+          detail: z.record(z.string(), z.unknown()).optional(),
+          expectedRevision: z.number().int().nonnegative(),
+          idempotencyKey: z.string().trim().min(1).max(200),
+        })
+        .refine(
+          (input) => Boolean(input.leadId) !== Boolean(input.opportunityId),
+          "A reconsideration must target exactly one Lead or Opportunity",
+        ),
+    )
+    .mutation(({ ctx, input }) =>
+      command(() => ctx.recruiting.requestCandidateReconsideration(input)),
+    ),
+
   investigations: publicProcedure
     .input(z.object({ subjectId: z.string().min(1).optional() }).optional())
     .query(({ ctx, input }) => ctx.recruiting.listInvestigations(input?.subjectId)),
