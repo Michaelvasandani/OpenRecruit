@@ -201,4 +201,37 @@ describe("Recruiting Revisit Plans and durable Run requests", () => {
     expect(app.getRevisitPlan(plan.value.id)?.dueAt).toBe(10_000 + 60 * 60 * 1_000);
     expect(app.processDueRevisits()).toHaveLength(0);
   });
+
+  test("finalizes Runs with each explicit terminal outcome", () => {
+    for (const outcome of ["completed", "incomplete", "failed", "cancelled"] as const) {
+      const { app, scout } = fixture();
+      app.requestScheduledRefresh({
+        scoutId: scout.id,
+        idempotencyKey: `terminal-${outcome}`,
+      });
+      app.processRunRequests();
+      const runId = app.listScoutRuns(scout.id)[0]?.id;
+      if (!runId) throw new Error(`missing ${outcome} Run`);
+      app.advanceScoutRun({
+        runId,
+        status: "running",
+        phase: "discovery",
+        checkpoint: JSON.stringify({ started: true }),
+        idempotencyKey: `${outcome}-running`,
+      });
+      app.advanceScoutRun({
+        runId,
+        status: "finalizing",
+        phase: "finalization",
+        idempotencyKey: `${outcome}-finalizing`,
+      });
+      const finalized = app.advanceScoutRun({
+        runId,
+        status: outcome,
+        phase: "finalization",
+        idempotencyKey: `${outcome}-terminal`,
+      });
+      expect(finalized.value.status).toBe(outcome);
+    }
+  });
 });
