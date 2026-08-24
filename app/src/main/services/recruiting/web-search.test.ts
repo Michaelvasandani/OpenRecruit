@@ -7,6 +7,7 @@ import { type MigrationDb, migrate } from "../../db/migrate";
 import {
   DeterministicWebSearchProvider,
   FirecrawlWebSearchProvider,
+  normalizeQuery,
   RecruitingApplication,
   WEB_SEARCH_SOURCE_ID,
 } from ".";
@@ -192,6 +193,99 @@ describe("host-owned WebSearch", () => {
       query: '"Forward Deployed Engineer"',
       includeDomains: ["jobs.ashbyhq.com"],
     });
+  });
+
+  test("preserves a quoted phrase that contains site-like text", () => {
+    const normalized = normalizeQuery('"site:jobs.ashbyhq.com" "Forward Deployed Engineer"');
+
+    expect(normalized.providerQuery).toBe('"site:jobs.ashbyhq.com" "Forward Deployed Engineer"');
+    expect(normalized.includeDomains).toEqual([]);
+  });
+
+  test("does not rewrite whitespace inside a balanced quoted phrase", () => {
+    const query = 'Find roles near "Forward   Deployed Engineer" in New York';
+    const normalized = normalizeQuery(query);
+
+    expect(normalized.providerQuery).toBe(query);
+  });
+
+  test("rejects a site operator without a hostname", () => {
+    expect(() => normalizeQuery('site: "Forward Deployed Engineer"')).toThrow(
+      /site: restrictions must be hostnames/i,
+    );
+  });
+
+  test("rejects site values that contain a scheme or path", () => {
+    expect(() => normalizeQuery("site:https://jobs.ashbyhq.com Engineer")).toThrow(
+      /site: restrictions must be hostnames/i,
+    );
+    expect(() => normalizeQuery("site:jobs.ashbyhq.com/careers Engineer")).toThrow(
+      /site: restrictions must be hostnames/i,
+    );
+  });
+
+  test("leaves excluded site syntax in the provider query", () => {
+    const normalized = normalizeQuery("-site:jobs.ashbyhq.com Engineer");
+
+    expect(normalized.providerQuery).toBe("-site:jobs.ashbyhq.com Engineer");
+    expect(normalized.includeDomains).toEqual([]);
+  });
+
+  test("preserves unsupported operator syntax and reports only its operator names", () => {
+    const normalized = normalizeQuery(
+      'site:jobs.ashbyhq.com "Forward Deployed Engineer" -intern filetype:pdf inurl:jobs allinurl:careers intitle:Engineer allintitle:Engineering related:ashbyhq.com before:2026 cache:jobs',
+    );
+
+    expect(normalized.providerQuery).toBe(
+      '"Forward Deployed Engineer" -intern filetype:pdf inurl:jobs allinurl:careers intitle:Engineer allintitle:Engineering related:ashbyhq.com before:2026 cache:jobs',
+    );
+    expect(normalized.unsupportedOperators).toEqual(["before", "cache"]);
+  });
+
+  test("filters provider results that violate a structured site restriction", async () => {
+    const provider = new DeterministicWebSearchProvider({
+      '"Forward Deployed Engineer"': [
+        {
+          title: "Ashby role",
+          url: "https://jobs.ashbyhq.com/acme/role",
+          description: "Allowed",
+        },
+        {
+          title: "Unrelated role",
+          url: "https://example.com/jobs/role",
+          description: "Must not escape site restriction",
+        },
+        {
+          title: "Lookalike role",
+          url: "https://jobs.ashbyhq.com.evil.example/jobs/role",
+          description: "Must not match a domain suffix",
+        },
+      ],
+    });
+    const app = new RecruitingApplication(makeDb(), () => 10_000, {
+      provider,
+      webSearchApiKey: () => "test-key",
+    });
+    const profileId = confirmedProfile(app);
+    const scout = app.createScout({
+      name: "Restricted Search Scout",
+      harness: "codex",
+      instructionPath: "agents/restricted-search",
+      defaultProfileId: profileId,
+      sourceIds: [WEB_SEARCH_SOURCE_ID],
+      idempotencyKey: "restricted-search-scout",
+    }).value;
+    app.launchScoutRun({ scoutId: scout.id, idempotencyKey: "restricted-search-run" });
+
+    const result = await app.webSearch({
+      scoutId: scout.id,
+      query: 'site:jobs.ashbyhq.com "Forward Deployed Engineer"',
+      limit: 10,
+    });
+
+    expect(result.results.map((item) => item.canonicalUrl)).toEqual([
+      "https://jobs.ashbyhq.com/acme/role",
+    ]);
   });
 
   test("rejects a disabled Scout before calling the provider", async () => {

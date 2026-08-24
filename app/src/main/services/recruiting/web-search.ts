@@ -366,6 +366,9 @@ export class WebSearchApplication {
     const results = response.results
       .map((result) => normalizeResult(result, retrievedAt))
       .filter((result): result is WebSearchResult => result !== null)
+      .filter((result) =>
+        isAllowedByDomainRestrictions(result.canonicalUrl, normalized.includeDomains),
+      )
       .slice(0, normalized.limit);
     const details: WebSearchAttemptDetails = {
       ...initialDetails,
@@ -464,34 +467,8 @@ export function normalizeQuery(query: string, limit?: number): NormalizedQuery &
     );
   }
   const domains: string[] = [];
-  let providerQuery = providerInput.replace(
-    /(^|\s)site:([^\s]*)/gi,
-    (_token, prefix: string, value: string) => {
-      if (
-        !/^[a-z0-9.-]+$/i.test(value) ||
-        value.includes("..") ||
-        value.startsWith(".") ||
-        value.endsWith(".")
-      ) {
-        throw new RecruitingError(
-          "VALIDATION",
-          "WebSearch site: restrictions must be hostnames without schemes or paths",
-        );
-      }
-      const domain = value.toLowerCase();
-      if (!domains.includes(domain)) domains.push(domain);
-      return prefix;
-    },
-  );
-  providerQuery = providerQuery.replace(/\s+/g, " ").trim();
-  const unsupportedOperators = [...providerQuery.matchAll(/(?:^|\s)([a-z][a-z0-9_-]*):[^\s]+/gi)]
-    .map((match) => match[1]?.toLowerCase() ?? "")
-    .filter(
-      (operator) =>
-        !["site", "filetype", "inurl", "allinurl", "intitle", "allintitle", "related"].includes(
-          operator,
-        ),
-    );
+  const providerQuery = removePositiveSiteRestrictions(providerInput, domains);
+  const unsupportedOperators = findUnsupportedOperators(providerQuery);
   return {
     original,
     providerQuery,
@@ -499,6 +476,102 @@ export function normalizeQuery(query: string, limit?: number): NormalizedQuery &
     unsupportedOperators: [...new Set(unsupportedOperators)],
     limit: resultLimit,
   };
+}
+
+const SUPPORTED_OPERATORS = new Set([
+  "site",
+  "filetype",
+  "inurl",
+  "allinurl",
+  "intitle",
+  "allintitle",
+  "related",
+]);
+
+function removePositiveSiteRestrictions(query: string, domains: string[]): string {
+  let providerQuery = "";
+  let segmentStart = 0;
+  let inQuotes = false;
+  let index = 0;
+
+  while (index < query.length) {
+    const character = query[index];
+    if (character === '"') {
+      inQuotes = !inQuotes;
+      index += 1;
+      continue;
+    }
+    if (
+      !inQuotes &&
+      query.slice(index, index + 5).toLowerCase() === "site:" &&
+      (index === 0 || /\s|[([{]/.test(query[index - 1] ?? ""))
+    ) {
+      const valueStart = index + 5;
+      let valueEnd = valueStart;
+      while (valueEnd < query.length && !/\s/.test(query[valueEnd] ?? "")) valueEnd += 1;
+      const value = query.slice(valueStart, valueEnd);
+      validateSiteHostname(value);
+      const domain = value.toLowerCase();
+      if (!domains.includes(domain)) domains.push(domain);
+
+      providerQuery += query.slice(segmentStart, index);
+      segmentStart = valueEnd < query.length ? valueEnd + 1 : valueEnd;
+      index = valueEnd;
+      continue;
+    }
+    index += 1;
+  }
+
+  providerQuery += query.slice(segmentStart);
+  return providerQuery.trim();
+}
+
+function validateSiteHostname(value: string): void {
+  if (
+    !value ||
+    !/^[a-z0-9.-]+$/i.test(value) ||
+    value.includes("..") ||
+    value.startsWith(".") ||
+    value.endsWith(".") ||
+    value.startsWith("-") ||
+    value.endsWith("-") ||
+    (value.includes("-") &&
+      value.split(".").some((label) => label.startsWith("-") || label.endsWith("-")))
+  ) {
+    throw new RecruitingError(
+      "VALIDATION",
+      "WebSearch site: restrictions must be hostnames without schemes or paths",
+    );
+  }
+}
+
+function findUnsupportedOperators(query: string): string[] {
+  const operators: string[] = [];
+  let inQuotes = false;
+  let tokenStart = 0;
+
+  const inspect = (token: string) => {
+    const candidate = token.replace(/^[([{]+/, "");
+    const match = candidate.match(/^-?([a-z][a-z0-9_-]*):(?=\S)/i);
+    if (!match?.[1] || /^\w+:\/\//i.test(candidate)) return;
+    const operator = match[1].toLowerCase();
+    if (!SUPPORTED_OPERATORS.has(operator) && !operators.includes(operator)) {
+      operators.push(operator);
+    }
+  };
+
+  for (let index = 0; index <= query.length; index += 1) {
+    const character = query[index];
+    if (character === '"') {
+      inQuotes = !inQuotes;
+      continue;
+    }
+    if (index === query.length || (!inQuotes && /\s/.test(character ?? ""))) {
+      if (tokenStart < index) inspect(query.slice(tokenStart, index));
+      tokenStart = index + 1;
+    }
+  }
+  return operators;
 }
 
 function normalizeResult(
@@ -532,6 +605,17 @@ function canonicalizeUrl(value: string): string | null {
   } catch {
     return null;
   }
+}
+
+function isAllowedByDomainRestrictions(url: string, domains: string[]): boolean {
+  if (domains.length === 0) return true;
+  let hostname: string;
+  try {
+    hostname = new URL(url).hostname.toLowerCase();
+  } catch {
+    return false;
+  }
+  return domains.some((domain) => hostname === domain || hostname.endsWith(`.${domain}`));
 }
 
 function normalizeText(value: string, max: number): string {
