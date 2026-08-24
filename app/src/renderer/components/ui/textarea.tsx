@@ -2,7 +2,7 @@ import { cn } from "@renderer/lib/utils";
 import type * as React from "react";
 
 /**
- * shadcn/ui Textarea, tuned to OpenTrade's look (`border-border`, subtle
+ * shadcn/ui Textarea, tuned to OpenRecruit's look (`border-border`, subtle
  * border-brighten focus). Overridable via className.
  */
 function Textarea({ className, ...props }: React.ComponentProps<"textarea">) {

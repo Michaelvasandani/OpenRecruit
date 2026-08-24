@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import { OPENTRADE_HOME } from "../../db/client";
 
 /**
- * Stable bind port for the local API / approval gate.
+ * Stable bind port for the local API.
  *
  * Derived deterministically from OPENTRADE_HOME so the port is the SAME across
  * app restarts (the fix for the stale-endpoint bug: PTYs baked with OPENTRADE_PORT

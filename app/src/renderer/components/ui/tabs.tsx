@@ -3,8 +3,7 @@ import { cn } from "@renderer/lib/utils";
 import type * as React from "react";
 
 /**
- * shadcn/ui Tabs (Radix), styled for OpenTrade's underline look (the right
- * panel's Portfolio / Activity / Approvals bar) rather than shadcn's stock
+ * shadcn/ui Tabs (Radix), styled for OpenRecruit's underline look rather than shadcn's stock
  * pill style: the list is a bottom-bordered track and the active trigger
  * carries a 2px primary underline. Override via className for other looks.
  */

@@ -1,6 +1,5 @@
 import { NewAgentDialog } from "./components/agents/NewAgentDialog";
 import { AgentSidebar } from "./components/layout/AgentSidebar";
-import { RightPanel } from "./components/layout/RightPanel";
 import { TerminalPane } from "./components/terminal/TerminalPane";
 import { useAgents } from "./hooks/useAgents";
 import { useSettings } from "./hooks/useSettings";
@@ -26,8 +25,8 @@ export function App() {
   const openNewAgent = useUIStore((s) => s.openNewAgent);
   const backendConnected = useConnectionStore((s) => s.backendConnected);
 
-  // ⌘T opens the New Agent configuration dialog (create happens from the form).
-  // Gated off while the backend is down to match the disabled New Agent button.
+  // ⌘T opens the New Scout configuration dialog (create happens from the form).
+  // Gated off while the backend is down to match the disabled New Scout button.
   useShortcuts({ "create-agent": backendConnected ? openNewAgent : () => {} });
 
   // A click on an agent in the macOS menu bar item (launcher-side) selects it here.
@@ -50,7 +49,6 @@ export function App() {
         <AgentSidebar />
         <div className={cn("flex flex-1 min-w-0", view !== "agents" && "hidden")}>
           <TerminalPane agent={selected} />
-          <RightPanel />
         </div>
         {view === "scheduled" && <ScheduledScreen />}
         {view === "settings" && <SettingsScreen />}

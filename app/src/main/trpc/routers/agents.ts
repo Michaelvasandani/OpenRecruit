@@ -1,5 +1,5 @@
 import type { Agent } from "@shared/agent";
-import { ApprovalMode, CreateAgentInput } from "@shared/agent";
+import { CreateAgentInput } from "@shared/agent";
 import { observable } from "@trpc/server/observable";
 import { z } from "zod";
 import { bus } from "../../services/event-bus";
@@ -19,15 +19,16 @@ export const agentsRouter = router({
     .query(({ ctx, input }) => ctx.registry.templateClaudeMd(input.template)),
 
   create: publicProcedure
-    .input(CreateAgentInput)
-    .mutation(({ ctx, input }) => ctx.registry.create(input)),
+    // Approval mode is a legacy persisted field, not part of the recruiting API.
+    // New Scouts always use the local runtime default while old rows remain readable.
+    .input(CreateAgentInput.omit({ approvalMode: true }))
+    .mutation(({ ctx, input }) => ctx.registry.create({ ...input, approvalMode: "auto" })),
 
   update: publicProcedure
     .input(
       z.object({
         id: z.string(),
         name: z.string().min(1).max(80).optional(),
-        approvalMode: ApprovalMode.optional(),
         turnLimitEnabled: z.boolean().optional(),
       }),
     )
@@ -45,7 +46,7 @@ export const agentsRouter = router({
     // daemon isn't left running an orphaned `claude` for a deleted agent.
     ctx.terminal.kill(input.id);
     // Kill any in-flight headless wake + clear its queued/warm wakes, so an archived
-    // agent can't keep trading (the headless `archivedAt` guard only checks at spawn).
+    // agent can't keep running (the headless `archivedAt` guard only checks at spawn).
     ctx.wake.stop(input.id);
     // Disarm + delete the agent's schedules/monitors so nothing keeps firing.
     ctx.scheduler.removeAgent(input.id);

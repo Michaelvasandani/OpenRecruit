@@ -62,7 +62,7 @@ describe("RecentNotificationsService", () => {
 
   test("a DB failure never escapes into the emitter", () => {
     // record() runs inline on the raw `notify` bus, whose emitters are the scheduler,
-    // the broker ledger sync and the approval gate — a throw here would break them.
+    // a host notification emitter — a throw here would break later listeners.
     const sqlite = new Database(":memory:"); // no schema: every write fails
     const s = new RecentNotificationsService(drizzle(sqlite, { schema }) as unknown as Db);
     expect(() => s.record(note())).not.toThrow();

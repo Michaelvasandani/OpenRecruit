@@ -17,10 +17,10 @@ import { hostLog } from "../../host/log";
  * only when it has work (create a thread, deliver a wake, run a headless turn)
  * and disconnects when the episode ends — there is no standing connection to
  * babysit. `thread/resume` hot-rejoins with full state (including replay of
- * pending approval requests), so a late-connecting client misses nothing.
+ * pending server requests), so a late-connecting client misses nothing.
  *
- * Fail-closed property (verified in the Phase-0 spike): an order tool gated with
- * `approval_mode = "prompt"` raises a server→client `mcpServer/elicitation/request`;
+ * Fail-closed property (verified in the Phase-0 spike): an elicitation-capable tool
+ * raises a server→client `mcpServer/elicitation/request`;
  * if the answering client errors or disconnects, codex treats it as Decline.
  */
 
@@ -71,9 +71,8 @@ export type CodexTurnOutcome =
 
 /**
  * Answers server→client requests that arrive while the backend is driving a
- * turn (approvals/elicitations). Implemented by the harness glue: order tools
- * route to the ApprovalService card; everything else follows headless parity
- * (auto-allow, like claude's `--dangerously-skip-permissions`).
+ * turn. The harness glue handles the request without opening a renderer modal,
+ * keeping server-driven turns aligned with the headless transport.
  */
 export type ServerRequestAnswerer = (
   agentId: string,
@@ -195,11 +194,10 @@ export class CodexAppServerManager {
     this.servers.set(agentId, { child, codexHome, startedAt });
 
     await waitForSocket(sock, SPAWN_WAIT_MS);
-    // Codex only executes TRUSTED hooks; our generated gate hooks must be
+    // Codex only executes TRUSTED hooks; our generated lifecycle hooks must be
     // trusted the same way the TUI's /hooks command does it — a `hooks.state`
     // batchWrite keyed by each hook's current hash. Best-effort: a failure only
-    // disables the REDUNDANT gate layer (the per-tool approval anchor is core-
-    // enforced and cannot fail open), but log it loudly.
+    // disables lifecycle notifications, but log it loudly.
     await this.trustHooks(agentId, sock);
     return sock;
   }
@@ -232,16 +230,10 @@ export class CodexAppServerManager {
         client.close();
       }
     } catch (err) {
-      // Loud, not a warn (F4): with hooks untrusted, the PreToolUse gate layer never
-      // runs — and for USER-driven interactive orders (answered natively in the TUI,
-      // where the elicitation anchor doesn't route through us) the hook is the ONLY
-      // source of the OpenTrade approval card, audit row, and outcome record. A silent
-      // failure means such an order executes with zero OpenTrade trace. Backend-driven
-      // (wake/headless) orders are unaffected — the elicitation anchor still gates those.
+      // Loud, not a warn: with hooks untrusted, lifecycle notifications never run,
+      // so the host would lose its status updates for this session.
       hostLog.error(
-        "codex hook trust setup FAILED — user-driven interactive orders will have NO " +
-          "OpenTrade approval card/audit/outcome (backend-driven orders still gated by the " +
-          "per-tool approval anchor)",
+        "codex hook trust setup FAILED — lifecycle status notifications are disabled",
         agentId,
         String(err),
       );
@@ -459,8 +451,8 @@ export class CodexClient {
   private pending = new Map<number, PendingReq>();
   private turnWaiters: Array<(msg: { method: string; params: unknown }) => void> = [];
   private closed = false;
-  /** Abort controllers for in-flight server→client requests (approvals), so a
-   *  connection close abandons any pending order card instead of stranding it. */
+  /** Abort controllers for in-flight server→client requests, so a connection close
+   *  does not strand a request. */
   private serverReqAborts = new Set<AbortController>();
 
   private constructor(
@@ -494,7 +486,7 @@ export class CodexClient {
   ): Promise<CodexClient> {
     const client = await CodexClient.rawConnect(sock, CONNECT_TIMEOUT_MS, onServerRequest);
     await client.request("initialize", {
-      clientInfo: { name: "opentrade", title: "OpenTrade", version: "1" },
+      clientInfo: { name: "opentrade", title: "OpenRecruit", version: "1" },
     });
     client.notify("initialized", {});
     return client;
@@ -626,7 +618,7 @@ export class CodexClient {
       if (msg.error) p.reject(new Error(msg.error.message ?? JSON.stringify(msg.error)));
       else p.resolve(msg.result);
     } else if (msg.id !== undefined && msg.method) {
-      // Server→client request (approval / elicitation). Unanswerable requests are
+      // Server→client request (elicitation). Unanswerable requests are
       // rejected with a JSON-RPC error, which codex treats as Decline — fail closed.
       const { id, method, params } = msg;
       if (!this.onServerRequest) {
@@ -639,8 +631,8 @@ export class CodexClient {
         );
         return;
       }
-      // Tie the answer to a signal aborted on connection close, so a pending order
-      // card is abandoned (not left to its full timeout) if the connection drops.
+      // Tie the answer to a signal aborted on connection close so pending work is
+      // abandoned rather than left to its full timeout.
       const ac = new AbortController();
       this.serverReqAborts.add(ac);
       this.onServerRequest(method, params, ac.signal)

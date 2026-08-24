@@ -14,7 +14,7 @@ import { OPENTRADE_HOME } from "../db/client";
  */
 export interface HostManifest {
   pid: number;
-  /** Stable faucet/approval-gate port (baked into agent PTYs). */
+  /** Stable local API port (baked into agent PTYs). */
   faucetPort: number;
   /** tRPC HTTP/WS port for the GUI (discovered here; need not be stable). */
   trpcPort: number;
@@ -104,7 +104,7 @@ const versionOf = (m: HostManifest): string => m.version ?? "0.0.0";
  * pid is actually dead: erasing it while a wedged host lives would let the next
  * launch spawn a second host that fights the orphan over the stable faucet port.
  * Two callers: `ensureHost` retiring a stale-version host after an auto-update,
- * and the launcher's "Quit OpenTrade Completely" (§12.6).
+ * and the launcher's "Quit OpenRecruit Completely" action.
  */
 export async function terminateHost(m: HostManifest): Promise<void> {
   try {
@@ -241,7 +241,7 @@ export async function ensureHost(
 /**
  * The Electron binary to launch the detached host with. On macOS, spawning the
  * host from the **main app binary** (`process.execPath`) makes LaunchServices
- * check it in as a second *Foreground* app — a spurious "OpenTrade" dock icon with
+ * check it in as a second *Foreground* app — a spurious "OpenRecruit" dock icon with
  * the generic executable icon (`ELECTRON_RUN_AS_NODE` doesn't prevent this for a
  * detached launch of the bundle's main Mach-O). The bundled **`<Product> Helper.app`**
  * has `LSUIElement = true` in its Info.plist, so running the host from it stays
@@ -249,7 +249,7 @@ export async function ensureHost(
  */
 function hostLauncherBinary(): string {
   if (process.platform === "darwin") {
-    const product = basename(process.execPath); // e.g. "OpenTrade" (or "Electron" in dev)
+    const product = basename(process.execPath); // e.g. "OpenRecruit" (or "Electron" in dev)
     const helper = join(
       dirname(process.execPath), // .../Contents/MacOS
       "..",

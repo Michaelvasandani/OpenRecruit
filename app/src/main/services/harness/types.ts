@@ -1,7 +1,7 @@
 import type { Agent, HarnessId } from "@shared/agent";
 
 /**
- * The harness seam: everything OpenTrade does differently per agent CLI lives
+ * The harness seam: everything OpenRecruit does differently per agent CLI lives
  * behind this interface. Nothing outside `services/harness/` may branch on a
  * `HarnessId` — consumers resolve a `Harness` via `harnessFor()` and call it, so
  * adding a harness is a new implementation file + a registry entry, not a sweep
@@ -9,8 +9,8 @@ import type { Agent, HarnessId } from "@shared/agent";
  *
  * What stays OUTSIDE the seam (uniform across harnesses): session-id *storage*
  * (`agents.last_session_id` is "the resumable conversation id" whoever minted
- * it), the wake queue/state machine, spawn markers, the approval service, the
- * `[OPENTRADE WAKE <ts>]` prompt format, and `buildAgentEnv`'s base env.
+ * it), the wake queue/state machine, spawn markers, the `[OPENTRADE WAKE <ts>]`
+ * prompt format, and `buildAgentEnv`'s base env.
  */
 
 /** Whether a launch begins a brand-new conversation or resumes a stored one. */
@@ -60,7 +60,7 @@ export interface Harness {
    * bare interactive `start` launch, discover the session the TUI just created,
    * persist its id via `persist`, and deliver the kickoff into it. Fire-and-
    * forget (the PTY is already up). Consumes the kickoff, so `interactiveArgs`
-   * receives none. Absent for harnesses where OpenTrade mints ids locally
+   * receives none. Absent for harnesses where OpenRecruit mints ids locally
    * (claude) and the kickoff rides the argv.
    */
   adoptInteractiveSession?(
@@ -71,7 +71,7 @@ export interface Harness {
   ): void;
 
   /**
-   * Present when the harness can end up on a DIFFERENT engine than OpenTrade's
+   * Present when the harness can end up on a DIFFERENT engine than OpenRecruit's
    * (codex: a wrapper `codex` injecting `-c` drops the TUI into its embedded engine,
    * splitting the user's session from the wake engine). Called fire-and-forget after
    * a RESUME launch to assert the TUI attached to our server (the start path already
@@ -84,7 +84,7 @@ export interface Harness {
    * When true, `writeConfig` produces the harness's COMPLETE on-disk config, so the
    * scaffold skips the claude-style steps (`.mcp.json` injection, hook copy) — codex.
    * When false/absent, the harness uses the claude-style scaffold AND `writeConfig`
-   * (if present) layers its own generated files on top (claude: the order-gate
+   * (if present) layers its own generated files on top (claude: the generated
    * `settings.json` + hook scripts).
    */
   readonly generatesFullConfig?: boolean;
@@ -93,9 +93,9 @@ export interface Harness {
    * Write/refresh the harness's generated on-disk config in the agent dir. Called at
    * scaffold AND before every spawn (interactive + headless) — **self-healing**, so a
    * tampered or (critically) a never-created config is regenerated on the next launch.
-   *  - codex: `.codex/config.toml`, hooks, gate scripts, auth link (the whole config).
-   *  - claude: `.claude/settings.json` (the order-gate hook wiring — generated IN CODE
-   *    because the template copy is git-untracked and absent from clean CI builds) +
+   *  - codex: `.codex/config.toml`, hooks, auth link (the whole config).
+   *  - claude: `.claude/settings.json` (generated IN CODE because the template copy is
+   *    git-untracked and absent from clean CI builds) +
    *    the hook scripts.
    */
   writeConfig?(agentDir: string, agentId: string): void;
@@ -112,11 +112,4 @@ export interface Harness {
 
   /** Is the CLI installed? (onboarding + the New Agent dialog's picker). */
   probe(env: Record<string, string>): Promise<ProbeResult>;
-
-  /**
-   * Is Robinhood's Agentic Trading MCP registered in this CLI's user config?
-   * (Onboarding step 2.) A plain read of the CLI's own config file — each keeps
-   * it in a different place and format, hence the seam. Never launches the CLI.
-   */
-  robinhoodMcpConfigured(): boolean;
 }

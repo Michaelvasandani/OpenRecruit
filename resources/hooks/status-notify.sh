@@ -1,5 +1,5 @@
 #!/bin/bash
-# OpenTrade status hook (Notification / Stop).
+# OpenRecruit status hook (Notification / Stop).
 #
 # Forwards the Claude Code hook payload to the app's local server, which dispatches
 # on hook_event_name: Notification → needs-input; Stop → clears needs-input + captures

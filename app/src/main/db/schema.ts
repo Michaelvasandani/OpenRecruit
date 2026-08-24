@@ -32,7 +32,7 @@ export const agents = sqliteTable("agents", {
   archivedAt: integer("archived_at"),
 });
 
-/** One row per intercepted order tool call. */
+/** Legacy inherited rows retained for recovery; no active recruiting path writes them. */
 export const approvals = sqliteTable("approvals", {
   id: text("id").primaryKey(),
   agentId: text("agent_id").notNull(),
@@ -42,13 +42,13 @@ export const approvals = sqliteTable("approvals", {
   status: text("status").notNull().default("pending"),
   decidedBy: text("decided_by"),
   note: text("note"),
-  /** Broker outcome JSON (OrderOutcome), filled in by the PostToolUse hook. */
+  /** Legacy outcome JSON, retained without interpretation during migration. */
   outcome: text("outcome"),
   requestedAt: integer("requested_at").notNull(),
   decidedAt: integer("decided_at"),
 });
 
-/** Append-only feed powering the Activity tab. */
+/** Legacy append-only event feed, retained without an active renderer projection. */
 export const auditLog = sqliteTable(
   "audit_log",
   {
@@ -61,7 +61,7 @@ export const auditLog = sqliteTable(
   (t) => [index("audit_agent_at").on(t.agentId, t.at)],
 );
 
-/** Pull-through cache entries (portfolio, positions, orders, quote:SYMBOL). */
+/** Legacy provider cache entries, retained without an active recruiting reader/writer. */
 export const brokerCache = sqliteTable("broker_cache", {
   key: text("key").primaryKey(),
   payload: text("payload").notNull(),
@@ -154,7 +154,7 @@ export const recentNotifications = sqliteTable("recent_notifications", {
 });
 
 // Recruiting persistence starts at schema v6. These tables deliberately live beside
-// the inherited OpenTrade tables during the additive migration. The host owns all
+// the inherited tables during the additive migration. The host owns all
 // writes; the renderer only receives projections from the Recruiting application.
 export const profiles = sqliteTable("profiles", {
   id: text("id").primaryKey(),

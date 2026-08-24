@@ -2,7 +2,7 @@ import { cn } from "@renderer/lib/utils";
 import type * as React from "react";
 
 /**
- * shadcn/ui Empty, tuned to OpenTrade's minimal empty/error-state look (centered
+ * shadcn/ui Empty, tuned to OpenRecruit's minimal empty/error-state look (centered
  * bare icon + small title + muted description), versus shadcn's stock dashed-border
  * card with a boxed icon and large title. Backs the BackendFailed screen; reusable
  * for the app's other empty states.

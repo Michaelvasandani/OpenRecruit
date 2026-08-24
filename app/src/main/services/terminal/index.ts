@@ -122,7 +122,7 @@ export class TerminalService {
   }
 
   /**
-   * Spawn the agent's interactive PTY (its harness CLI). OpenTrade owns the
+   * Spawn the agent's interactive PTY (its harness CLI). OpenRecruit owns the
    * session id (I3): it mints a UUID at first start and resumes it thereafter;
    * the harness turns that decision into argv. `intent`:
    *  - `auto`   first run → start a new session (+ kickoff); otherwise resume
@@ -148,7 +148,7 @@ export class TerminalService {
     harness.writeConfig?.(dir, agent.id);
     await harness.prepareInteractive?.(agent, dir);
 
-    // Resolve intent → (mode, sessionId, kickoff). OpenTrade persists the id and
+    // Resolve intent → (mode, sessionId, kickoff). OpenRecruit persists the id and
     // owns the first-run marker; who MINTS it is per-harness — locally (claude,
     // kickoff rides the argv) or by the harness's engine (codex: a bare `start`
     // launch lets the TUI create the thread, and `adoptInteractiveSession`
@@ -223,7 +223,7 @@ export class TerminalService {
     analytics.track("terminal_session_started", { intent });
   }
 
-  /** Mint and persist a fresh session id OpenTrade owns for this agent (I3). */
+  /** Mint and persist a fresh session id OpenRecruit owns for this agent (I3). */
   private mintSessionId(agentId: string): string {
     const sid = randomUUID();
     this.registry.setLastSessionId(agentId, sid);

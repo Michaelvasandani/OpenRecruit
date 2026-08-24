@@ -5,7 +5,7 @@ import type * as React from "react";
 import { buttonVariants } from "./button";
 
 /**
- * shadcn/ui AlertDialog, tuned to OpenTrade's look:
+ * shadcn/ui AlertDialog, tuned to OpenRecruit's look:
  * content uses `bg-popover`/`shadow-xl` (matching the old hand-rolled overlays)
  * and `p-5`, all overridable via className. Backs `ConfirmDialog`.
  */

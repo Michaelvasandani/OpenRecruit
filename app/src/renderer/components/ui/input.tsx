@@ -2,7 +2,7 @@ import { cn } from "@renderer/lib/utils";
 import type * as React from "react";
 
 /**
- * shadcn/ui Input, tuned to OpenTrade's compact look: `px-3 py-1.5 text-sm`,
+ * shadcn/ui Input, tuned to OpenRecruit's compact look: `px-3 py-1.5 text-sm`,
  * `border-border`, and a subtle focus (border brightens to `--ring`, no glow
  * ring) to match the inline inputs it replaces. Overridable via className.
  */

@@ -5,9 +5,8 @@ import type * as React from "react";
 
 /**
  * shadcn/ui RadioGroup (Radix). `RadioGroupItem` is the standard dot control;
- * `RadioGroupCard` is OpenTrade's selectable-card item (the New Agent template /
- * environment / approval pickers) — a bordered card that highlights on
- * `data-[state=checked]`, replacing the old hand-rolled EnvCard/ApprovalCard.
+ * `RadioGroupCard` is the selectable-card item for New Scout templates and
+ * environments — a bordered card that highlights on `data-[state=checked]`.
  * Mark the card `group` so inner bits can react via `group-data-[state=checked]`.
  */
 function RadioGroup({

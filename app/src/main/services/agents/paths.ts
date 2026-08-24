@@ -38,7 +38,7 @@ export function resolveHooksDir(): string {
 }
 
 /**
- * Absolute path to the bundled `opentrade` agent-MCP server (`out/main/agent-mcp.js`),
+ * Absolute path to the bundled local scheduling MCP server (`out/main/agent-mcp.js`),
  * which the agent's harness spawns per agent. In a packaged app it's spawned as a
  * child process (not by Electron), so it must be the asar-UNPACKED copy (see
  * electron-builder.yml).

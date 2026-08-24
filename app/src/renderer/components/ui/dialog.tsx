@@ -4,7 +4,7 @@ import { XIcon } from "lucide-react";
 import type * as React from "react";
 
 /**
- * shadcn/ui Dialog, tuned to OpenTrade's look:
+ * shadcn/ui Dialog, tuned to OpenRecruit's look:
  * content uses `bg-popover`/`shadow-xl` and `p-5` (matching the old hand-rolled
  * NewAgentDialog overlay), overridable via className. Backs `NewAgentDialog`.
  */

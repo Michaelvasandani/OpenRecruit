@@ -5,8 +5,8 @@ import type * as React from "react";
 /**
  * shadcn/ui ToggleGroup (Radix), kept deliberately unstyled beyond layout so each
  * use-site reproduces its own look via className + `data-[state=on]:…`. Backs the
- * Settings SegmentedControl (bordered, primary active) and the Activity scope
- * filter (borderless, muted active).
+ * Settings SegmentedControl (bordered, primary active) and compact scope filters
+ * (borderless, muted active).
  */
 function ToggleGroup({
   className,

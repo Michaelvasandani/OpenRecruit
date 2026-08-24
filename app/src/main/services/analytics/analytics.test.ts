@@ -73,14 +73,13 @@ describe("AnalyticsService", () => {
   test("allowlisted event stamps super-props + person properties", () => {
     const fake = new FakeClient();
     const svc = makeService(new SettingsService(memDb()), fake);
-    svc.track("agent_created", { template: "dca", harness: "claude", approval_mode: "auto" });
+    svc.track("agent_created", { template: "dca", harness: "claude" });
     expect(fake.events).toHaveLength(1);
     const e = fake.events[0];
     expect(e.event).toBe("agent_created");
     expect(e.distinctId).toBe(svc.anonymousId);
     expect(e.properties).toMatchObject({
       template: "dca",
-      approval_mode: "auto",
       platform: process.platform,
       arch: process.arch,
     });
@@ -382,7 +381,7 @@ describe("analytics allowlist + normalizers", () => {
     expect(
       RendererTrackInput.safeParse({
         event: "onboarding_step_completed",
-        props: { step: "broker" },
+        props: { step: "runtime" },
       }).success,
     ).toBe(true);
     // app_error on the tRPC surface is restricted to the GUI-process subsystems

@@ -1,8 +1,9 @@
-// OpenTrade agent-facing MCP server (`opentrade`).
+// OpenRecruit agent-facing scheduling MCP server (`opentrade`, retained as the
+// internal protocol name for existing local agent folders).
 //
 // A tiny stdio JSON-RPC 2.0 server that gives each agent a durable
 // cron/monitor surface mirroring Claude Code's native CronCreate/Monitor — but
-// backed by OpenTrade's always-on backend scheduler, so schedules survive the GUI
+// backed by OpenRecruit's always-on backend scheduler, so schedules survive the GUI
 // closing and the host restarting. The tools are a thin HTTP shim over the host's
 // LocalApi `/schedules/*` routes.
 //
@@ -54,7 +55,7 @@ const DEFAULT_PROTOCOL = "2024-11-05";
 // `--dangerously-load-development-channels server:opentrade` flag; a headless `-p`
 // wake run doesn't pass that flag, so its capability + poll loop are simply inert.
 const CHANNEL_INSTRUCTIONS =
-  'Scheduled wakes from OpenTrade arrive as <channel source="opentrade" ...> events. ' +
+  'Scheduled wakes from OpenRecruit arrive as <channel source="opentrade" ...> events. ' +
   "They are one-way: read the body as your next task, act on it (read STRATEGY.md first), " +
   "and continue. No reply to the channel is expected.";
 
@@ -77,7 +78,7 @@ function callHost(
     const endpoint = backendEndpoint();
     if (!endpoint || !AGENT_ID) {
       return reject(
-        new Error("OpenTrade backend unreachable (no env endpoint and no host manifest)"),
+        new Error("OpenRecruit backend unreachable (no env endpoint and no host manifest)"),
       );
     }
     const { port: PORT, token: TOKEN } = endpoint;
@@ -135,7 +136,7 @@ const TOOLS: ToolDef[] = [
     name: "CronCreate",
     description:
       "Schedule a recurring (or one-shot) wake for this agent on a cron timer. " +
-      "Durable: it is owned by the OpenTrade backend and keeps firing even when the " +
+      "Durable: it is owned by the OpenRecruit backend and keeps firing even when the " +
       "desktop app is closed (unlike Claude Code's session-scoped CronCreate). When " +
       "it fires, you are woken with `prompt` as the task — read STRATEGY.md and act.",
     inputSchema: obj(
@@ -195,7 +196,7 @@ const TOOLS: ToolDef[] = [
   {
     name: "Monitor",
     description:
-      "Start a durable signal monitor: a shell command supervised by the OpenTrade " +
+      "Start a durable signal monitor: a shell command supervised by the OpenRecruit " +
       "backend whose every stdout line wakes this agent (rate-limited). Runs even " +
       "when the desktop app is closed. Use for price/threshold watch scripts.",
     inputSchema: obj(
@@ -372,9 +373,9 @@ function startWakePoller(): void {
   })();
 }
 
-// Name the process so it reads as OpenTrade in `ps`/`top` rather than the bare
+// Name the process so it reads as OpenRecruit in `ps`/`top` rather than the bare
 // Electron/node executable (packaging: see docs/PACKAGING.md "Process naming").
-process.title = "OpenTrade Agent MCP";
+process.title = "OpenRecruit Agent MCP";
 
 // ---- stdio transport: newline-delimited JSON-RPC ----
 let buffer = "";

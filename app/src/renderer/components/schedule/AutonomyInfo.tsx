@@ -7,7 +7,7 @@ import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } f
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Autonomy explainer — shown wherever an agent has no timers or monitors armed.
-// Agents create these themselves via the `opentrade` MCP server (§12.2), so the
+// Scouts create these themselves via the local scheduling MCP server, so the
 // only thing the user can do is *ask*; this nudges them to, and the dialog
 // explains what the two trigger kinds actually are.
 // ─────────────────────────────────────────────────────────────────────────────
@@ -91,17 +91,17 @@ export function AutonomyInfoDialog({
             icon={Clock}
             tone="text-sky-400"
             title="Timers"
-            body="Notify agents on a schedule. Provide a schedule - every weekday at 9:30am, once at 3:55pm, every 15 minutes - and some instructions on what the agent should do. Perfect for periodic tasks and portfolio monitoring."
+            body="Notify Scouts on a schedule. Provide a cadence - every weekday at 9:30am, once at 3:55pm, every 15 minutes - and instructions for the next sourcing or review step."
             image={timerExample}
-            alt="OpenTrade's Monitor tab showing an armed timer: a pre-market news scan that runs weekdays at 6:00 AM, with its prompt and next run."
+            alt="OpenRecruit's Scheduled view showing an armed Scout timer with its prompt and next run."
           />
           <Explainer
             icon={Radio}
             tone="text-emerald-400"
             title="Monitors"
-            body="Notify agents on a signal. Describe what needs monitoring - price thresholds, volatility spikes, X posts, API responses - and some instructions. Perfect for reacting to market events and integrating with other systems."
+            body="Notify Scouts on a signal. Describe what needs monitoring - a source change, new profile evidence, or an API response - and the follow-up instructions."
             image={monitorExample}
-            alt="OpenTrade's Monitor tab showing a live monitor: a shell command watching AAPL and MU for a 10% drawdown from their running peak, with its description and command."
+            alt="OpenRecruit's Scheduled view showing a live source monitor with its description and command."
           />
         </div>
       </DialogContent>

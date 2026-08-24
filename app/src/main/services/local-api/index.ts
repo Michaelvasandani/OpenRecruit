@@ -1,10 +1,7 @@
 import { randomBytes } from "node:crypto";
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
-import type { PreToolUseDecision } from "@shared/approval";
 import { CronCreateInput, MonitorCreateInput } from "@shared/schedule";
 import type { AgentRegistry } from "../agents/registry";
-import type { ApprovalService } from "../approvals";
-import type { BrokerService } from "../broker";
 import type { Scheduler } from "../scheduler";
 import type { WakeTransport } from "../scheduler/wake/types";
 import type { StatusArbiter } from "../status/arbiter";
@@ -14,8 +11,6 @@ import type { StatusArbiter } from "../status/arbiter";
 const WAKE_STREAM_HOLD_MS = 60_000;
 
 interface Deps {
-  broker: BrokerService;
-  approvals: ApprovalService;
   registry: AgentRegistry;
   arbiter: StatusArbiter;
   /** Desired bind port. Stable (home-derived) in the app; omit (→ ephemeral) in tests. */
@@ -32,16 +27,11 @@ const BIND_RETRY_MS = 300;
 /**
  * Localhost HTTP server injected into agent PTYs as OPENTRADE_PORT/OPENTRADE_TOKEN.
  *
- * - Market-data faucet (M2): a pull-through cache over the broker so agents'
- *   Monitor watch-scripts can poll prices/positions without hammering Robinhood:
- *     GET /quotes/:symbol?maxAge=5   GET /positions?maxAge=30
- * - Hook endpoints (M3): the PreToolUse approval gate and the Notification/Stop
- *   status feed, called by the scaffolded hook scripts in each agent folder:
- *     POST /hook/pretool-approval   POST /hook/status
+ * - Status hooks (M3): the Notification/Stop status feed called by the
+ *   scaffolded hook scripts in each agent folder.
  *
- * Bound to 127.0.0.1 with a per-launch bearer token (x-opentrade-token). The
- * hook scripts fail CLOSED if this server is unreachable, so a manually-launched
- * `claude` can't place orders while the app is gone.
+ * Bound to 127.0.0.1 with a per-launch bearer token (x-opentrade-token). Status
+ * hooks are best-effort and never make a manually launched harness depend on the GUI.
  */
 export class LocalApiServer {
   readonly token: string;
@@ -68,10 +58,6 @@ export class LocalApiServer {
   /** Wire the wake transport in once built (enables the /wake-stream route). */
   setWake(wake: WakeTransport): void {
     this.wake = wake;
-  }
-
-  private get broker(): BrokerService {
-    return this.deps.broker;
   }
 
   get port(): number {
@@ -131,14 +117,8 @@ export class LocalApiServer {
       return json(res, 401, { error: "unauthorized" });
     }
 
-    if (req.method === "POST" && url.pathname === "/hook/pretool-approval") {
-      return this.handleApproval(req, res);
-    }
     if (req.method === "POST" && url.pathname === "/hook/status") {
       return this.handleStatus(req, res);
-    }
-    if (req.method === "POST" && url.pathname === "/hook/order-result") {
-      return this.handleOrderResult(req, res);
     }
 
     if (req.method === "GET" && url.pathname === "/wake-stream") {
@@ -148,64 +128,7 @@ export class LocalApiServer {
       return this.handleSchedules(req, res, url);
     }
 
-    const quoteMatch = url.pathname.match(/^\/quotes\/([A-Za-z0-9.-]+)$/);
-    if (quoteMatch) {
-      const symbol = quoteMatch[1].toUpperCase();
-      const maxAge = (Number(url.searchParams.get("maxAge")) || 5) * 1000;
-      const quote = await this.broker.getQuote(symbol, maxAge);
-      return quote ? json(res, 200, quote) : json(res, 404, { error: "no quote" });
-    }
-    if (url.pathname === "/positions") {
-      const maxAge = (Number(url.searchParams.get("maxAge")) || 30) * 1000;
-      return json(res, 200, await this.broker.getPositionsLive(maxAge));
-    }
     return json(res, 404, { error: "not found" });
-  }
-
-  /**
-   * PreToolUse gate. The hook POSTs the Claude Code hook payload
-   * (`{ tool_name, tool_input, session_id, ... }`); we register an approval and
-   * long-poll until decided/timeout, then return the verbatim PreToolUse decision
-   * the script echoes back to Claude Code.
-   */
-  private async handleApproval(req: IncomingMessage, res: ServerResponse) {
-    const agentId = header(req, "x-opentrade-agent");
-    const body = await readJson(req);
-    const toolName = String(body?.tool_name ?? "unknown");
-    const rawInput = body?.tool_input ?? {};
-
-    if (!agentId || !this.registry.get(agentId)) {
-      // Unknown agent → fail closed.
-      return json(res, 200, deny("OpenTrade could not identify this agent; order blocked."));
-    }
-
-    // Abandon the pending approval if the agent's session drops mid-poll.
-    const ac = new AbortController();
-    req.on("close", () => ac.abort());
-
-    const decision = await this.deps.approvals.request(
-      { agentId, toolName, rawInput },
-      { signal: ac.signal },
-    );
-    if (!res.writableEnded) json(res, 200, decision);
-  }
-
-  /**
-   * PostToolUse outcome feed (fire-and-forget). The order tool already RAN — this
-   * reports what the broker actually did with it (accepted / rejected), which is
-   * distinct from the approval decision. We never block here.
-   */
-  private async handleOrderResult(req: IncomingMessage, res: ServerResponse) {
-    const agentId = header(req, "x-opentrade-agent");
-    const body = await readJson(req);
-    const toolName = String(body?.tool_name ?? "unknown");
-    const rawInput = body?.tool_input ?? {};
-    // Claude Code has used both keys across versions; accept either.
-    const result = body?.tool_response ?? body?.tool_output ?? body?.result ?? null;
-    if (agentId && this.registry.get(agentId)) {
-      this.deps.approvals.recordOutcome({ agentId, toolName, rawInput, result });
-    }
-    json(res, 200, { ok: true });
   }
 
   /**
@@ -313,16 +236,6 @@ export class LocalApiServer {
   private get registry(): AgentRegistry {
     return this.deps.registry;
   }
-}
-
-function deny(reason: string): PreToolUseDecision {
-  return {
-    hookSpecificOutput: {
-      hookEventName: "PreToolUse",
-      permissionDecision: "deny",
-      permissionDecisionReason: reason,
-    },
-  };
 }
 
 function header(req: IncomingMessage, name: string): string | null {

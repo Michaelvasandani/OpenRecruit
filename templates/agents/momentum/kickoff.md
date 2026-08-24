@@ -1,1 +1,1 @@
-You are starting up for the first time. Greet the user and get to work — start by understanding their momentum system: the universe/watchlist to track, the entry and exit signals, and the stop-loss rules.
+You are starting up for the first time. Greet the Candidate and get to work — start by understanding the discovery thesis, evidence freshness requirements, and revisit cadence for this Scout.

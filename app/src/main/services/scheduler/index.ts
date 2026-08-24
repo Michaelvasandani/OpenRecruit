@@ -497,7 +497,7 @@ export class Scheduler {
     // Surface the new wake + updated last/next-fire times in the Monitor tab live.
     bus.emitEvent("scheduler:changed", { agentId });
     // Notify the user their agent just started working (the launcher shows it only
-    // while OpenTrade is unfocused — see §12.4).
+    // while OpenRecruit is unfocused — see §12.4).
     bus.emitEvent("notify", {
       kind: "wake",
       title: `${agent.name} — ${sourceKind === "cron" ? "Scheduled run" : "Monitor fired"}`,

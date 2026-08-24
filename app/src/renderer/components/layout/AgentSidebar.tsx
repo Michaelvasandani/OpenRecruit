@@ -9,7 +9,6 @@ import { useUIStore } from "../../stores/ui";
 import { ConfirmDialog } from "../ui/ConfirmDialog";
 import { Separator } from "../ui/separator";
 import { StatusDot } from "./StatusDot";
-import { UpdateButton } from "./UpdateButton";
 
 export function AgentSidebar() {
   const agents = useAgents();
@@ -61,10 +60,10 @@ export function AgentSidebar() {
     <div className="flex h-full w-60 shrink-0 flex-col bg-sidebar text-sidebar-foreground border-r border-sidebar-border">
       <div className="h-10 shrink-0" style={{ WebkitAppRegion: "drag" } as CSSProperties} />
 
-      {/* Top section: brand + new agent */}
+      {/* Top section: brand + new Scout */}
       <div className="px-3 pb-2 pt-1">
         <span className="text-xs font-medium uppercase tracking-wider text-muted-foreground">
-          OpenTrade
+          OpenRecruit
         </span>
       </div>
       <div className="flex flex-col gap-1 px-2 pb-2">
@@ -91,7 +90,7 @@ export function AgentSidebar() {
             !backendConnected && "pointer-events-none opacity-50",
           )}
         >
-          <Plus className="size-4" /> New Agent
+          <Plus className="size-4" /> New Scout
         </button>
       </div>
 
@@ -204,7 +203,7 @@ export function AgentSidebar() {
 
       <div className="px-3 pb-2 pt-3">
         <span className="text-xs font-medium uppercase tracking-wider text-muted-foreground">
-          Agents
+          Local harnesses
         </span>
       </div>
 
@@ -216,7 +215,7 @@ export function AgentSidebar() {
         )}
       >
         {agents.length === 0 && (
-          <p className="px-2 py-3 text-sm text-muted-foreground">No agents yet.</p>
+          <p className="px-2 py-3 text-sm text-muted-foreground">No local harnesses yet.</p>
         )}
         {agents.map((agent) => (
           <div
@@ -257,10 +256,9 @@ export function AgentSidebar() {
         {!backendConnected && (
           <div className="flex items-center gap-2 rounded-md px-2 py-1.5 text-sm text-warning">
             <Loader2 className="size-4 animate-spin" />
-            OpenTrade connecting…
+            OpenRecruit connecting…
           </div>
         )}
-        <UpdateButton />
         <button
           type="button"
           onClick={() => setView("settings")}

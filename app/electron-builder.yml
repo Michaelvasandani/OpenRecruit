@@ -1,13 +1,12 @@
-appId: ai.exla.opentrade
-productName: OpenTrade
+appId: ai.openrecruit.app
+productName: OpenRecruit
 directories:
   output: release
   buildResources: build
 files:
   - out/**/*
-  # Sourcemaps are emitted ("hidden") for `app_error` triage but kept out of the
-  # shipped app — they're published as a GitHub Release asset instead (see
-  # .github/workflows/release-desktop.yml and docs/ARCHITECTURE.md §telemetry).
+  # Sourcemaps are emitted ("hidden") for local `app_error` triage but kept out of
+  # the shipped app. This source POC has no public release-feed publishing step.
   - "!out/**/*.map"
   - package.json
 # Native modules and the per-agent MCP server must live on the real filesystem,
@@ -32,12 +31,10 @@ extraResources:
   - from: ../resources
     to: resources
 mac:
-  category: public.app-category.finance
+  category: public.app-category.productivity
   target:
     - target: dmg
       arch: [arm64]
-    # electron-updater on macOS updates from the .zip (+ its blockmap); the DMG is
-    # only the first-run installer.
     - target: zip
       arch: [arm64]
   hardenedRuntime: true
@@ -49,7 +46,7 @@ mac:
   # CSC_LINK / CSC_KEY_PASSWORD. See docs/PACKAGING.md.
   notarize: true
 dmg:
-  title: OpenTrade ${version}
+  title: OpenRecruit ${version}
   contents:
     - x: 130
       y: 220
@@ -57,8 +54,4 @@ dmg:
       y: 220
       type: link
       path: /Applications
-publish:
-  provider: github
-  owner: OpenTradeOSS
-  repo: OpenTrade
 npmRebuild: true

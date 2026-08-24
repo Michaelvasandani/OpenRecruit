@@ -5,8 +5,9 @@ import type { Db } from "../../db/client";
 import { settings as settingsTable } from "../../db/schema";
 import { bus } from "../event-bus";
 
-/** kv keys backing each AppSettings field. `approval_timeout_sec` is shared with
- *  ApprovalService (which reads it directly), so keep that name in sync. */
+/** kv keys backing each AppSettings field. The inherited approval-related keys remain
+ * readable for old settings rows, even though the recruiting host no longer consumes
+ * them on an active path. */
 const KEYS: Record<keyof AppSettings, string> = {
   approvalTimeoutSec: "approval_timeout_sec",
   pollIntervalFocusedSec: "poll_interval_focused_sec",
@@ -30,8 +31,8 @@ const KEYS: Record<keyof AppSettings, string> = {
 /**
  * Typed accessor over the `settings` kv table for the app's global tunables.
  * Reads coerce + fall back to `DEFAULT_SETTINGS`; `update()` validates against the
- * shared schema and broadcasts `settings:changed` so live consumers (the broker
- * poller, the renderer) re-read.
+ * shared schema and broadcasts `settings:changed` so live consumers and the
+ * renderer re-read.
  */
 export class SettingsService {
   constructor(private db: Db) {}

@@ -15,12 +15,12 @@ import type {
 /** Delay before re-attempting a failed interactive push delivery. */
 const PUSH_RETRY_MS = 5_000;
 
-/** Default hard ceiling on a single headless run, INCLUDING time parked at the approval
- *  gate. The kill timer is the only timer in the wake layer; on expiry we SIGTERM the
- *  child and its exit drives `headlessExited` (a clean `ok`, not a resume-fail). The
- *  actual value is a live Settings tunable (`maxHeadlessRunMinutes`); this is the
- *  fallback when none is wired (tests/standalone). (If the kill lands mid-approval, the
- *  severed gate curl trips the existing `req.on("close")` → ApprovalService.abandon.) */
+/** Default hard ceiling on a single headless run. The kill timer is the only timer in
+ *  the wake layer; on expiry we SIGTERM the child and its exit drives
+ *  `headlessExited` (a clean `ok`, not a resume-fail). The actual value is a live
+ *  Settings tunable (`maxHeadlessRunMinutes`); this is the fallback when none is wired
+ *  (tests/standalone).
+ */
 const MAX_HEADLESS_RUN_MS = 30 * 60_000;
 /** Consecutive headless resume-fails before an agent is declared unresumable. Each
  *  failure drops its own wake; the Nth in a row flips the agent to `broken`. Any clean

@@ -1,5 +1,5 @@
 import type { Agent } from "@shared/agent";
-import { Bot, Hourglass, RotateCw, ShieldCheck, Zap } from "lucide-react";
+import { Bot, Hourglass, RotateCw } from "lucide-react";
 import { type CSSProperties, useEffect, useRef } from "react";
 import { useSettings } from "../../hooks/useSettings";
 import { comboKeys, SHORTCUTS } from "../../lib/shortcuts";
@@ -71,14 +71,13 @@ export function TerminalPane({ agent }: { agent: Agent | null }) {
               <TooltipContent>{agent.harness === "codex" ? "Codex" : "Claude Code"}</TooltipContent>
             </Tooltip>
           )}
-          {agent ? agent.name : "OpenTrade"}
+          {agent ? agent.name : "OpenRecruit"}
         </span>
         <div
           className={cn("flex items-center gap-2", !backendConnected && "pointer-events-none")}
           style={{ WebkitAppRegion: "no-drag" } as CSSProperties}
         >
           {agent && <TurnLimitButton agent={agent} />}
-          {agent && <ApprovalModeToggle agent={agent} />}
           {agent && attachable && liveness === "dead" && (
             <Button
               type="button"
@@ -225,40 +224,5 @@ function TurnLimitButton({ agent }: { agent: Agent }) {
         <p className="text-xs text-muted-foreground/70">Change it in Settings → Agents.</p>
       </PopoverContent>
     </Popover>
-  );
-}
-
-/**
- * Per-agent approval mode. "Require approval" routes order tools through the
- * approval queue; "Full-auto" lets them through (still audited). The live agent
- * row comes from the agents subscription, so the label updates after the mutation.
- */
-function ApprovalModeToggle({ agent }: { agent: Agent }) {
-  const update = trpc.agents.update.useMutation();
-  const auto = agent.approvalMode === "auto";
-  return (
-    <Tooltip>
-      <TooltipTrigger asChild>
-        <button
-          type="button"
-          disabled={update.isPending}
-          onClick={() => update.mutate({ id: agent.id, approvalMode: auto ? "approve" : "auto" })}
-          className={cn(
-            "flex items-center gap-1.5 rounded-md px-2 py-1 text-xs disabled:opacity-50",
-            auto
-              ? "bg-warning/15 text-warning hover:bg-warning/25"
-              : "bg-secondary text-muted-foreground hover:bg-accent",
-          )}
-        >
-          {auto ? <Zap className="size-3" /> : <ShieldCheck className="size-3" />}
-          {auto ? "Full-auto" : "Approval"}
-        </button>
-      </TooltipTrigger>
-      <TooltipContent>
-        {auto
-          ? "Full-auto: orders execute without approval (still logged). Click to require approval."
-          : "Require approval: orders wait for your decision. Click to switch to full-auto."}
-      </TooltipContent>
-    </Tooltip>
   );
 }

@@ -28,9 +28,9 @@ function slugify(name: string): string {
 }
 
 /**
- * A template's specialty section — the template's own `CLAUDE.md` (strategy
- * persona, journaling layout, operating principles). This is the *editable* part
- * the New Agent dialog shows; the shared prefix is NOT included. Unknown templates
+ * A template's specialty section — the template's own `CLAUDE.md` (Scout persona,
+ * journaling layout, operating principles). This is the *editable* part the New Scout
+ * dialog shows; the shared prefix is NOT included. Unknown templates
  * fall back to `default`.
  */
 function readTemplateSpecialty(templatesDir: string, template: string): string {
@@ -41,10 +41,10 @@ function readTemplateSpecialty(templatesDir: string, template: string): string {
 }
 
 /**
- * Compose an agent's instructions file = the harness's shared OpenTrade prefix +
+ * Compose an agent's instructions file = the harness's shared OpenRecruit prefix +
  * the given specialty section. The prefix (`templates/agents/CLAUDE.prefix.md` /
  * `AGENTS.prefix.codex.md`) carries the system mechanics every strategy shares
- * (faucet, Robinhood MCP, approval gate, durable scheduler, wake delivery) and is
+ * (local scheduling, durable scheduler, wake delivery) and is
  * always prepended at scaffold time — it is never shown in or edited through the
  * New Agent dialog. Missing prefix is a hard error. Specialty sections are
  * harness-neutral by design, so one template serves every harness.
@@ -170,7 +170,6 @@ export class AgentRegistry {
     analytics.track("agent_created", {
       template: templateOf(input.template),
       harness: input.harness,
-      approval_mode: input.approvalMode,
     });
     return this.get(id)!;
   }
@@ -235,10 +234,8 @@ export class AgentRegistry {
       return;
     }
 
-    // Claude-style scaffold: the template's Robinhood `.mcp.json` (+ the opentrade MCP),
-    // then the harness's generated config — for claude that's `.claude/settings.json`
-    // (the order-gate hook wiring, generated in code so it survives clean CI builds) and
-    // the hook scripts.
+    // Claude-style scaffold: add the local scheduling MCP, then the harness's generated
+    // config and status hook scripts.
     this.injectOpentradeMcp(dir);
     harness.writeConfig?.(dir, agentId);
   }
@@ -254,8 +251,8 @@ export class AgentRegistry {
   }
 
   /**
-   * Add the `opentrade` stdio MCP server to the agent's `.mcp.json` (alongside the
-   * template's Robinhood entry). Carries only the command + resolved binary path —
+   * Add the local scheduling stdio MCP server to the agent's `.mcp.json`. Carries only
+   * the command + resolved binary path —
    * NO token/port (R5); those are injected via the inherited spawn env at launch.
    * Run as Node via the Electron binary (ELECTRON_RUN_AS_NODE) so packaged apps need
    * no separate node on PATH.

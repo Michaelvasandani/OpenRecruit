@@ -38,8 +38,8 @@ export class RecentNotificationsService {
    *
    * Never throws: this is the first listener on the raw `notify` bus, which the bus
    * does not isolate, so a DB error escaping here would propagate into the emitter —
-   * the scheduler firing a wake, the broker's ledger sync, the approval gate — and
-   * skip every later listener. A missing Recent row is not worth risking those.
+   * the scheduler firing a wake or another host notification — and skip every later
+   * listener. A missing Recent row is not worth risking those.
    */
   record(n: HostNotification, at: number = Date.now()): void {
     try {

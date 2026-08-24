@@ -10,7 +10,7 @@ import * as schema from "./schema";
 export const OPENTRADE_HOME = process.env.OPENTRADE_HOME ?? join(homedir(), ".opentrade");
 
 function ensureHome() {
-  // 0700: the home holds plaintext broker tokens (no safeStorage under
+  // 0700: the home holds local runtime state (no safeStorage under
   // ELECTRON_RUN_AS_NODE), so confidentiality rests on file permissions.
   if (!existsSync(OPENTRADE_HOME)) mkdirSync(OPENTRADE_HOME, { recursive: true, mode: 0o700 });
   const agentsDir = join(OPENTRADE_HOME, "agents");

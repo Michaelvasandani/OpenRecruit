@@ -1,4 +1,3 @@
-import { ExternalLink } from "lucide-react";
 import {
   AlertDialog,
   AlertDialogAction,
@@ -10,8 +9,8 @@ import {
   AlertDialogTitle,
 } from "../ui/alert-dialog";
 
-/** The OpenTrade community Discord — the opt-out alternative feedback channel. */
-export const OPENTRADE_DISCORD_URL = "https://discord.gg/F63YFPRtq";
+/** OpenRecruit's source issue tracker — the opt-out alternative feedback channel. */
+export const OPENRECRUIT_ISSUES_URL = "https://github.com/Michaelvasandani/OpenRecruit/issues";
 
 /**
  * Every event in the `shared/analytics.ts` allowlist, bucketed three ways. The dialog
@@ -19,29 +18,28 @@ export const OPENTRADE_DISCORD_URL = "https://discord.gg/F63YFPRtq";
  * contiguous group of `TELEMETRY_EVENTS`, and a new event there needs a home here:
  *  1. app — `host_started`, `app_opened`, `app_updated`, `update_downloaded`, the
  *     `onboarding_*` funnel, `setting_changed`, `telemetry_enabled|disabled`,
- *     `notification_clicked`, `broker_connected|broker_connect_failed`.
+ *     `notification_clicked`.
  *  2. agents — `agent_created|archived|restarted`, `terminal_session_started|respawned`,
  *     `schedule_created|fired`, `headless_run_finished`, `agent_marked_broken`,
- *     `turn_limit_reached`, and the categorical `order_gate_prompted|decided` +
- *     `order_submit_resolved`.
+ *     `turn_limit_reached`.
  *  3. errors — `app_error`.
  */
 const COLLECTED = [
   {
     label: "App usage",
     detail:
-      "launches, updates, onboarding progress, settings you change, and whether the broker connected",
+      "launches, onboarding progress, and settings you change",
   },
   {
     label: "Agent activity",
-    detail: "agents created or archived, schedules firing, background runs, and order approvals",
+    detail: "Scouts created or archived, schedules firing, and background runs",
   },
   { label: "Errors", detail: "the error type and the code line it came from" },
 ];
 
 /**
  * Shown when the user moves the telemetry toggle to **off** (never when turning it
- * on). Telemetry is deliberately the only product-feedback channel OpenTrade has —
+ * on). Telemetry is deliberately the only product-feedback channel OpenRecruit has —
  * local-first, no accounts, no backend holding user data — so the opt-out states what
  * it costs, the exhaustive `COLLECTED` breakdown, what is never collected (both
  * mirroring the allowlist in `shared/analytics.ts` — keep in sync if that changes),
@@ -64,7 +62,7 @@ export function TelemetryOptOutDialog({
         <AlertDialogHeader>
           <AlertDialogTitle>Turn off anonymous usage data?</AlertDialogTitle>
           <AlertDialogDescription>
-            It's our only product feedback — OpenTrade has no accounts and no server holding your
+            It's our only product feedback — OpenRecruit has no accounts and no server holding your
             data. Here's an exhaustive list of usage we collect:
           </AlertDialogDescription>
         </AlertDialogHeader>
@@ -84,19 +82,18 @@ export function TelemetryOptOutDialog({
 
         <p className="text-sm text-muted-foreground">
           <span className="font-medium text-foreground">Never collected:</span> your conversations,
-          agent names, tickers, quantities, prices, account data, or anything identifying you.
+          candidate data, source contents, or anything identifying you.
         </p>
 
         <p className="text-sm text-muted-foreground">
           If you decide to opt out, please{" "}
           <a
-            href={OPENTRADE_DISCORD_URL}
+            href={OPENRECRUIT_ISSUES_URL}
             target="_blank"
             rel="noreferrer"
             className="inline-flex items-center gap-1 text-primary hover:underline"
           >
-            join our Discord
-            <ExternalLink className="size-3" />
+            open an issue
           </a>{" "}
           so we can still hear from you!
         </p>

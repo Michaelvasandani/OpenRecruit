@@ -1,7 +1,7 @@
 /**
  * Production schema migrations for the app DB, keyed by `PRAGMA user_version`.
  *
- * OpenTrade is shipped: existing databases MUST survive updates — never drop,
+ * OpenRecruit is shipped: existing databases MUST survive updates — never drop,
  * rebuild, or require users to delete `app.db`. The scheme:
  *
  *  - `SCHEMA_DDL` (ddl.ts) is always the CURRENT schema. Running it on boot gives
@@ -250,7 +250,7 @@ export function migrate(db: MigrationDb, opts: { fresh: boolean }): void {
   if (current > SCHEMA_VERSION) {
     throw new Error(
       `app.db is schema v${current}, newer than this build (v${SCHEMA_VERSION}) — ` +
-        "refusing to open it with older code. Update OpenTrade.",
+        "refusing to open it with older code. Update OpenRecruit.",
     );
   }
   if (opts.fresh) {

@@ -26,10 +26,8 @@ const STDERR_TAIL_CHARS = 2000;
  * run's detail lives in the resumable transcript; only the wake row in the Run
  * History feed is recorded.
  *
- * Runs with `--dangerously-skip-permissions` so the agent's non-order tools
- * (journaling, watch scripts, reads) execute without an interactive prompt — the
- * order-placing tools stay gated by the PreToolUse approval hook, which fires and can
- * `deny` even under this flag (validated in Phase 0).
+ * Runs with `--dangerously-skip-permissions` so a scheduled Scout can complete its
+ * local research, journaling, and source reads without an interactive prompt.
  *
  * The strategy doesn't own state or timers: it spawns, classifies the exit, and
  * reports `ok | resumeFail | spawnFail` to the coordinator (which owns the queue, the
@@ -91,12 +89,12 @@ export class HeadlessRunStrategy implements HeadlessWakeStrategy {
     }
 
     const harness = harnessFor(agent.harness);
-    // Self-heal the harness's generated gate config before an unattended run (parity with
-    // the interactive spawn): a claude agent created by an ungated build gets its
-    // `.claude/settings.json` regenerated here, so headless orders are gated too (the
-    // PreToolUse hook fires even under --dangerously-skip-permissions).
+    // Self-heal the harness's generated config before an unattended run (parity with
+    // the interactive spawn): a Claude agent created by an older build gets its
+    // `.claude/settings.json` regenerated here, so headless runs receive the same
+    // local harness configuration as the interactive PTY.
     harness.writeConfig?.(this.registry.agentDir(agent), agentId);
-    // I3: OpenTrade owns the session id. Resume the known one, or mint+store one for a
+    // I3: OpenRecruit owns the session id. Resume the known one, or mint+store one for a
     // never-started agent (begins the conversation headlessly).
     let resuming = false;
     let sessionId: string;

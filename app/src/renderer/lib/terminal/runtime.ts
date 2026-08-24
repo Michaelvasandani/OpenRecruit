@@ -39,7 +39,7 @@ const THEME = {
  *
  * The addon handles OSC 52 escape sequences — a program running in the terminal
  * (e.g. the agent) asking to set/read the system clipboard — by calling
- * `navigator.clipboard.{writeText,readText}`. When the OpenTrade window is not
+ * `navigator.clipboard.{writeText,readText}`. When the OpenRecruit window is not
  * focused at that moment, Chromium rejects the call with a `NotAllowedError`
  * ("Document is not focused"). This is unavoidable (the browser forbids clipboard
  * access without focus) and harmless — the copy simply doesn't land.

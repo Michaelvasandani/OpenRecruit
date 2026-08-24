@@ -2,7 +2,7 @@ import { cn } from "@renderer/lib/utils";
 import type * as React from "react";
 
 /**
- * shadcn/ui Table, tuned to OpenTrade's compact look: header cells are
+ * shadcn/ui Table, tuned to OpenRecruit's compact look: header cells are
  * `py-1 text-xs font-normal text-muted-foreground`, body cells `py-1.5`, and
  * rows are separated by a top hairline (`border-t`, none on the header) — no
  * horizontal cell padding, so columns size to content as before. Per-cell

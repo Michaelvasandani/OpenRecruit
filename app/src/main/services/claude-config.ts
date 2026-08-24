@@ -22,7 +22,7 @@ export interface ClaudeRetention {
 
 /**
  * The conversation-transcript retention Claude Code applies to `~/.claude/projects/*`
- * on this machine — its `cleanupPeriodDays` setting (default 30). OpenTrade agents
+ * on this machine — its `cleanupPeriodDays` setting (default 30). OpenRecruit agents
  * resume via those transcripts, so once one ages past this window of inactivity the
  * agent resumes with **no memory** of prior conversations. Surfaced in Settings so the
  * user can extend it. Reads user settings only (the level a user would edit); a

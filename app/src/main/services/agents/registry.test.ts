@@ -97,27 +97,17 @@ describe("AgentRegistry — CLAUDE.md composition", () => {
     return readFileSync(join(r.agentDir(agent), "CLAUDE.md"), "utf8");
   }
 
-  test("prepends the shared OpenTrade prefix to every template's specialty section", () => {
-    for (const [template, specialtyMarker] of [
-      ["default", "## Your specialty — general purpose"],
-      ["dca", "## Your specialty — dollar-cost averaging (DCA)"],
-      ["momentum", "## Your specialty — momentum / trend-following"],
-    ] as const) {
+  test("prepends the shared OpenRecruit prefix to every template's specialty section", () => {
+    for (const template of ["default", "dca", "momentum"] as const) {
       const md = claudeMdFor(template);
-      expect(md).toContain(PREFIX_MARKER); // shared mechanics present…
-      expect(md).toContain(specialtyMarker); // …followed by the template's own section
-      // Prefix comes first, specialty after.
-      expect(md.indexOf(PREFIX_MARKER)).toBeLessThan(md.indexOf(specialtyMarker));
-      // The shared title appears exactly once (the specialty file no longer carries its own H1).
-      expect(md.startsWith("# OpenTrade Agent\n")).toBe(true);
-      expect(md.split("# OpenTrade Agent").length - 1).toBe(1);
+      expect(md).toContain("# OpenRecruit Local Scout");
+      expect(md).toContain("Candidate");
     }
   });
 
   test("unknown templates fall back to default but still get the prefix", () => {
     const md = claudeMdFor("does-not-exist");
-    expect(md).toContain(PREFIX_MARKER);
-    expect(md).toContain("## Your specialty — general purpose");
+    expect(md).toContain("# OpenRecruit Local Scout");
   });
 });
 
@@ -158,7 +148,7 @@ describe("AgentRegistry — codex scaffold divergence", () => {
     // `.claude/worktrees/`) previously filtered out EVERY file, leaving no kickoff.
     expect(existsSync(join(dir, "kickoff.md"))).toBe(true);
     const agents = readFileSync(join(dir, "AGENTS.md"), "utf8");
-    expect(agents).toContain("# OpenTrade Agent");
+    expect(agents).toContain("# OpenRecruit Local Scout");
     expect(agents).toContain("Codex");
 
     // Claude-shaped template files skipped; codex config generated instead.
@@ -166,17 +156,7 @@ describe("AgentRegistry — codex scaffold divergence", () => {
     expect(existsSync(join(dir, ".mcp.json"))).toBe(false);
     const toml = readFileSync(join(codexHome, "config.toml"), "utf8");
     expect(toml).toContain('approval_policy = "on-request"');
-    expect(toml).toContain("[mcp_servers.robinhood]");
-    // The fail-closed anchor: order tools ALWAYS prompt ("approve" would mean
-    // pre-approved!), everything else pre-allowed like claude's allowlist.
-    for (const t of [
-      "place_equity_order",
-      "place_option_order",
-      "cancel_equity_order",
-      "cancel_option_order",
-    ]) {
-      expect(toml).toContain(`[mcp_servers.robinhood.tools.${t}]\napproval_mode = "prompt"`);
-    }
+    expect(toml).not.toContain("robinhood");
     expect(toml).toContain('default_tools_approval_mode = "approve"');
     // Project trust suppresses the TUI's first-run trust prompt — keyed by the
     // REALPATH (codex canonicalizes the cwd before matching).
@@ -186,18 +166,10 @@ describe("AgentRegistry — codex scaffold divergence", () => {
     expect(toml).toContain("[mcp_servers.opentrade]");
     expect(toml).not.toContain("OPENTRADE_TOKEN");
 
-    // Gate hooks: claude-compatible hooks.json + executable scripts, abs paths.
+    // Status hook: claude-compatible hooks.json + executable script.
     const hooks = JSON.parse(readFileSync(join(codexHome, "hooks.json"), "utf8"));
-    const pre = hooks.hooks.PreToolUse[0];
-    expect(pre.matcher).toBe("mcp__robinhood__(place|cancel)_(equity|option)_order");
-    // The command is a shell string carrying the non-secret identifiers (codex
-    // cleans the hook env; the scripts recover port/token from the manifest).
-    expect(pre.hooks[0].command).toContain(join(codexHome, "hooks", "approval-gate.sh"));
-    expect(pre.hooks[0].command).toContain("OPENTRADE_AGENT_ID=");
-    expect(pre.hooks[0].command).toContain("OPENTRADE_HOME=");
-    expect(pre.hooks[0].timeout).toBe(600);
-    expect(existsSync(join(codexHome, "hooks", "approval-gate.sh"))).toBe(true);
-    expect(existsSync(join(codexHome, "hooks", "order-result.sh"))).toBe(true);
+    expect(hooks.hooks.PreToolUse).toBeUndefined();
+    expect(hooks.hooks.PostToolUse).toBeUndefined();
     // Stop = the turn-ended stamp (codex's only status hook — it has no
     // Notification event). No matcher: fires on every turn end.
     const stop = hooks.hooks.Stop[0];
@@ -212,7 +184,7 @@ describe("AgentRegistry — codex scaffold divergence", () => {
     rmSync(codexHome, { recursive: true, force: true });
   });
 
-  test("claude agents scaffold exactly as before (regression)", async () => {
+  test("claude agents scaffold the local runtime config", async () => {
     const { existsSync, readFileSync } = await import("node:fs");
     const { join } = await import("node:path");
     const r = memRegistry();
@@ -228,21 +200,14 @@ describe("AgentRegistry — codex scaffold divergence", () => {
     expect(existsSync(join(dir, ".mcp.json"))).toBe(true);
     expect(existsSync(join(dir, "AGENTS.md"))).toBe(false);
     expect(existsSync(join(dir, ".codex"))).toBe(false);
-    // The order GATE must actually be wired — not just that the file exists. (The old
-    // test only checked existence, which passed in dev because the untracked template
-    // settings.json is present locally; clean CI builds lack it and shipped ungated.)
     const settings = JSON.parse(readFileSync(join(dir, ".claude", "settings.json"), "utf8"));
-    const pre = settings.hooks.PreToolUse[0];
-    expect(pre.matcher).toBe("mcp__robinhood__(place|cancel)_(equity|option)_order");
-    expect(pre.hooks[0].command).toContain(".claude/hooks/approval-gate.sh");
-    expect(existsSync(join(dir, ".claude", "hooks", "approval-gate.sh"))).toBe(true);
+    expect(settings.enabledMcpjsonServers).toEqual(["opentrade"]);
+    expect(settings.hooks.PreToolUse).toBeUndefined();
+    expect(settings.hooks.PostToolUse).toBeUndefined();
+    expect(existsSync(join(dir, ".claude", "hooks", "status-notify.sh"))).toBe(true);
   });
 
-  test("claude writeConfig GENERATES the gate config from a bare dir (build-independent + self-heal)", async () => {
-    // The root cause of ungated orders: the template's .claude/settings.json is
-    // git-untracked, so a clean CI build never bundles it and a template-copy scaffold
-    // produced NO gate. writeConfig must generate it from code — proven here against a
-    // dir that has NO template settings.json (mimics a CI-created / tampered agent).
+  test("claude writeConfig generates the local runtime config from a bare dir", async () => {
     const { claudeHarness } = await import("../harness/claude");
     const { existsSync, readFileSync, mkdtempSync, rmSync } = await import("node:fs");
     const { join } = await import("node:path");
@@ -252,9 +217,10 @@ describe("AgentRegistry — codex scaffold divergence", () => {
       expect(existsSync(join(dir, ".claude", "settings.json"))).toBe(false); // bare
       claudeHarness.writeConfig?.(dir, "agent-x");
       const settings = JSON.parse(readFileSync(join(dir, ".claude", "settings.json"), "utf8"));
-      expect(settings.hooks.PreToolUse[0].hooks[0].command).toContain("approval-gate.sh");
-      expect(settings.hooks.PreToolUse[0].hooks[0].timeout).toBe(600);
-      expect(existsSync(join(dir, ".claude", "hooks", "approval-gate.sh"))).toBe(true);
+      expect(settings.enabledMcpjsonServers).toEqual(["opentrade"]);
+      expect(settings.hooks.PreToolUse).toBeUndefined();
+      expect(settings.hooks.PostToolUse).toBeUndefined();
+      expect(existsSync(join(dir, ".claude", "hooks", "status-notify.sh"))).toBe(true);
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }

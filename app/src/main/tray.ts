@@ -6,9 +6,8 @@ import { Menu, type MenuItemConstructorOptions, nativeImage, Tray } from "electr
  * The macOS menu bar (status) item — §12.6.
  *
  * A launcher-side monitor over the same relay stream that drives notifications:
- * per-agent status, the pending-approval count (also shown as the item's title so
- * it's visible without opening the menu), and a short in-memory log of recent
- * events (wakes / order results / approvals / turn-limit pauses). It's what lets the
+ * per-agent status and a short in-memory log of recent
+ * events (wakes / source reviews / turn-limit pauses). It's what lets the
  * launcher stay useful once the window is gone — with `showInMenuBar` on, ⌘Q and
  * window-close retreat here instead of exiting, so agents running headless in the
  * host still surface to the user. State is fed by `main/index.ts`; this module only
@@ -86,7 +85,6 @@ function relativeTime(at: number, now = Date.now()): string {
 export class AppTray {
   private tray: Tray | null = null;
   private agents: Agent[] = [];
-  private pending = 0;
   private recent: RecentNotification[] = [];
   private refresh: ReturnType<typeof setInterval> | null = null;
 
@@ -96,7 +94,7 @@ export class AppTray {
   show(): void {
     if (this.tray) return;
     this.tray = new Tray(trayIcon());
-    this.tray.setToolTip("OpenTrade");
+    this.tray.setToolTip("OpenRecruit");
     this.render();
     // Rows carry relative times ("2h ago"), which would otherwise freeze at whatever
     // the last data push rendered. macOS can't update an open menu, but every reopen
@@ -121,11 +119,6 @@ export class AppTray {
     this.render();
   }
 
-  setPendingCount(n: number): void {
-    this.pending = n;
-    this.render();
-  }
-
   /** Replace the Recent list wholesale — the host owns it (durable ring buffer,
    *  newest first, already capped), so there is nothing to merge here. */
   setRecent(list: RecentNotification[]): void {
@@ -135,11 +128,7 @@ export class AppTray {
 
   private render(): void {
     if (!this.tray) return;
-    // The pending-approval count rides next to the icon so the one actionable state is
-    // visible without opening the menu (the dock badge is gone once the window closes).
-    this.tray.setTitle(this.pending > 0 ? String(this.pending) : "", {
-      fontType: "monospacedDigit",
-    });
+    this.tray.setTitle("");
     this.tray.setContextMenu(Menu.buildFromTemplate(this.template()));
   }
 
@@ -147,7 +136,7 @@ export class AppTray {
     // Opening the app leads: it's the action people reach for, so it sits under the
     // cursor the moment the menu drops rather than at the far end of the list.
     const items: MenuItemConstructorOptions[] = [
-      { label: "Open OpenTrade", click: () => this.actions.openWindow() },
+      { label: "Open OpenRecruit", click: () => this.actions.openWindow() },
     ];
 
     if (this.agents.length > 0) {
@@ -167,12 +156,6 @@ export class AppTray {
     }
 
     items.push({ type: "separator" });
-    if (this.pending > 0) {
-      items.push({
-        label: `${this.pending} order${this.pending === 1 ? "" : "s"} awaiting your approval…`,
-        click: () => this.actions.openWindow(),
-      });
-    }
     items.push({
       label: "Recent",
       submenu:
@@ -196,8 +179,8 @@ export class AppTray {
       { type: "separator" },
       // Quit = the launcher only (agents keep running headless, the Docker Desktop
       // model); Completely = the backend host too — the full process tree.
-      { label: "Quit OpenTrade", click: () => this.actions.quit() },
-      { label: "Quit OpenTrade Completely", click: () => this.actions.quitCompletely() },
+      { label: "Quit OpenRecruit", click: () => this.actions.quit() },
+      { label: "Quit OpenRecruit Completely", click: () => this.actions.quitCompletely() },
     );
     return items;
   }

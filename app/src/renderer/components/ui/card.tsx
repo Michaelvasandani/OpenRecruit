@@ -2,7 +2,7 @@ import { cn } from "@renderer/lib/utils";
 import type * as React from "react";
 
 /**
- * shadcn/ui Card, tuned to OpenTrade's compact, flat look: `rounded-md`,
+ * shadcn/ui Card, tuned to OpenRecruit's compact, flat look: `rounded-md`,
  * `border-border`, no shadow, and no forced padding (callers pass `p-3`/`p-5`),
  * versus shadcn's stock `rounded-xl py-6 gap-6 shadow-sm`. Sub-parts are thin
  * helpers for when a card wants a structured header/content/footer.

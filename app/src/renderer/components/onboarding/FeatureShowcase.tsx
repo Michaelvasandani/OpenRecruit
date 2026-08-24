@@ -8,8 +8,7 @@ import type { ComponentType, ReactNode } from "react";
 /**
  * Onboarding step shown right before "Create your first agent": three core
  * features side by side, each a tinted card holding a small static preview built
- * from a subset of a real OpenTrade surface (the Scheduled list, the Portfolio
- * panel, the agent sidebar). Purely presentational — no live data, just a taste
+ * from the OpenRecruit Candidate workspace (Runs, Sources, and Scouts). Purely presentational — no live data, just a taste
  * of what the app does before the user creates anything.
  */
 export function FeatureShowcase({ onNext, className }: { onNext: () => void; className?: string }) {
@@ -18,20 +17,20 @@ export function FeatureShowcase({ onNext, className }: { onNext: () => void; cla
       <div className="grid grid-cols-1 gap-6 md:grid-cols-3">
         <Feature
           tint="sky"
-          title="Persistent timers & crons"
-          blurb="Agents schedule their own wake-ups — recurring crons and signal-based monitors that keep firing after you close the app."
+          title="Durable Scout Runs"
+          blurb="Runs stay checkpointed and resumable while the detached local host keeps scheduled discovery moving after you close the app."
           mock={<TimersMock />}
         />
         <Feature
           tint="emerald"
-          title="Track your portfolio"
-          blurb="See your account's equity, day change, and open positions, updated in real time."
-          mock={<PortfolioMock />}
+          title="Candidate Profile + Sources"
+          blurb="Review a versioned Candidate Profile, select explicit Sources, and keep provenance attached to every Signal and Lead."
+          mock={<ProfileMock />}
         />
         <Feature
           tint="violet"
-          title="Orchestrate multiple agents"
-          blurb="Status dots show which are working, need input, or are waiting on your approval."
+          title="Review employment paths"
+          blurb="Compare Scouts, Fit Evaluation evidence, Revisit Plans, and Candidate Decisions in one private workspace."
           mock={<AgentsMock />}
         />
       </div>
@@ -71,7 +70,7 @@ function Feature({
   return (
     <div className="flex flex-col">
       <div className={cn("rounded-2xl p-4 ring-1", TINTS[tint])}>
-        {/* The inset "app screenshot": a real OpenTrade panel, dark card + border. */}
+        {/* The inset preview: a compact OpenRecruit workspace card. */}
         <div className="h-60 overflow-hidden rounded-xl border border-border bg-card shadow-xl shadow-black/30">
           {mock}
         </div>
@@ -96,21 +95,21 @@ function TimersMock() {
         <CronRow
           icon={Clock}
           tone="text-sky-400"
-          title="Pre-market review"
-          schedule="Weekdays · 9:30 AM ET"
+          title="New source review"
+          schedule="Weekdays · 9:30 AM"
           right="in 3h"
         />
         <CronRow
           icon={Clock}
           tone="text-sky-400"
-          title="Midday rebalance"
+          title="Candidate follow-up"
           schedule="Weekdays · 12:00 PM"
           right="in 6h"
         />
         <CronRow
           icon={Radio}
           tone="text-emerald-400"
-          title="SPY drops 2% intraday"
+          title="Source changes"
           schedule="On signal"
           right="live"
           rightTone="text-emerald-400"
@@ -118,7 +117,7 @@ function TimersMock() {
         <CronRow
           icon={Clock}
           tone="text-sky-400"
-          title="Weekly thesis check"
+          title="Weekly profile check"
           schedule="Sundays · 6:00 PM"
           right="in 2d"
         />
@@ -157,43 +156,29 @@ function CronRow({
 }
 
 /* ------------------------------------------------------------------ */
-/* Mock 2 — Account portfolio (slice of the Portfolio panel).          */
+/* Mock 2 — Candidate Profile and Source readiness.                   */
 /* ------------------------------------------------------------------ */
 
-function PortfolioMock() {
+function ProfileMock() {
   return (
     <div className="p-3">
-      <div className="text-2xl font-semibold tabular-nums text-foreground">$1,974.04</div>
-      <div className="mt-0.5 flex items-baseline gap-1.5 text-xs font-medium text-success">
-        <span aria-hidden>▲</span>
-        <span className="tabular-nums">$34.14 (1.78%)</span>
-        <span className="font-normal text-muted-foreground">Today</span>
+      <SectionLabel>Candidate Profile · confirmed v3</SectionLabel>
+      <div className="mt-2 rounded border border-border bg-background/50 p-2 text-sm">
+        <div className="font-medium text-foreground">Senior product engineer</div>
+        <div className="mt-1 text-[11px] text-muted-foreground">
+          CV + public GitHub · updated today
+        </div>
       </div>
-
-      <div className="mt-3 flex flex-col">
-        <BalanceRow label="Buying power" value="$16.71" />
-        <BalanceRow label="Cash" value="$16.71" />
-      </div>
-
       <div className="mt-3">
         <div className="flex items-center justify-between">
-          <SectionLabel>Positions</SectionLabel>
-          <span className="text-[10px] text-muted-foreground">agentic · ••••4471</span>
+          <SectionLabel>Sources</SectionLabel>
+          <span className="text-[10px] text-success">2 ready</span>
         </div>
         <div className="mt-1">
-          <PosRow symbol="NVDA" last="$182.11" pnl="+$19.40" dir="up" />
-          <PosRow symbol="SNDK" last="$2,091.08" pnl="-$0.93" dir="down" />
+          <PosRow symbol="RSS / jobs" last="ready" pnl="public" dir="up" />
+          <PosRow symbol="X API v2" last="ready" pnl="public" dir="up" />
         </div>
       </div>
-    </div>
-  );
-}
-
-function BalanceRow({ label, value }: { label: string; value: string }) {
-  return (
-    <div className="flex items-center justify-between border-t border-border py-1.5 text-sm first:border-t-0">
-      <span className="text-muted-foreground">{label}</span>
-      <span className="tabular-nums text-foreground">{value}</span>
     </div>
   );
 }
@@ -226,26 +211,26 @@ function PosRow({
 }
 
 /* ------------------------------------------------------------------ */
-/* Mock 3 — Orchestrating multiple agents (slice of the agent sidebar).*/
+/* Mock 3 — Persistent Scouts (slice of the Scout sidebar).               */
 /* ------------------------------------------------------------------ */
 
 function AgentsMock() {
   return (
     <div className="h-full bg-sidebar p-2 text-sidebar-foreground">
       <div className="px-2 pb-1 pt-1">
-        <SectionLabel>Agents</SectionLabel>
+        <SectionLabel>Scouts</SectionLabel>
       </div>
-      <AgentRow name="Citrini Bot" status="working" note="working" selected />
-      <AgentRow name="DCA SPY/VOO" status="idle" />
+      <AgentRow name="Product roles" status="working" note="running" selected />
+      <AgentRow name="Startup paths" status="idle" />
       <AgentRow
-        name="SNDK Earnings"
+        name="Remote roles"
         status="needs-input"
         note="needs input"
         noteTone="text-amber-400"
       />
-      <AgentRow name="Pelosi Tracker" status="awaiting-approval" badge="1" />
-      <AgentRow name="13F Scanner" status="idle" />
-      <AgentRow name="X stock mentions" status="working" />
+      <AgentRow name="Founder signals" status="idle" badge="2" />
+      <AgentRow name="Open-source leads" status="idle" />
+      <AgentRow name="Revisit queue" status="working" />
     </div>
   );
 }

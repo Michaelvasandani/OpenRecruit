@@ -4,8 +4,8 @@ import { OPENTRADE_HOME } from "../db/client";
 
 /**
  * Durable host log. The backend runs detached and headless (no terminal, stdout
- * goes nowhere), yet it brokers real trades — so lifecycle, supervision, gate
- * decisions and broker errors must land in a file the user (and we) can inspect
+ * goes nowhere), yet it owns long-running local Scout sessions — so lifecycle,
+ * supervision, and runtime errors must land in a file the user (and we) can inspect
  * after the fact. Appends to ~/.opentrade/host.log; also mirrors to stderr so a
  * foreground dev run still shows output.
  */

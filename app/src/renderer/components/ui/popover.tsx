@@ -4,7 +4,7 @@ import type * as React from "react";
 
 /**
  * shadcn/ui Popover (Radix). Backs the New Agent dialog's
- * compact footer picker pills (Environment / Order approval / Template) — the
+ * compact footer picker pills (Environment / Template) — the
  * trigger is a pill button, the content a small option list. `PopoverContent`
  * defaults to a padded card; pass `className` (e.g. `p-1`) for menu-style content.
  */

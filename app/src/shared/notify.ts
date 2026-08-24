@@ -1,16 +1,18 @@
 import { z } from "zod";
 
 /**
- * The kinds of macOS notification OpenTrade shows. Each has a settings toggle
- * (§12.4) and rides the `notification_clicked` telemetry `kind` prop.
+ * The kinds of macOS notification history can contain. Legacy values remain
+ * parseable so existing local records can be read without a destructive migration.
  */
-export const NotificationKind = z.enum(["wake", "order", "approval", "restricted", "update"]);
+/** Legacy notification values remain parseable so recoverable historical rows can
+ * still be displayed, but the OpenRecruit host never emits them. */
+export const NotificationKind = z.enum(["wake", "restricted", "order", "approval", "update"]);
 export type NotificationKind = z.infer<typeof NotificationKind>;
 
 /**
  * Kinds the backend host emits over the bus / `notifications.onNotify` tRPC sub.
- * `"update"` is launcher-local (electron-updater lives in the Electron main
- * process), so it never travels over the bus.
+ * OpenRecruit currently emits only wake/restricted lifecycle notifications; the
+ * legacy order/approval/update values are intentionally not emitted.
  */
 export type HostNotificationKind = Exclude<NotificationKind, "update">;
 

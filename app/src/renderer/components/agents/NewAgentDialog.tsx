@@ -1,4 +1,4 @@
-import type { ApprovalMode, HarnessId } from "@shared/agent";
+import type { HarnessId } from "@shared/agent";
 import {
   ArrowUp,
   Check,
@@ -7,15 +7,10 @@ import {
   File,
   FileText,
   Laptop,
-  Repeat,
-  ShieldCheck,
-  TrendingUp,
   Wand2,
-  Zap,
 } from "lucide-react";
 import { type ReactNode, useEffect, useRef, useState } from "react";
 import { useCreateAgent } from "../../hooks/useCreateAgent";
-import { useSettings } from "../../hooks/useSettings";
 import { trpc } from "../../lib/trpc";
 import { cn } from "../../lib/utils";
 import { useUIStore } from "../../stores/ui";
@@ -38,8 +33,8 @@ interface PickerOption {
 
 const TEMPLATES: PickerOption[] = [
   { value: "default", icon: <Wand2 className="size-3.5" />, label: "General" },
-  { value: "dca", icon: <Repeat className="size-3.5" />, label: "Dollar-cost averaging" },
-  { value: "momentum", icon: <TrendingUp className="size-3.5" />, label: "Momentum" },
+  { value: "dca", icon: <Wand2 className="size-3.5" />, label: "Candidate sourcing" },
+  { value: "momentum", icon: <Wand2 className="size-3.5" />, label: "Profile review" },
   { value: "blank", icon: <File className="size-3.5" />, label: "Blank" },
 ];
 
@@ -59,21 +54,6 @@ const ENVIRONMENTS: PickerOption[] = [
   },
 ];
 
-const APPROVALS: PickerOption[] = [
-  {
-    value: "approve",
-    icon: <ShieldCheck className="size-3.5" />,
-    label: "Require approval",
-    hint: "You confirm every order",
-  },
-  {
-    value: "auto",
-    icon: <Zap className="size-3.5" />,
-    label: "Full-auto",
-    hint: "Orders execute automatically",
-  },
-];
-
 /**
  * The New Agent configuration dialog — a wide, CLAUDE.md-centered editor built on
  * shadcn primitives. The agent's
@@ -81,9 +61,9 @@ const APPROVALS: PickerOption[] = [
  * "CLAUDE.md"): picking a template seeds it from that template's own CLAUDE.md
  * (`agents.templateClaudeMd`, prefix excluded), and the user can edit it before
  * creating. The **Blank** template seeds nothing — the field shows its placeholder
- * and the agent gets no starter prompt. The shared OpenTrade prefix (system
+ * and the agent gets no starter prompt. The shared OpenRecruit prefix (system
  * mechanics) is prepended by the backend at scaffold time and never shown here. A
- * footer row of `Popover` picker pills sets the environment, order approval, and
+ * footer row of `Popover` picker pills sets the environment, harness, and
  * template. Gated on `newAgentOpen`; the form remounts each open so its state
  * resets.
  */
@@ -96,9 +76,9 @@ export function NewAgentDialog() {
         showCloseButton={false}
         className="w-[44rem] max-w-[92vw] gap-2.5 p-3.5 sm:max-w-[44rem]"
       >
-        <DialogTitle className="sr-only">New agent</DialogTitle>
+        <DialogTitle className="sr-only">New Scout</DialogTitle>
         <DialogDescription className="sr-only">
-          Create a new trading agent and edit its instructions.
+          Create a local Scout and edit its instructions.
         </DialogDescription>
         {/* Remount the form each open so its state resets. */}
         {open && <NewAgentForm />}
@@ -108,7 +88,6 @@ export function NewAgentDialog() {
 }
 
 function NewAgentForm() {
-  const settings = useSettings();
   const { create, isPending } = useCreateAgent();
 
   const [name, setName] = useState("");
@@ -133,9 +112,6 @@ function NewAgentForm() {
     },
   ];
   const [environment, setEnvironment] = useState<Environment>("local");
-  const [approvalMode, setApprovalMode] = useState<ApprovalMode>(
-    settings.data?.defaultApprovalMode ?? "approve",
-  );
   const [claudeMd, setClaudeMd] = useState("");
 
   // The selected template's specialty section (prefix excluded). Seeds the editor;
@@ -152,7 +128,7 @@ function NewAgentForm() {
   const canSubmit = !isPending && !!name.trim();
   const submit = () => {
     if (!canSubmit) return;
-    create({ name: name.trim(), template, harness, approvalMode, claudeMd });
+    create({ name: name.trim(), template, harness, claudeMd });
   };
 
   const selectedTemplate = TEMPLATES.find((t) => t.value === template) ?? TEMPLATES[0];
@@ -209,7 +185,7 @@ function NewAgentForm() {
         </div>
       </div>
 
-      {/* Footer: environment + approval + template pickers, create hint */}
+      {/* Footer: environment, harness, template pickers, create hint */}
       <div className="flex items-center justify-between gap-2 px-0.5">
         <div className="flex items-center gap-1.5">
           <PickerPill
@@ -231,19 +207,6 @@ function NewAgentForm() {
             options={harnessOptions}
             value={harness}
             onValueChange={(v) => setHarness(v as HarnessId)}
-          />
-          <PickerPill
-            icon={
-              approvalMode === "approve" ? (
-                <ShieldCheck className="size-3.5" />
-              ) : (
-                <Zap className="size-3.5" />
-              )
-            }
-            label={approvalMode === "approve" ? "Require approval" : "Full-auto"}
-            options={APPROVALS}
-            value={approvalMode}
-            onValueChange={(v) => setApprovalMode(v as ApprovalMode)}
           />
           <PickerPill
             icon={selectedTemplate.icon}

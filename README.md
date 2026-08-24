@@ -1,119 +1,25 @@
-<div align="center">
-  <img src="assets/logo.svg" width="360" alt="OpenTrade" />
-  <p><strong>The open-source trading harness for Claude Code / Codex agents.</strong></p>
+# OpenRecruit
 
-  <p>
-    <a href="https://github.com/OpenTradeOSS/OpenTrade/stargazers"><img src="https://img.shields.io/github/stars/OpenTradeOSS/OpenTrade?style=flat&logo=github" alt="GitHub stars" /></a>
-    <a href="https://github.com/OpenTradeOSS/OpenTrade/releases"><img src="https://img.shields.io/github/v/release/OpenTradeOSS/OpenTrade?style=flat&logo=github" alt="Latest release" /></a>
-    <a href="LICENSE"><img src="https://img.shields.io/badge/license-Elastic%20License%202.0-blue?style=flat" alt="License" /></a>
-    <a href="https://discord.gg/F63YFPRtq"><img src="https://img.shields.io/badge/Discord-555?logo=discord" alt="Discord" /></a>
-  </p>
+OpenRecruit is a source-built macOS POC for private, local employment-path discovery. It helps one Candidate import and confirm a versioned Candidate Profile, configure Scouts against explicitly selected public Sources, run bounded and checkpointed discovery, and review evidence-backed Leads, Opportunities, Fit Evaluations, Revisit Plans, and Candidate Decisions.
 
-  <p>
-    <a href="https://www.producthunt.com/products/opentrade?embed=true&amp;utm_source=badge-featured&amp;utm_medium=badge&amp;utm_campaign=badge-opentrade" target="_blank" rel="noopener noreferrer"><img alt="OpenTrade - Open-source trading harness for Claude Code / Codex. | Product Hunt" width="250" height="54" src="https://api.producthunt.com/widgets/embed-image/v1/featured.svg?post_id=1223212&amp;theme=light&amp;t=1787349340884"></a>
-  </p>
+The detached local host, Electron shell, SQLite migrations, Claude/Codex harnesses, PTY transport, authenticated local APIs, WebSockets, scheduler, wake coordinator, supervision, notifications, and terminal diagnostics remain useful runtime mechanics. The active product path is recruiting-neutral: no broker connection, OAuth, order or market surface, trading prompt, broker MCP, public updater, external messaging, job application submission, or hosted account is included.
 
-  <img src="assets/demo.png" width="820" alt="OpenTrade app — agent sidebar, live terminal, and portfolio panel" />
-</div>
+## Local development
 
-OpenTrade is a macOS app that enables agents to trade and react to the market autonomously. Agents execute trades in your [Robinhood Agentic Trading](https://robinhood.com/us/en/agentic-trading/) account through the official MCP. Set guardrails, monitors, and schedules so agents can trade 24/7 - all on your machine.
+Install dependencies, then run the Electron app from `app/`:
 
-## Features
-
-<table>
-<tr>
-<td width="50%" valign="middle">
-
-### Monitor real-time events
-
-Agents can schedule themselves periodically or on arbitrary events via background scripts.
-
-</td>
-<td width="50%">
-  <img src="assets/readme/monitor-events.jpg" alt="The Monitor tab listing an agent's active timers and event monitors, including the shell command that wakes it on a new RSS post" width="100%" />
-</td>
-</tr>
-<tr>
-<td width="50%" valign="middle">
-
-### Orchestrate multiple agents
-
-Delegate strategies and your portfolio to any number of agents.
-
-</td>
-<td width="50%">
-  <img src="assets/readme/orchestrate-agents.jpg" alt="The agent sidebar with nine agents, each running its own strategy, next to the selected agent's terminal" width="100%" />
-</td>
-</tr>
-<tr>
-<td width="50%" valign="middle">
-
-### Trading guardrails
-
-Manual/auto order approvals, background turn limits for agents, and per-agent order accounting.
-
-</td>
-<td width="50%">
-  <img src="assets/readme/guardrails.jpg" alt="A pending buy order awaiting approval, above a history of past decisions and an order that expired undecided" width="100%" />
-</td>
-</tr>
-<tr>
-<td width="50%" valign="middle">
-
-### Background sessions
-
-Agents continue to get notified and work in the background, even if the app is closed.
-
-</td>
-<td width="50%">
-  <img src="assets/readme/background-sessions.jpg" alt="The OpenTrade menu bar tray reporting three of nine agents working, with each agent's status listed" width="100%" />
-</td>
-</tr>
-</table>
-
-## Install
-
-Download the latest `OpenTrade-<version>-arm64.dmg` from
-[Releases](https://github.com/OpenTradeOSS/OpenTrade/releases), open it, and drag OpenTrade to
-Applications. Requires an Apple Silicon Mac. The app auto-updates from GitHub Releases.
-
-OpenTrade supports both Claude Code and Codex agents, so please install and sign into `claude`
-and/or `codex` CLI. An authenticated MCP connection to Robinhood via your agent is required, see
-the [Robinhood MCP](https://robinhood.com/us/en/support/articles/agentic-trading-overview/#ConnectyourAIagent)
-instructions.
-
-## Build from source
-
-```bash
-bun install                 # from repo root (bun workspaces)
-bun run --cwd app rebuild   # rebuild native modules for the Electron ABI (once)
-bun run --cwd app dev       # launch with HMR
+```sh
+cd app
+bun install
+bun run dev
 ```
 
-## Contributing
+The source-built POC intentionally has no public release feed or auto-update behavior. Build artifacts are local and should be inspected before sharing.
 
-Contributions are welcome — bug reports, fixes, and features alike. Open a pull request and
-we'll take a look.
+Candidate data is stored locally under the OpenRecruit data directory. Existing legacy database tables and rows are retained additively for recovery and are not converted into recruiting records.
 
-## Community
+## Privacy and scope
 
-Come join our [Discord](https://discord.gg/F63YFPRtq) to discuss all things OpenTrade!
+OpenRecruit does not store provider credentials, cookies, unnecessary personal data, or provider transcripts in recruiting records. Source access is explicit and bounded. The POC never submits applications or sends external messages.
 
-## Disclaimer
-
-OpenTrade is experimental software provided **as-is and without warranty of any kind**.
-It is **not financial, investment, or trading advice**. The software runs autonomous
-agents that can place and cancel real orders against a funded brokerage account; **you
-are solely responsible for configuring, supervising, and bearing the financial
-consequences of your agents.** Trading involves substantial risk of loss.
-
-OpenTrade is built by Exla Corp. It is **not affiliated with, endorsed by,
-or sponsored by Robinhood Markets, Inc., Anthropic, or OpenAI.** "Robinhood," "Claude,"
-"Claude Code," and "Codex" are trademarks of their respective owners. You are responsible
-for complying with the terms of service of any broker or API you connect to.
-
-## License
-
-[Elastic License 2.0](LICENSE) — source-available. You may use, copy, modify, and
-redistribute the software, but you may not provide it to third parties as a hosted or
-managed service. See [LICENSE](LICENSE) and third-party attributions in [NOTICE](NOTICE).
+OpenRecruit is experimental software provided as-is and without warranty. It is not employment, investment, legal, or financial advice.

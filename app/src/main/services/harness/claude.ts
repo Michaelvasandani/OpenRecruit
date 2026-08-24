@@ -5,64 +5,34 @@ import {
   existsSync,
   mkdirSync,
   readdirSync,
-  readFileSync,
   writeFileSync,
 } from "node:fs";
-import { homedir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
 import { resolveHooksDir } from "../agents/paths";
-import { claudeConfigHasRobinhood } from "./robinhood-mcp";
 import type { Harness, ProbeResult, SessionMode } from "./types";
 
 const execFileAsync = promisify(execFile);
 
 /**
- * The agent-dir `.claude/settings.json` that wires Claude Code's order gate: the
- * PreToolUse hook on the four order tools (→ `approval-gate.sh`, the approval card),
- * the PostToolUse order-result capture, and the Notification/Stop status hooks, plus
- * the read-only-tool allowlist. Generated IN CODE (not copied from the template): the
+ * The agent-dir `.claude/settings.json` that wires Claude Code's local scheduling and
+ * Notification/Stop status hooks. Generated IN CODE (not copied from the template): the
  * template's `.claude/settings.json` is git-untracked (`.claude/` is gitignored), so a
- * clean CI release build never bundles it and a template-copy scaffold leaves the agent
- * UNGATED. Emitting it here — and re-emitting before every spawn — makes the gate
- * build-independent and self-heals agents created by an older/ungated build.
+ * clean source build never bundles it and a template-copy scaffold leaves the agent
+ * without local runtime wiring. Emitting it here — and re-emitting before every spawn —
+ * makes the runtime config build-independent and self-heals agents created by an older build.
  * `$CLAUDE_PROJECT_DIR` resolves to the agent folder, so the hooks stay agent-scoped
  * (never the user's global `~/.claude`).
  */
 const CLAUDE_SETTINGS_JSON = `${JSON.stringify(
   {
     $schema: "https://json.schemastore.org/claude-code-settings.json",
-    enabledMcpjsonServers: ["robinhood", "opentrade"],
+    enabledMcpjsonServers: ["opentrade"],
     permissions: {
-      allow: [
-        "mcp__robinhood__get_*",
-        "mcp__robinhood__search",
-        "mcp__robinhood__review_*",
-        "mcp__opentrade__*",
-      ],
+      allow: ["mcp__opentrade__*"],
       deny: [],
     },
     hooks: {
-      PreToolUse: [
-        {
-          matcher: "mcp__robinhood__(place|cancel)_(equity|option)_order",
-          hooks: [
-            {
-              type: "command",
-              command: "$CLAUDE_PROJECT_DIR/.claude/hooks/approval-gate.sh",
-              timeout: 600,
-            },
-          ],
-        },
-      ],
-      PostToolUse: [
-        {
-          matcher: "mcp__robinhood__(place|cancel)_(equity|option)_order",
-          hooks: [
-            { type: "command", command: "$CLAUDE_PROJECT_DIR/.claude/hooks/order-result.sh" },
-          ],
-        },
-      ],
       Notification: [
         {
           hooks: [
@@ -96,11 +66,10 @@ const CLAUDE_SETTINGS_JSON = `${JSON.stringify(
 const CHANNEL_ARG = "--dangerously-load-development-channels=server:opentrade";
 
 /**
- * Claude Code: the original harness. OpenTrade mints the session uuid
+ * Claude Code: the original harness. OpenRecruit mints the session uuid
  * (`--session-id`) and resumes it everywhere; interactive PTYs register the
  * `opentrade` channel so scheduled wakes inject into the live session; headless
- * wakes are one-shot `--resume … -p` children with permissions skipped (order
- * tools stay gated by the PreToolUse hook, which fires even under that flag).
+ * wakes are one-shot `--resume … -p` children with permissions skipped.
  */
 export const claudeHarness: Harness = {
   id: "claude",
@@ -119,10 +88,10 @@ export const claudeHarness: Harness = {
   },
 
   writeConfig(agentDir: string): void {
-    // Generate the order-gate config in the agent's OWN .claude folder (project-scoped;
+    // Generate the local runtime config in the agent's OWN .claude folder (project-scoped;
     // never the user's global ~/.claude). Runs at scaffold AND before every spawn, so it
     // heals agents that a clean CI build created without the (untracked) template
-    // settings.json — the root cause of ungated orders. Also (re)ensures the executable
+    // settings.json. Also (re)ensures the executable
     // hook scripts the settings reference.
     const claudeDir = join(agentDir, ".claude");
     const hooksDir = join(claudeDir, "hooks");
@@ -165,19 +134,6 @@ export const claudeHarness: Harness = {
       return { found: true, version: stdout.trim() };
     } catch {
       return { found: false, version: null };
-    }
-  },
-
-  robinhoodMcpConfigured(): boolean {
-    // Claude Code's user config. Only the top-level `mcpServers` map is user-scope
-    // — the one every agent folder inherits. Servers added at local/project scope
-    // live under that project's own entry and don't carry over, so they
-    // deliberately don't count as configured here.
-    try {
-      return claudeConfigHasRobinhood(readFileSync(join(homedir(), ".claude.json"), "utf8"));
-    } catch {
-      // No config file yet (fresh Claude Code install) — nothing registered.
-      return false;
     }
   },
 };

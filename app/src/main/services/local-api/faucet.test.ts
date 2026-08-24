@@ -1,30 +1,10 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
-import type { Quote } from "@shared/broker";
 import { LocalApiServer } from "./index";
 
-// Minimal broker stub — the faucet only calls getQuote / getPositionsLive.
-const stubBroker = {
-  getQuote: async (symbol: string): Promise<Quote> => ({
-    symbol,
-    last: 123.45,
-    previousClose: 120,
-    askPrice: null,
-    bidPrice: null,
-  }),
-  getPositionsLive: async () => [
-    {
-      symbol: "AAPL",
-      quantity: 5,
-      averageCost: 100,
-      lastPrice: 110,
-      marketValue: 550,
-      unrealizedPnl: 50,
-    },
-  ],
-};
-
-// biome-ignore lint/suspicious/noExplicitAny: stubs stand in for the real services
-const server = new LocalApiServer({ broker: stubBroker as any } as any);
+const server = new LocalApiServer({
+  registry: { get: () => undefined },
+  arbiter: {},
+} as never);
 let base = "";
 
 beforeAll(async () => {
@@ -33,7 +13,7 @@ beforeAll(async () => {
 });
 afterAll(() => server.stop());
 
-describe("market-data faucet", () => {
+describe("authenticated local API", () => {
   test("/health needs no token", async () => {
     const res = await fetch(`${base}/health`);
     expect(res.status).toBe(200);
@@ -44,22 +24,9 @@ describe("market-data faucet", () => {
     expect(res.status).toBe(401);
   });
 
-  test("serves a quote with a valid token", async () => {
-    const res = await fetch(`${base}/quotes/aapl?maxAge=5`, {
-      headers: { "x-opentrade-token": server.token },
-    });
-    expect(res.status).toBe(200);
-    const body = (await res.json()) as Quote;
-    expect(body.symbol).toBe("AAPL");
-    expect(body.last).toBe(123.45);
-  });
-
-  test("serves positions with a valid token", async () => {
-    const res = await fetch(`${base}/positions`, {
-      headers: { "x-opentrade-token": server.token },
-    });
-    expect(res.status).toBe(200);
-    const body = (await res.json()) as unknown[];
-    expect(body).toHaveLength(1);
+  test("does not expose inherited market-data routes", async () => {
+    const headers = { "x-opentrade-token": server.token };
+    expect((await fetch(`${base}/quotes/AAPL`, { headers })).status).toBe(404);
+    expect((await fetch(`${base}/positions`, { headers })).status).toBe(404);
   });
 });

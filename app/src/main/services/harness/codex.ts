@@ -20,21 +20,9 @@ import { hostLog } from "../../host/log";
 import { resolveAgentMcp, resolveHooksDir } from "../agents/paths";
 import { bus } from "../event-bus";
 import { type CodexAppServerManager, codexHomeFor } from "./codex-app-server";
-import { codexConfigHasRobinhood, ROBINHOOD_MCP_URL } from "./robinhood-mcp";
 import type { Harness, ProbeResult, SessionMode } from "./types";
 
 const execFileAsync = promisify(execFile);
-/** The four order-placing tools gated by the approval anchor + the hook matcher.
- *  Single source for the codex side of the gate surface (the claude template's
- *  settings.json carries the equivalent matcher as a static string). */
-export const ORDER_TOOLS = [
-  "place_equity_order",
-  "place_option_order",
-  "cancel_equity_order",
-  "cancel_option_order",
-] as const;
-export const ORDER_TOOL_MATCHER = "mcp__robinhood__(place|cancel)_(equity|option)_order";
-
 /** Env keys stripped from a codex background run when subscription auth is enforced
  *  (single source — referenced by both the harness field and the server-env builder
  *  in host wiring). */
@@ -66,7 +54,7 @@ function surfaceSessionSplit(agent: Agent, detail: string): void {
   bus.emitEvent("notify", {
     kind: "restricted",
     title: `${agent.name} — Session not reachable`,
-    body: "Its terminal isn't on OpenTrade's engine, so scheduled wakes won't run. Restart the agent.",
+    body: "Its terminal isn't on OpenRecruit's engine, so scheduled wakes won't run. Restart the agent.",
     agentId: agent.id,
   });
 }
@@ -84,15 +72,7 @@ function surfaceSessionSplit(agent: Agent, detail: string): void {
  * resume works. Argv stays CLEAN in all modes — any `-c`/`--profile` override
  * silently drops the TUI into its embedded engine, splitting the session.
  *
- * The order gate is layered fail-closed (spike-verified):
- *  - anchor: `approval_mode = "prompt"` on the four order tools in the generated
- *    config.toml — codex core raises an elicitation the backend answers through
- *    ApprovalService; no answer / client error / disconnect = Decline.
- *    (`"approve"` means PRE-approved in codex — never use it for order tools.)
- *  - redundancy: the same approval-gate.sh PreToolUse hook as claude (codex
- *    accepts the identical deny JSON); hooks require trust, pre-established via
- *    a `hooks.state` batchWrite at server start.
- * `writeConfig` re-runs before every spawn, healing any tampering.
+ * `writeConfig` re-runs before every spawn, healing local runtime configuration.
  */
 export function createCodexHarness(manager: CodexAppServerManager): Harness {
   return {
@@ -219,11 +199,12 @@ export function createCodexHarness(manager: CodexAppServerManager): Harness {
         hostLog.warn("codex auth link failed (agent may need `codex login`)", String(err));
       }
 
-      // Gate scripts (same scripts as the claude scaffold — they just forward the
-      // payload to the local gate endpoints).
+      // Status script (shared with the Claude harness) forwards turn lifecycle
+      // events to the authenticated local host.
       const hooksSrc = resolveHooksDir();
       if (existsSync(hooksSrc)) {
         for (const file of readdirSync(hooksSrc)) {
+          if (file !== "status-notify.sh") continue;
           const dest = join(hooksDir, file);
           copyFileSync(join(hooksSrc, file), dest);
           try {
@@ -236,8 +217,7 @@ export function createCodexHarness(manager: CodexAppServerManager): Harness {
 
       // hooks.json — the claude-compatible format codex reads from CODEX_HOME
       // (which is OUTSIDE the agent dir; the agent only sees its effects).
-      // PreToolUse = the redundant gate layer; PostToolUse = order-outcome capture;
-      // Stop = the turn-ended stamp (→ `last_turn_at`, §6.7 — codex has no
+      // Stop = the turn-ended stamp (→ `last_turn_at` — codex has no
       // Notification event, so Stop is its only status hook). Hooks execute on
       // BOTH transports: the supervised app-server runs turns (and hooks) for
       // background wakes and the TUI's threads alike.
@@ -247,30 +227,6 @@ export function createCodexHarness(manager: CodexAppServerManager): Harness {
       const hookEnv = `OPENTRADE_AGENT_ID='${agentId}' OPENTRADE_HOME='${OPENTRADE_HOME}'`;
       const hooks = {
         hooks: {
-          PreToolUse: [
-            {
-              matcher: ORDER_TOOL_MATCHER,
-              hooks: [
-                {
-                  type: "command",
-                  command: `${hookEnv} '${join(hooksDir, "approval-gate.sh")}'`,
-                  timeout: 600,
-                },
-              ],
-            },
-          ],
-          PostToolUse: [
-            {
-              matcher: ORDER_TOOL_MATCHER,
-              hooks: [
-                {
-                  type: "command",
-                  command: `${hookEnv} '${join(hooksDir, "order-result.sh")}'`,
-                  timeout: 30,
-                },
-              ],
-            },
-          ],
           Stop: [
             {
               hooks: [
@@ -316,32 +272,23 @@ export function createCodexHarness(manager: CodexAppServerManager): Harness {
       } catch {
         // keep the raw path
       }
-      const config = `# Generated by OpenTrade — DO NOT EDIT. Rewritten on every agent launch.
+      const config = `# Generated by OpenRecruit — DO NOT EDIT. Rewritten on every agent launch.
 
 approval_policy = "on-request"
 sandbox_mode = "workspace-write"
 
-# network_access is DELIBERATELY false (F2): the app-server control socket lives at
+# network_access is DELIBERATELY false: the app-server control socket lives at
 # $CODEX_HOME/app-server-control and codex's seatbelt gates unix-socket connects via the
 # network-outbound rule (path-independent). With network on, the model's sandboxed shell
 # tool can connect to that socket as a FULL app-server client and self-approve its own
-# order elicitations (or config/batchWrite the gate off) — defeating the human order gate.
-# Turning it off blocks that (spike-verified: connect → EPERM) at the cost of the agent's
-# SHELL web access only. Hooks + MCP run UNSANDBOXED (server-spawned), so the gate hook's
-# localhost curl and Robinhood/opentrade MCP are unaffected. See ARCHITECTURE §6.9.
+# Turning it off blocks that at the cost of the agent's SHELL web access only.
+# Hooks + MCP run UNSANDBOXED (server-spawned), while the local scheduling MCP remains
+# authenticated through the host env.
 [sandbox_workspace_write]
 network_access = false
 
 [projects.${tomlKey(trustedDir)}]
 trust_level = "trusted"
-
-[mcp_servers.robinhood]
-url = "${ROBINHOOD_MCP_URL}"
-default_tools_approval_mode = "approve"
-
-${ORDER_TOOLS.map((t) => `[mcp_servers.robinhood.tools.${t}]\napproval_mode = "prompt"`).join(
-  "\n\n",
-)}
 
 [mcp_servers.opentrade]
 command = ${JSON.stringify(process.execPath)}
@@ -363,19 +310,6 @@ ${hooksState}`;
         return { found: true, version: stdout.trim() };
       } catch {
         return { found: false, version: null };
-      }
-    },
-
-    robinhoodMcpConfigured(): boolean {
-      // The USER's `~/.codex/config.toml` — deliberately not a per-agent CODEX_HOME
-      // (none exists during onboarding, and the question is about the user's own CLI).
-      try {
-        return codexConfigHasRobinhood(
-          readFileSync(join(homedir(), ".codex", "config.toml"), "utf8"),
-        );
-      } catch {
-        // No config file yet (fresh codex install) — nothing registered.
-        return false;
       }
     },
   };

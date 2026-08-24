@@ -19,9 +19,7 @@ export default defineConfig({
     },
     build: {
       // "hidden": emit sourcemaps but leave no `//# sourceMappingURL` comment in the
-      // bundle, so the maps are NOT shipped/referenced in the user build — they're
-      // excluded from the app in electron-builder.yml and published as a GitHub Release
-      // asset for symbolicating `app_error` frames. See docs/ARCHITECTURE.md §telemetry.
+      // bundle, so maps stay out of the source-built app and can be inspected locally.
       sourcemap: "hidden",
       rollupOptions: {
         // ws's optional perf deps — left as runtime requires so ws's internal
@@ -30,7 +28,7 @@ export default defineConfig({
         input: {
           index: resolve("src/main/index.ts"),
           // Persistent, headless backend host; spawned detached by the app via
-          // ELECTRON_RUN_AS_NODE. Owns DB/broker/gate/PTYs and serves the GUI.
+          // ELECTRON_RUN_AS_NODE. Owns the recruiting DB, PTYs, and serves the GUI.
           host: resolve("src/main/host/index.ts"),
           // Per-agent MCP server (`opentrade`): cron/monitor tools over stdio,
           // spawned by `claude` (interactive + headless) per each agent's .mcp.json.
@@ -48,7 +46,7 @@ export default defineConfig({
       },
     },
     build: {
-      // See the main build: hidden maps, published as a Release asset, never shipped.
+      // See the main build: hidden maps are never shipped in the source POC.
       sourcemap: "hidden",
       rollupOptions: {
         input: { index: resolve("src/preload/index.ts") },
@@ -68,7 +66,7 @@ export default defineConfig({
       // Emit sourcemaps so sanitized renderer stack fingerprints (bundle file:line —
       // see shared/analytics.ts) resolve back to source. "hidden" keeps them out of the
       // shipped bundle (no sourceMappingURL comment; also excluded in electron-builder.yml)
-      // — they're published as a GitHub Release asset for triage, not handed to users.
+      // — they are available for local triage, not handed to users.
       sourcemap: "hidden",
       rollupOptions: {
         input: { index: resolve("src/renderer/index.html") },

@@ -33,7 +33,7 @@ interface AgentGroup {
  * Full-screen Scheduled view. An automations-style row table of every durable
  * cron schedule + monitor the backend scheduler is tracking (§12.2), grouped by the
  * owning agent. Rows expand downward on click to reveal full details. Read-only —
- * agents create/remove these themselves via the `opentrade` MCP server.
+ * Scouts create/remove these themselves via the local scheduling MCP server.
  */
 export function ScheduledScreen() {
   const { schedules, monitors } = useSchedules();

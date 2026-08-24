@@ -5,7 +5,7 @@ import type * as React from "react";
 
 /**
  * shadcn/ui Badge. Adds soft-tone variants (`muted`,
- * `softDestructive`) for OpenTrade's status pills (e.g. the approval countdown),
+ * `softDestructive`) for OpenRecruit's status pills,
  * which use a tinted background rather than a solid fill.
  */
 const badgeVariants = cva(

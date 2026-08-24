@@ -101,7 +101,7 @@ const settingKey = z.enum([
 ]);
 
 /** Onboarding step ids (mirrors renderer/screens/Onboarding.tsx). */
-export const OnboardingStep = z.enum(["claude", "broker", "showcase", "agent"]);
+export const OnboardingStep = z.enum(["runtime", "showcase", "agent"]);
 export type OnboardingStep = z.infer<typeof OnboardingStep>;
 
 /** Agent template ids (mirrors templates/agents/*). */
@@ -129,7 +129,6 @@ export const TELEMETRY_EVENTS = {
   agent_created: z.strictObject({
     template: agentTemplate,
     harness: HarnessId,
-    approval_mode: ApprovalMode,
   }),
   agent_archived: z.strictObject({}),
   agent_restarted: z.strictObject({}),

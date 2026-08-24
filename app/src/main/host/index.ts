@@ -1,30 +1,23 @@
-// OpenTrade backend host entry point.
+// OpenRecruit backend host entry point.
 //
 // Spawned by the Electron app as a SEPARATE, DETACHED process (Electron binary
 // running as Node, ELECTRON_RUN_AS_NODE=1). This is the persistent "brain": it
-// owns the DB, the Robinhood connection, the approval gate, the audit log, and
-// each agent's `claude` PTY — so agents keep running (and the gate keeps working)
+// owns the recruiting database and each agent's `claude` PTY — so local Runs keep running
 // with the GUI closed. The app is a thin client that adopts-or-spawns this host
 // and talks to it over localhost tRPC-HTTP/WS.
 //
 // No Electron APIs are available here (app/shell/Notification/safeStorage); the
 // service chain is headless-clean and the launcher passes app metadata via env.
 
-import { execFile } from "node:child_process";
 import { randomBytes } from "node:crypto";
 import { createDb, OPENTRADE_HOME } from "../db/client";
 import { AgentRegistry } from "../services/agents/registry";
 import { analytics } from "../services/analytics";
-import { ApprovalService } from "../services/approvals";
-import { AuditLog } from "../services/audit";
-import { BrokerService } from "../services/broker";
-import { brokerErrorCode } from "../services/broker/network-error";
-import { RobinhoodAdapter } from "../services/broker/robinhood/client";
 import { bus } from "../services/event-bus";
 import { registerHarness } from "../services/harness";
 import { CODEX_SUBSCRIPTION_AUTH_STRIP, createCodexHarness } from "../services/harness/codex";
 import { CodexAppServerManager } from "../services/harness/codex-app-server";
-import { buildCodexAnswerer, buildInteractivePushFactory } from "../services/harness/codex-gate";
+import { buildInteractivePushFactory } from "../services/harness/codex-gate";
 import { LocalApiServer } from "../services/local-api";
 import { derivePort } from "../services/local-api/endpoint";
 import { RecentNotificationsService } from "../services/notifications/recent";
@@ -46,26 +39,10 @@ import { hostLog } from "./log";
 import { clearManifest, writeManifest } from "./manifest";
 import { HostTrpcServer } from "./trpc-server";
 
-/**
- * Open a URL in the user's browser headlessly (no Electron shell). Its only caller is
- * the broker's OAuth consent, so a failure is reported under `broker`: without that, a
- * consent whose tab never opened is indistinguishable in telemetry from one the user
- * abandoned (both end in `OAUTH_TIMEOUT`).
- */
-function openExternal(url: string): void {
-  const cmd =
-    process.platform === "darwin" ? "open" : process.platform === "win32" ? "start" : "xdg-open";
-  execFile(cmd, [url], (err) => {
-    if (!err) return;
-    hostLog.error("openExternal failed", String(err));
-    analytics.trackError("broker", err, "caught", brokerErrorCode(err));
-  });
-}
-
 async function main() {
-  // Name the detached backend so it reads as OpenTrade in `ps`/`top` (it's an
+  // Name the detached backend so it reads as OpenRecruit in `ps`/`top` (it's an
   // ELECTRON_RUN_AS_NODE child of the app binary). See docs/PACKAGING.md.
-  process.title = "OpenTrade Host";
+  process.title = "OpenRecruit Host";
   hostLog.info(`host starting (pid ${process.pid}) home=${OPENTRADE_HOME}`);
 
   const db = createDb();
@@ -76,7 +53,7 @@ async function main() {
   const settings = new SettingsService(db);
   // Durable Recent ring buffer for the tray (§12.6). Subscribed HERE, before anything
   // that can emit `notify` — the scheduler's boot catch-up sweep (scheduler.start()
-  // below) fires wake notifications synchronously, and the broker auto-connect can too.
+  // below) fires wake notifications synchronously.
   const recent = new RecentNotificationsService(db);
   recent.start();
   // Single telemetry funnel — wired early so the gui:present / settings:changed
@@ -84,11 +61,6 @@ async function main() {
   // and in dev (unless OPENTRADE_ANALYTICS_DEV=1).
   analytics.init({ settings });
   const arbiter = new StatusArbiter(registry);
-  const audit = new AuditLog(db, registry);
-  const approvals = new ApprovalService(db, registry, audit, arbiter);
-  // Fresh host process → no agent hook is still long-polling, so pending rows
-  // really are orphans.
-  approvals.expireOrphansOnBoot();
   // A surviving wake marker is positive evidence the previous host exited uncleanly
   // (a clean shutdown clears them) — capture it before reconcile clears the markers.
   const afterCrash = readSpawnMarkers().length > 0;
@@ -96,22 +68,10 @@ async function main() {
   // mark the agent broken so we never spawn a second writer on its session (E1).
   reconcileSpawnMarkers(registry);
 
-  const adapter = new RobinhoodAdapter({ db, openBrowser: openExternal });
-  // `approvals` supplies the order→agent link so order notifications fire only for
-  // agent-placed orders (§12.4).
-  const broker = new BrokerService(db, adapter, settings, approvals);
-  // Reverse link: let a cancel's approval card resolve the target order id against
-  // the cached ledger so it shows the real order, not a bare uuid (§6.9).
-  approvals.setOrderResolver(
-    (orderId) => broker.getAgenticOrdersCached()?.value.find((o) => o.id === orderId) ?? null,
-  );
-
   // Stable endpoint: home-derived faucet port + persisted token, shared by the
-  // faucet/gate, the terminal WS, and the tRPC server.
+  // scheduler, the terminal WS, and the tRPC server.
   const token = settings.getOrCreate("local_api_token", () => randomBytes(24).toString("hex"));
   const localApi = new LocalApiServer({
-    broker,
-    approvals,
     registry,
     arbiter,
     port: derivePort(),
@@ -121,9 +81,8 @@ async function main() {
 
   // Codex agents run against a per-agent supervised `codex app-server` (the engine
   // the stock TUI in the PTY auto-attaches to). The backend connects episodically —
-  // wakes, headless turns, thread creation — and answers approval requests through
-  // the same ApprovalService gate as claude's hooks. Server env is fixed at server
-  // spawn; a `backgroundAllowApiKey` change applies to the next server (re)start.
+  // wakes, headless turns, and thread creation. Server env is fixed at server spawn;
+  // a `backgroundAllowApiKey` change applies to the next server (re)start.
   const codexManager = new CodexAppServerManager(
     (agentId) =>
       buildAgentEnv(
@@ -139,7 +98,7 @@ async function main() {
             : [...CODEX_SUBSCRIPTION_AUTH_STRIP],
         },
       ),
-    buildCodexAnswerer(approvals),
+    async () => ({}),
   );
   // Codex is constructed here (it needs the manager) and registered into the
   // harness registry, which the rest of the app resolves through `harnessFor`.
@@ -190,11 +149,6 @@ async function main() {
   // Let the coordinator pause/resume an agent's crons + monitors as it breaks/recovers.
   wake.setScheduler(scheduler);
 
-  // Reconnect the broker silently if we already have cached tokens.
-  if (broker.isAuthorized()) {
-    broker.connect().catch((err) => hostLog.error("broker auto-connect failed", String(err)));
-  }
-
   // Arm timers + monitor children after the boot sweep (services are all up).
   scheduler.start();
 
@@ -202,9 +156,6 @@ async function main() {
     db,
     registry,
     terminal,
-    broker,
-    approvals,
-    audit,
     settings,
     scheduler,
     wake,

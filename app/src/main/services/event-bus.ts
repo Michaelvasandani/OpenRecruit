@@ -1,7 +1,5 @@
 import { EventEmitter } from "node:events";
 import type { Agent } from "@shared/agent";
-import type { Approval } from "@shared/approval";
-import type { BrokerConnectionStatus } from "@shared/broker";
 import type { HostNotification, RecentNotification } from "@shared/notify";
 import type { RecruitingInvalidation } from "@shared/recruiting";
 import type { AppSettings } from "@shared/settings";
@@ -12,18 +10,10 @@ export interface AppEvents {
   /** An agent was archived — harness runtimes (codex app-server) shut down. */
   "agent:archived": { agentId: string };
   "system:tick": { at: number };
-  /** Global settings changed; live consumers (broker poller, renderer) re-read. */
+  /** Global settings changed; live consumers re-read. */
   "settings:changed": AppSettings;
-  "broker:updated": { keys: string[] };
-  "broker:status": { status: BrokerConnectionStatus };
   /** A dead session was auto-restarted (fresh `claude`); renderer should reattach. */
   "terminal:respawned": { agentId: string };
-  /** Pending/history approvals changed; renderer re-queries both lists. */
-  "approvals:changed": { agentId: string | null };
-  /** A new approval needs the user's attention (drives notification + dock badge). */
-  "approval:pending": Approval;
-  /** A row was appended to the audit log; renderer re-queries the Activity feed. */
-  "audit:changed": { agentId: string | null };
   /** A schedule/monitor was created, deleted, or fired; renderer re-queries the Scheduled view. */
   "scheduler:changed": { agentId: string | null };
   /** A host-formatted macOS notification; the launcher relay gates it (per-kind

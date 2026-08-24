@@ -98,7 +98,7 @@ export const SCHEMA_DDL = `
       at INTEGER NOT NULL
     );
 
-    -- Recruiting v6. This is additive beside the inherited OpenTrade tables;
+    -- Recruiting v6. This is additive beside inherited legacy tables;
     -- migration v6 imports active legacy agents into scouts after these tables exist.
     CREATE TABLE IF NOT EXISTS profiles (
       id TEXT PRIMARY KEY,

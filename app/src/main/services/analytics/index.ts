@@ -49,7 +49,7 @@ const REPORTABLE_SETTING_KEYS = [
 // categorical/boolean value, so it isn't in the `settingKey` telemetry enum.
 
 /**
- * The single telemetry funnel. Everything OpenTrade sends to PostHog goes through
+ * The single telemetry funnel. Everything OpenRecruit sends to PostHog goes through
  * `track()` here, in the backend host — the process that owns settings (the gate),
  * survives GUI restarts, and originates most events. There is no renderer PostHog
  * SDK: renderer/launcher events arrive over the `analytics.track` tRPC mutation.
@@ -176,10 +176,10 @@ export class AnalyticsService {
    * leaving `error_code` as the only thing that says what actually went wrong.
    *
    * `codeOverride` is for a subsystem that knows the code by a route `errorCodeOf`
-   * cannot take — the broker's `brokerErrorCode`, which resolves an `McpError`'s
-   * *numeric* code (`-32001`) to its enum name. Without it those errors reach us as a
-   * bare class name with no code at all. It is re-gated through `asErrorCode`, so an
-   * override can only ever narrow to what the allowlist already accepts.
+   * cannot take — a provider-specific error-code resolver, which resolves an
+   * `McpError`'s *numeric* code (`-32001`) to its enum name. Without it those errors
+   * reach us as a bare class name with no code at all. It is re-gated through
+   * `asErrorCode`, so an override can only ever narrow to what the allowlist accepts.
    */
   trackError(
     subsystem: ErrorSubsystem,

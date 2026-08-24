@@ -4,7 +4,7 @@ import type * as React from "react";
 
 /**
  * shadcn/ui Label (Radix). Default look is shadcn-standard
- * (`text-sm font-medium`); OpenTrade's compact field labels override to
+ * (`text-sm font-medium`); OpenRecruit's compact field labels override to
  * `text-xs text-muted-foreground` via className.
  */
 function Label({ className, ...props }: React.ComponentProps<typeof LabelPrimitive.Root>) {
