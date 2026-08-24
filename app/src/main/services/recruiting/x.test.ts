@@ -1,10 +1,16 @@
 import { Database } from "bun:sqlite";
 import { describe, expect, test } from "bun:test";
+import { eq } from "drizzle-orm";
 import { drizzle } from "drizzle-orm/bun-sqlite";
 import { type Db, schema } from "../../db/client";
 import { SCHEMA_DDL } from "../../db/ddl";
 import { type MigrationDb, migrate } from "../../db/migrate";
-import { DeterministicXProvider, RecruitingApplication, type XApiResponse } from ".";
+import {
+  DeterministicXProvider,
+  RecruitingApplication,
+  type XApiResponse,
+  xConfigFromSource,
+} from ".";
 
 function makeDb(): Db {
   const sqlite = new Database(":memory:");
@@ -67,6 +73,31 @@ const successfulSearch: XApiResponse = {
 };
 
 describe("official X API v2 Source", () => {
+  test("uses Discovery Strategy terminology in Candidate-facing configuration guidance", async () => {
+    expect(() => xConfigFromSource("{}")).toThrow(
+      "X Source requires recent-search terms derived from the Discovery Strategy or public Post IDs",
+    );
+    expect(() => xConfigFromSource(JSON.stringify({ query: "x".repeat(513) }))).toThrow(
+      "X recent-search terms derived from the Discovery Strategy exceed the bounded length",
+    );
+
+    const db = makeDb();
+    const app = new RecruitingApplication(db, () => Date.parse("2026-08-23T16:00:00Z"));
+    const source = app.createXSource({
+      name: "X",
+      query: "hiring",
+      idempotencyKey: "x-domain-language",
+    });
+    db.update(schema.sources)
+      .set({ config: "{}" })
+      .where(eq(schema.sources.id, source.value.id))
+      .run();
+    const access = await app.checkSourceReadiness({ sourceId: source.value.id });
+    expect(access.nextAction).toBe(
+      "Configure bounded recent-search terms from the Discovery Strategy or public Post IDs",
+    );
+  });
+
   test("keeps bearer configuration out of Source data and reports readiness", async () => {
     const app = new RecruitingApplication(makeDb(), () => Date.parse("2026-08-23T16:00:00Z"));
     const source = app.createXSource({

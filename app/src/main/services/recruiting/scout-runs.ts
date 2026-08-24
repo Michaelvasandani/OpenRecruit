@@ -561,7 +561,8 @@ export class ScoutRunApplication {
         {
           readiness: "not_configured",
           safeFailure: message,
-          nextAction: "Configure a bounded recent-search query or public Post IDs",
+          nextAction:
+            "Configure bounded recent-search terms from the Discovery Strategy or public Post IDs",
           retryAt: null,
         },
         checkedAt,
@@ -1100,7 +1101,8 @@ export class ScoutRunApplication {
           readiness: "not_configured",
           safeFailure:
             error instanceof XApiError ? error.message : "X Source configuration is malformed",
-          nextAction: "Configure a bounded recent-search query or public Post IDs",
+          nextAction:
+            "Configure bounded recent-search terms from the Discovery Strategy or public Post IDs",
           retryAt: null,
           sourceIdentity: "x-api-v2",
         },

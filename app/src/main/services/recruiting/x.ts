@@ -160,10 +160,16 @@ export function xConfigFromSource(config: string): XSourceConfig {
     ? idsValue.filter((item): item is string => typeof item === "string" && /^\d{1,30}$/.test(item))
     : [];
   if (!query && postIds.length === 0) {
-    throw new XApiError("X Source requires a recent-search query or Post IDs", "malformed_config");
+    throw new XApiError(
+      "X Source requires recent-search terms derived from the Discovery Strategy or public Post IDs",
+      "malformed_config",
+    );
   }
   if (query && query.length > 512)
-    throw new XApiError("X search query exceeds the bounded length", "malformed_config");
+    throw new XApiError(
+      "X recent-search terms derived from the Discovery Strategy exceed the bounded length",
+      "malformed_config",
+    );
   if (postIds.length > 100)
     throw new XApiError("X Post lookup is limited to 100 IDs", "malformed_config");
   const configuredWindowHours =
