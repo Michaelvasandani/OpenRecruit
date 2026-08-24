@@ -1,14 +1,10 @@
 import { Database } from "bun:sqlite";
 import { afterEach, describe, expect, test } from "bun:test";
 import {
-  assetTypeOf,
   errorCodeOf,
   errorNameOf,
-  orderKindOf,
-  orderTypeOf,
   RendererTrackInput,
   sanitizeStack,
-  sideOf,
   TELEMETRY_EVENTS,
   templateOf,
 } from "@shared/analytics";
@@ -106,13 +102,10 @@ describe("AnalyticsService", () => {
   test("an event with an extra prop is dropped whole (no PII leak)", () => {
     const fake = new FakeClient();
     const svc = makeService(new SettingsService(memDb()), fake);
-    // A ticker sneaks in — strict parsing must reject the entire event.
-    svc.track("order_gate_prompted", {
-      kind: "place",
-      asset_type: "equity",
-      side: "buy",
-      order_type: "market",
-      mode: "approve",
+    // An unexpected prop sneaks in — strict parsing must reject the entire event.
+    svc.track("agent_created", {
+      template: "dca",
+      harness: "claude",
       symbol: "AAPL",
     } as never);
     expect(fake.events).toHaveLength(0);
@@ -186,13 +179,13 @@ describe("AnalyticsService", () => {
   test("trackError sends only the class name + frames — never the message", () => {
     const fake = new FakeClient();
     const svc = makeService(new SettingsService(memDb()), fake);
-    svc.trackError("broker", new TypeError("secret /Users/alice/holdings AAPL"));
+    svc.trackError("host", new TypeError("secret /Users/alice/holdings AAPL"));
     expect(fake.events).toHaveLength(1);
     const e = fake.events[0];
     expect(e.event).toBe("app_error");
     // Defaults to `caught` when the caller doesn't say how the error surfaced.
     expect(e.properties).toMatchObject({
-      subsystem: "broker",
+      subsystem: "host",
       error_name: "TypeError",
       source: "caught",
     });
@@ -247,13 +240,12 @@ describe("AnalyticsService", () => {
   test("trackError takes a codeOverride for a code errorCodeOf cannot see", () => {
     const fake = new FakeClient();
     const svc = makeService(new SettingsService(memDb()), fake);
-    // An McpError's `code` is numeric (-32603), which the allowlist drops — so the
-    // broker resolves it to its enum name and passes that in. Without the override
-    // these arrive as a bare class name with nothing saying which failure it was.
+    // A provider error's `code` is numeric (-32603), which the allowlist drops — a
+    // caller can provide a safe enum name through the override instead.
     const err = Object.assign(new Error("MCP error -32603: Internal error"), { code: -32603 });
-    svc.trackError("broker", err, "caught", "InternalError");
+    svc.trackError("host", err, "caught", "InternalError");
     expect(fake.events[0].properties).toMatchObject({
-      subsystem: "broker",
+      subsystem: "host",
       error_name: "Error",
       error_code: "InternalError",
     });
@@ -264,7 +256,7 @@ describe("AnalyticsService", () => {
     const svc = makeService(new SettingsService(memDb()), fake);
     // An override is re-gated, so a caller can never widen the field — and, since an
     // invalid prop drops the whole event, can never cost us the app_error either.
-    svc.trackError("broker", new Error("x"), "caught", "not a code /Users/alice");
+    svc.trackError("host", new Error("x"), "caught", "not a code /Users/alice");
     expect(fake.events).toHaveLength(1);
     expect(fake.events[0].properties).not.toHaveProperty("error_code");
   });
@@ -273,24 +265,13 @@ describe("AnalyticsService", () => {
     const fake = new FakeClient();
     const svc = makeService(new SettingsService(memDb()), fake);
     const err = Object.assign(new Error("x"), { code: "ECONNRESET" });
-    svc.trackError("broker", err, "caught", undefined);
+    svc.trackError("host", err, "caught", undefined);
     expect(fake.events[0].properties).toMatchObject({ error_code: "ECONNRESET" });
   });
 });
 
-describe("analytics allowlist + normalizers", () => {
-  test("normalizers map raw values, unknown → other", () => {
-    expect(sideOf("BUY")).toBe("buy");
-    expect(sideOf("sell")).toBe("sell");
-    expect(sideOf("weird")).toBe("other");
-    expect(sideOf(null)).toBe("other");
-    expect(assetTypeOf("mcp__robinhood__place_option_order")).toBe("option");
-    expect(assetTypeOf("mcp__robinhood__place_equity_order")).toBe("equity");
-    expect(assetTypeOf("something_else")).toBe("other");
-    expect(orderTypeOf("LIMIT")).toBe("limit");
-    expect(orderTypeOf("stop")).toBe("other");
-    expect(orderKindOf("cancel")).toBe("cancel");
-    expect(orderKindOf("place")).toBe("place");
+describe("analytics allowlist", () => {
+  test("template normalizer maps unknown values to other", () => {
     expect(templateOf("momentum")).toBe("momentum");
     expect(templateOf("custom-thing")).toBe("other");
   });
@@ -337,13 +318,6 @@ describe("analytics allowlist + normalizers", () => {
     expect(errorCodeOf(Object.assign(new Error("x"), { code: "x".repeat(49) }))).toBeUndefined();
     // Numeric codes (DOMException.code) are ignored.
     expect(errorCodeOf(Object.assign(new Error("x"), { code: 18 }))).toBeUndefined();
-    // broker_connect_failed carries the same field.
-    expect(
-      TELEMETRY_EVENTS.broker_connect_failed.safeParse({
-        error_name: "OAuthFlowError",
-        error_code: "OAUTH_TIMEOUT",
-      }).success,
-    ).toBe(true);
   });
 
   test("errorCodeOf falls back to err.cause.code — the undici `fetch failed` shape", () => {
@@ -471,7 +445,7 @@ describe("analytics allowlist + normalizers", () => {
     // Must survive the strict allowlist — a frame that fails it drops the whole event.
     expect(
       TELEMETRY_EVENTS.app_error.safeParse({
-        subsystem: "broker",
+        subsystem: "host",
         error_name: "McpError",
         frames,
       }).success,
@@ -533,7 +507,7 @@ describe("analytics allowlist + normalizers", () => {
     expect(frames).toEqual(["main.js:2:2"]);
     expect(
       TELEMETRY_EVENTS.app_error.safeParse({
-        subsystem: "broker",
+        subsystem: "host",
         error_name: "Error",
         frames,
       }).success,

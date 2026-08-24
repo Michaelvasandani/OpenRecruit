@@ -22,7 +22,7 @@ export function useCreateAgent() {
   });
 
   const create = useCallback(
-    (input: Omit<CreateAgentInput, "approvalMode">) => {
+    (input: CreateAgentInput) => {
       if (mutation.isPending) return;
       mutation.mutate(input);
     },

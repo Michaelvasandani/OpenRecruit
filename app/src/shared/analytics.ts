@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { ApprovalMode, HarnessId } from "./agent";
+import { HarnessId } from "./agent";
 import { NotificationKind } from "./notify";
 
 /**
@@ -16,12 +16,9 @@ import { NotificationKind } from "./notify";
  *    regex (an identifier / a semver / a sanitized stack frame) — structurally
  *    unable to carry a message, path, or free text.
  *  - Numbers are durations/counts only.
- *  - Categorical normalizers (`assetTypeOf`, `sideOf`, `orderTypeOf`) map anything
- *    unrecognized to `"other"`, so raw parsed values can't pass through call sites.
  *
- * Policy: anonymous (a random distinct id, never a machine/user identifier), no
- * conversation data ever, and order events carry categories only — never tickers,
- * quantities, prices, notional, or account ids.
+ * Policy: anonymous (a random distinct id, never a machine/user identifier) and no
+ * conversation data ever.
  */
 
 // ---- shared field schemas ----
@@ -53,19 +50,12 @@ const stackFrame = z
   .regex(/^(?:(?:@[\w.-]+\/)?[\w.-]+\/)?[\w.-]+\.js:\d+(?::\d+)?$/);
 const frames = z.array(stackFrame).max(10);
 
-const assetType = z.enum(["equity", "option", "other"]);
-const orderSide = z.enum(["buy", "sell", "other"]);
-const orderType = z.enum(["market", "limit", "other"]);
-const orderKind = z.enum(["place", "cancel"]);
-
 /** Subsystem an `app_error` originated in. */
 export const ErrorSubsystem = z.enum([
   "host",
-  "broker",
   "terminal",
   "scheduler",
   "wake",
-  "approvals",
   "updater",
   "renderer",
 ]);
@@ -129,46 +119,6 @@ export const TELEMETRY_EVENTS = {
   terminal_session_started: z.strictObject({ intent: z.enum(["auto", "resume", "fresh"]) }),
   terminal_respawned: z.strictObject({}),
 
-  // orders / the approval gate (categorical only)
-  order_gate_prompted: z.strictObject({
-    kind: orderKind,
-    asset_type: assetType,
-    side: orderSide,
-    order_type: orderType,
-    mode: ApprovalMode,
-  }),
-  order_gate_decided: z.strictObject({
-    decision: z.enum(["approved", "rejected", "expired"]),
-    decided_by: z.enum(["user", "auto", "timeout"]),
-    decision_ms: z.number().int().nonnegative(),
-    kind: orderKind,
-    asset_type: assetType,
-    side: orderSide,
-    order_type: orderType,
-  }),
-  order_submit_resolved: z.strictObject({ result: z.enum(["ok", "rejected", "unknown"]) }),
-
-  // broker
-  /** Top of the connect funnel; `connected` / `connect_failed` are the outcomes. The gap
-   *  is attempts with no outcome event: superseded by a later click, still pending, or a
-   *  silent connect that found a dead grant and quietly stayed disconnected. */
-  broker_connect_started: z.strictObject({ mode: z.enum(["interactive", "silent"]) }),
-  broker_connected: z.strictObject({}),
-  broker_connect_failed: z.strictObject({
-    error_name: errorName,
-    error_code: errorCode.optional(),
-  }),
-  /**
-   * The poll loop lost the network (laptop sleep/wake, Wi‑Fi blip): once per outage,
-   * with the first failure's code, instead of an `app_error` per failed poll. Not an
-   * error in the app — filter it out of error dashboards. `broker_online` closes it.
-   */
-  broker_offline: z.strictObject({ error_code: errorCode.optional() }),
-  broker_online: z.strictObject({
-    offline_ms: z.number().int().nonnegative(),
-    failed_polls: z.number().int().nonnegative(),
-  }),
-
   // autonomy
   schedule_created: z.strictObject({
     kind: z.enum(["cron", "monitor"]),
@@ -188,7 +138,7 @@ export const TELEMETRY_EVENTS = {
   // settings + telemetry lifecycle
   setting_changed: z.strictObject({
     key: settingKey,
-    value: z.union([z.boolean(), ApprovalMode]).optional(),
+    value: z.boolean().optional(),
   }),
   telemetry_enabled: z.strictObject({}),
   telemetry_disabled: z.strictObject({}),
@@ -244,32 +194,6 @@ export const RendererTrackInput = z.discriminatedUnion("event", [
 ]);
 export type RendererTrackInput = z.infer<typeof RendererTrackInput>;
 
-// ---- categorical normalizers (call sites pass raw values through these) ----
-
-/** equity vs option, from the Robinhood order tool name. */
-export function assetTypeOf(toolName: string): z.infer<typeof assetType> {
-  if (/_equity_/.test(toolName)) return "equity";
-  if (/_option_/.test(toolName)) return "option";
-  return "other";
-}
-
-/** buy/sell/other from a parsed order side (any casing). */
-export function sideOf(side: string | null | undefined): z.infer<typeof orderSide> {
-  const s = (side ?? "").toLowerCase();
-  return s === "buy" || s === "sell" ? s : "other";
-}
-
-/** market/limit/other from a parsed order type (any casing). */
-export function orderTypeOf(type: string | null | undefined): z.infer<typeof orderType> {
-  const t = (type ?? "").toLowerCase();
-  return t === "market" || t === "limit" ? t : "other";
-}
-
-/** place vs cancel from a parsed order kind. */
-export function orderKindOf(kind: string | null | undefined): z.infer<typeof orderKind> {
-  return kind === "cancel" ? "cancel" : "place";
-}
-
 /** Normalize a template id to the allowlist (unknown → "other"). */
 export function templateOf(template: string | null | undefined): z.infer<typeof agentTemplate> {
   switch (template) {
@@ -290,9 +214,9 @@ export function templateOf(template: string | null | undefined): z.infer<typeof 
  * the runtime, and the error's class plus `error_code` already say what happened.
  *
  * Dependency frames are deliberately **kept**: host-process errors are overwhelmingly
- * thrown inside one (the broker's inside `@modelcontextprotocol/sdk`, the updater's
- * inside `electron-updater`), so dropping them left every backend `app_error` with no
- * stack at all, while renderer errors — thrown in our own bundle — kept theirs.
+ * thrown inside one (for example inside `@modelcontextprotocol/sdk`), so dropping
+ * dependency frames can leave backend `app_error` with no stack at all, while renderer
+ * errors — thrown in our own bundle — keep theirs.
  *
  * Taking only the file **basename**, plus for a dependency the package name resolved
  * from after the last `node_modules/`, structurally strips any directory, so no user
@@ -384,8 +308,7 @@ export function errorCodeOf(err: unknown): string | undefined {
 /**
  * A value as an `error_code`, or undefined — nothing is coerced or truncated into one.
  * The single gate for the field, used both by `errorCodeOf`'s discovery and by a caller
- * that already knows the code by another route (see `brokerErrorCode`, which resolves an
- * `McpError`'s *numeric* code to its enum name). Keeping the check here means a
+ * that already knows the code by another route. Keeping the check here means a
  * caller-supplied code can never widen what the allowlist accepts — and, since a prop
  * that fails validation drops the **whole** event, can never cost us an `app_error`.
  */

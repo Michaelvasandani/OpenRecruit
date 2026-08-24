@@ -19,10 +19,8 @@ export const agentsRouter = router({
     .query(({ ctx, input }) => ctx.registry.templateClaudeMd(input.template)),
 
   create: publicProcedure
-    // Approval mode is a legacy persisted field, not part of the recruiting API.
-    // New Scouts always use the local runtime default while old rows remain readable.
-    .input(CreateAgentInput.omit({ approvalMode: true }))
-    .mutation(({ ctx, input }) => ctx.registry.create({ ...input, approvalMode: "auto" })),
+    .input(CreateAgentInput)
+    .mutation(({ ctx, input }) => ctx.registry.create(input)),
 
   update: publicProcedure
     .input(

@@ -55,13 +55,11 @@ describe("AgentRegistry — turn budgets", () => {
       name: "alpha",
       template: "default",
       harness: "claude",
-      approvalMode: "approve",
     });
     const b = r.create({
       name: "beta",
       template: "default",
       harness: "claude",
-      approvalMode: "approve",
     });
     // alpha: spent + per-agent limit turned OFF; beta: some usage, limit on.
     r.incrementHeadlessTurns(a.id);
@@ -92,7 +90,6 @@ describe("AgentRegistry — CLAUDE.md composition", () => {
       name: `compose ${template}`,
       template,
       harness: "claude",
-      approvalMode: "approve",
     });
     return readFileSync(join(r.agentDir(agent), "CLAUDE.md"), "utf8");
   }
@@ -131,7 +128,6 @@ describe("AgentRegistry — codex scaffold divergence", () => {
       name: "codex one",
       template: "default",
       harness: "codex",
-      approvalMode: "approve",
     });
     const dir = r.agentDir(agent);
     const { existsSync, readFileSync } = await import("node:fs");
@@ -192,7 +188,6 @@ describe("AgentRegistry — codex scaffold divergence", () => {
       name: "claude one",
       template: "default",
       harness: "claude",
-      approvalMode: "approve",
     });
     const dir = r.agentDir(agent);
     expect(existsSync(join(dir, "CLAUDE.md"))).toBe(true);
@@ -282,5 +277,21 @@ describe("AgentRegistry — lastActiveAt (= last_turn_at)", () => {
     const list = r.list();
     expect(list.find((x) => x.id === "a")?.lastActiveAt).toBeGreaterThan(0);
     expect(list.find((x) => x.id === "b")?.lastActiveAt).toBe(null);
+  });
+});
+
+describe("AgentRegistry — legacy approval storage boundary", () => {
+  test("does not project approval state while preserving the legacy column", () => {
+    const { db, sqlite } = memDb();
+    sqlite.exec(
+      `INSERT INTO agents (id, slug, name, template, approval_mode, status, created_at)
+       VALUES ('legacy', 'legacy', 'Legacy', 'default', 'auto', 'idle', 1)`,
+    );
+
+    const agent = new AgentRegistry(db).get("legacy");
+    expect(agent).not.toHaveProperty("approvalMode");
+    expect(sqlite.query("SELECT approval_mode FROM agents WHERE id = 'legacy'").get()).toEqual({
+      approval_mode: "auto",
+    });
   });
 });

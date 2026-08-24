@@ -38,7 +38,6 @@ const AGENT: Agent = {
   slug: "agent1",
   name: "Agent One",
   template: "default",
-  approvalMode: "auto",
   lastSessionId: null,
   status: "idle",
   executionState: "offline",

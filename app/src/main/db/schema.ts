@@ -17,7 +17,8 @@ export const agents = sqliteTable("agents", {
   template: text("template").notNull().default("default"),
   /** Which agent CLI runs this agent ("claude" | "codex"); fixed at creation. */
   harness: text("harness").notNull().default("claude"),
-  approvalMode: text("approval_mode").notNull().default("approve"),
+  /** Retained only to read legacy rows; the recruiting API never projects this value. */
+  legacyApprovalMode: text("approval_mode").notNull().default("approve"),
   lastSessionId: text("last_session_id"),
   status: text("status").notNull().default("idle"),
   /** Headless wake runs since the user last viewed this agent (reset on view). */

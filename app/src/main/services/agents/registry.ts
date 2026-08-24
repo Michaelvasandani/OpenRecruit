@@ -159,7 +159,6 @@ export class AgentRegistry {
         name: input.name,
         template: input.template,
         harness: input.harness,
-        approvalMode: input.approvalMode,
         lastSessionId: null,
         status: "idle",
         createdAt: now,
@@ -278,14 +277,10 @@ export class AgentRegistry {
     writeFileSync(mcpPath, `${JSON.stringify(config, null, 2)}\n`);
   }
 
-  /** Mutate editable fields (name, approval mode, turn-limit toggle). Returns the updated agent. */
-  update(
-    id: string,
-    patch: { name?: string; approvalMode?: Agent["approvalMode"]; turnLimitEnabled?: boolean },
-  ): Agent | undefined {
+  /** Mutate editable fields (name and turn-limit toggle). Returns the updated agent. */
+  update(id: string, patch: { name?: string; turnLimitEnabled?: boolean }): Agent | undefined {
     const set: Partial<typeof agentsTable.$inferInsert> = {};
     if (patch.name !== undefined) set.name = patch.name;
-    if (patch.approvalMode !== undefined) set.approvalMode = patch.approvalMode;
     if (patch.turnLimitEnabled !== undefined) set.turnLimitEnabled = patch.turnLimitEnabled;
     if (Object.keys(set).length > 0) {
       this.db.update(agentsTable).set(set).where(eq(agentsTable.id, id)).run();
@@ -402,7 +397,6 @@ function rowToAgent(
     name: row.name,
     template: row.template,
     harness: row.harness as Agent["harness"],
-    approvalMode: row.approvalMode as Agent["approvalMode"],
     lastSessionId: row.lastSessionId,
     status: row.status as Agent["status"],
     executionState,

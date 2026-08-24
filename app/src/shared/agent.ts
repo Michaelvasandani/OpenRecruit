@@ -1,10 +1,7 @@
 import { z } from "zod";
 
-export const AgentStatus = z.enum(["idle", "working", "needs-input", "awaiting-approval"]);
+export const AgentStatus = z.enum(["idle", "working", "needs-input"]);
 export type AgentStatus = z.infer<typeof AgentStatus>;
-
-export const ApprovalMode = z.enum(["approve", "auto"]);
-export type ApprovalMode = z.infer<typeof ApprovalMode>;
 
 /**
  * Which agent CLI runs this agent. Fixed at creation; every harness-specific
@@ -27,13 +24,12 @@ export type HarnessId = z.infer<typeof HarnessId>;
 export const ExecutionState = z.enum(["offline", "headless", "interactive", "broken"]);
 export type ExecutionState = z.infer<typeof ExecutionState>;
 
-export const Agent = z.object({
+export const Agent = z.strictObject({
   id: z.string(),
   slug: z.string(),
   name: z.string(),
   template: z.string(),
   harness: HarnessId,
-  approvalMode: ApprovalMode,
   lastSessionId: z.string().nullable(),
   status: AgentStatus,
   executionState: ExecutionState,
@@ -53,11 +49,10 @@ export const Agent = z.object({
 });
 export type Agent = z.infer<typeof Agent>;
 
-export const CreateAgentInput = z.object({
+export const CreateAgentInput = z.strictObject({
   name: z.string().min(1).max(80),
   template: z.string().default("default"),
   harness: HarnessId.default("claude"),
-  approvalMode: ApprovalMode.default("approve"),
   /**
    * The agent's CLAUDE.md **specialty section** (strategy persona/principles), as
    * edited in the New Agent dialog — NOT the shared prefix, which the registry

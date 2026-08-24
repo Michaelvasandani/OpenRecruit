@@ -38,7 +38,6 @@ const STATUS_LABEL: Record<AgentStatus, string> = {
   working: "Working",
   idle: "Idle",
   "needs-input": "Needs input",
-  "awaiting-approval": "Awaiting approval",
 };
 
 // The app mark (app/build/icon.svg) rasterized at 16px (1x) and 32px (2x) — embedded
