@@ -1,5 +1,6 @@
 import { createHash, randomUUID } from "node:crypto";
 import {
+  type LeadConflict as LeadConflictValue,
   LeadContext,
   type LeadContext as LeadContextValue,
   LeadSummary,
@@ -141,6 +142,28 @@ export type AdvanceScoutRunCommand = {
   safeFailure?: string | null;
   expectedStatus?: ScoutRunStatusValue;
   idempotencyKey: string;
+};
+
+export type LinkSignalToLeadCommand = {
+  leadId: string;
+  signalId: string;
+  relation?: "supporting" | "conflict";
+  expectedRevision?: number;
+  idempotencyKey: string;
+};
+
+export type MergeLeadsCommand = {
+  targetLeadId: string;
+  sourceLeadId: string;
+  expectedRevision?: number;
+  expectedSourceRevision?: number;
+  idempotencyKey: string;
+};
+
+type LeadCommandResult<T> = {
+  value: T;
+  revision: number;
+  replayed: boolean;
 };
 
 export type RunBudget = {
@@ -1275,12 +1298,15 @@ export class ScoutRunApplication {
       .from(leads)
       .orderBy(desc(leads.updatedAt), asc(leads.id))
       .all()
+      .filter((row) => row.mergedInto === null)
       .map((row) => toLeadSummary(this.db, row));
   }
 
   getLead(id: string): LeadSummaryValue | null {
     const row = this.db.select().from(leads).where(eq(leads.id, id)).get();
-    return row ? toLeadSummary(this.db, row) : null;
+    if (!row) return null;
+    const canonical = resolveLead(this.db, row);
+    return toLeadSummary(this.db, canonical);
   }
 
   getLeadContext(id: string): LeadContextValue | null {
@@ -1292,6 +1318,310 @@ export class ScoutRunApplication {
         .map((signalId) => this.getSignal(signalId))
         .filter((signal): signal is SignalSummaryValue => signal !== null),
     });
+  }
+
+  /**
+   * Explicitly attach an immutable Signal to another Lead. This is the only
+   * path that can mark an identity relationship conflicted; ingestion never
+   * guesses when aliases disagree. The operation is revision-aware and can be
+   * retried safely with the same idempotency key.
+   */
+  linkSignalToLead(command: LinkSignalToLeadCommand): LeadCommandResult<LeadSummaryValue> {
+    requireKey(command.idempotencyKey);
+    if (command.leadId.trim() === command.signalId.trim()) {
+      throw new RecruitingError("VALIDATION", "Lead and Signal IDs must be different");
+    }
+    const relation = command.relation ?? "supporting";
+    const payloadHash = hashPayload({
+      leadId: command.leadId,
+      signalId: command.signalId,
+      relation,
+      expectedRevision: command.expectedRevision ?? null,
+    });
+    let notification: { revision: number; at: number; id: string } | undefined;
+    const outcome = this.db.transaction((tx) => {
+      const previous = findReceipt(
+        tx,
+        "lead",
+        command.leadId,
+        "link_signal",
+        command.idempotencyKey,
+      );
+      if (previous) {
+        assertReceiptPayload(previous, payloadHash);
+        return {
+          ...parseResult<LeadCommandResult<LeadSummaryValue>>(previous.result),
+          replayed: true,
+        };
+      }
+      const rawLead = tx.select().from(leads).where(eq(leads.id, command.leadId)).get();
+      if (!rawLead) throw new RecruitingError("NOT_FOUND", `Lead ${command.leadId} was not found`);
+      const lead = resolveLead(tx, rawLead);
+      if (lead.id !== rawLead.id) {
+        throw new RecruitingError(
+          "CONFLICT",
+          `Lead ${command.leadId} was merged into ${lead.id}; link the Signal to the canonical Lead`,
+        );
+      }
+      if (command.expectedRevision !== undefined && command.expectedRevision !== lead.revision) {
+        throw new RecruitingError(
+          "CONFLICT",
+          `Lead ${lead.id} is at revision ${lead.revision}; expected ${command.expectedRevision}`,
+        );
+      }
+      const signal = tx.select().from(signals).where(eq(signals.id, command.signalId)).get();
+      if (!signal)
+        throw new RecruitingError("NOT_FOUND", `Signal ${command.signalId} was not found`);
+      const existing = tx
+        .select()
+        .from(leadSignalLinks)
+        .where(and(eq(leadSignalLinks.leadId, lead.id), eq(leadSignalLinks.signalId, signal.id)))
+        .get();
+      let changed = false;
+      if (!existing) {
+        tx.insert(leadSignalLinks)
+          .values({ leadId: lead.id, signalId: signal.id, relation, createdAt: this.now() })
+          .run();
+        changed = true;
+      } else if (relation === "conflict" && existing.relation !== "conflict") {
+        tx.update(leadSignalLinks)
+          .set({ relation: "conflict" })
+          .where(and(eq(leadSignalLinks.leadId, lead.id), eq(leadSignalLinks.signalId, signal.id)))
+          .run();
+        changed = true;
+      }
+      if (relation === "conflict") {
+        const conflicts = leadConflicts(lead.conflict);
+        const conflict = {
+          kind: "manual_identity_conflict",
+          signalId: signal.id,
+          relatedLeadId: null,
+          detail: `Signal ${signal.id} was explicitly linked as conflicting evidence`,
+        } satisfies LeadConflictValue;
+        if (!conflicts.some((item) => item.kind === conflict.kind && item.signalId === signal.id)) {
+          conflicts.push(conflict);
+          tx.update(leads)
+            .set({
+              identityState: "conflicted",
+              conflict: JSON.stringify(conflicts),
+            })
+            .where(eq(leads.id, lead.id))
+            .run();
+          changed = true;
+        }
+      }
+      const at = this.now();
+      const revision = changed ? advanceRevision(tx) : currentRevision(tx);
+      if (changed) {
+        tx.update(leads)
+          .set({ updatedAt: at, revision: sql`${leads.revision} + 1` })
+          .where(eq(leads.id, lead.id))
+          .run();
+      }
+      const value = toLeadSummary(
+        tx,
+        tx.select().from(leads).where(eq(leads.id, lead.id)).get() ?? lead,
+      );
+      const result = { value, revision, replayed: false };
+      writeReceipt(
+        tx,
+        receiptFor(
+          "lead",
+          command.leadId,
+          "link_signal",
+          command.idempotencyKey,
+          payloadHash,
+          result,
+          at,
+        ),
+      );
+      if (changed) notification = { revision, at, id: lead.id };
+      return result;
+    });
+    if (notification)
+      emitChange(notification.revision, "lead", [notification.id], "lead_linked", notification.at);
+    return outcome;
+  }
+
+  /**
+   * Merge two identity threads after Candidate review. The source row is kept
+   * as redirect history; Signal links and settled aliases move to the target,
+   * and the target revision advances exactly once.
+   */
+  mergeLeads(command: MergeLeadsCommand): LeadCommandResult<LeadSummaryValue> {
+    requireKey(command.idempotencyKey);
+    if (command.targetLeadId === command.sourceLeadId) {
+      throw new RecruitingError("VALIDATION", "A Lead cannot be merged into itself");
+    }
+    const payloadHash = hashPayload({
+      targetLeadId: command.targetLeadId,
+      sourceLeadId: command.sourceLeadId,
+      expectedRevision: command.expectedRevision ?? null,
+      expectedSourceRevision: command.expectedSourceRevision ?? null,
+    });
+    let notification: { revision: number; at: number; ids: string[] } | undefined;
+    const outcome = this.db.transaction((tx) => {
+      const previous = findReceipt(
+        tx,
+        "lead",
+        command.targetLeadId,
+        "merge",
+        command.idempotencyKey,
+      );
+      if (previous) {
+        assertReceiptPayload(previous, payloadHash);
+        return {
+          ...parseResult<LeadCommandResult<LeadSummaryValue>>(previous.result),
+          replayed: true,
+        };
+      }
+      const rawTarget = tx.select().from(leads).where(eq(leads.id, command.targetLeadId)).get();
+      const rawSource = tx.select().from(leads).where(eq(leads.id, command.sourceLeadId)).get();
+      if (!rawTarget)
+        throw new RecruitingError("NOT_FOUND", `Lead ${command.targetLeadId} was not found`);
+      if (!rawSource)
+        throw new RecruitingError("NOT_FOUND", `Lead ${command.sourceLeadId} was not found`);
+      const target = resolveLead(tx, rawTarget);
+      const source = resolveLead(tx, rawSource);
+      if (target.id === source.id) {
+        if (
+          command.expectedRevision !== undefined &&
+          command.expectedRevision !== target.revision
+        ) {
+          throw new RecruitingError(
+            "CONFLICT",
+            `Lead ${target.id} is at revision ${target.revision}; expected ${command.expectedRevision}`,
+          );
+        }
+        const value = toLeadSummary(tx, target);
+        const result = { value, revision: currentRevision(tx), replayed: false };
+        writeReceipt(
+          tx,
+          receiptFor(
+            "lead",
+            command.targetLeadId,
+            "merge",
+            command.idempotencyKey,
+            payloadHash,
+            result,
+            this.now(),
+          ),
+        );
+        return result;
+      }
+      if (command.expectedRevision !== undefined && command.expectedRevision !== target.revision) {
+        throw new RecruitingError(
+          "CONFLICT",
+          `Lead ${target.id} is at revision ${target.revision}; expected ${command.expectedRevision}`,
+        );
+      }
+      if (
+        command.expectedSourceRevision !== undefined &&
+        command.expectedSourceRevision !== source.revision
+      ) {
+        throw new RecruitingError(
+          "CONFLICT",
+          `Lead ${source.id} is at revision ${source.revision}; expected ${command.expectedSourceRevision}`,
+        );
+      }
+      const at = this.now();
+      const sourceLinks = tx
+        .select()
+        .from(leadSignalLinks)
+        .where(eq(leadSignalLinks.leadId, source.id))
+        .all();
+      for (const link of sourceLinks) {
+        tx.insert(leadSignalLinks)
+          .values({
+            leadId: target.id,
+            signalId: link.signalId,
+            relation: link.relation,
+            createdAt: link.createdAt,
+          })
+          .onConflictDoNothing()
+          .run();
+      }
+      tx.delete(leadSignalLinks).where(eq(leadSignalLinks.leadId, source.id)).run();
+
+      const sourceAliases = tx
+        .select()
+        .from(leadAliases)
+        .where(eq(leadAliases.leadId, source.id))
+        .all();
+      for (const alias of sourceAliases) {
+        const collision = tx
+          .select()
+          .from(leadAliases)
+          .where(and(eq(leadAliases.kind, alias.kind), eq(leadAliases.value, alias.value)))
+          .get();
+        if (!collision || collision.leadId === source.id) {
+          tx.update(leadAliases)
+            .set({ leadId: target.id })
+            .where(eq(leadAliases.id, alias.id))
+            .run();
+        } else if (resolveLeadId(tx, collision.leadId) !== target.id) {
+          const conflicts = leadConflicts(target.conflict);
+          const detail = `Alias ${alias.kind}:${alias.value} also belongs to Lead ${collision.leadId}`;
+          if (!conflicts.some((item) => item.detail === detail)) {
+            conflicts.push({
+              kind: "alias_collision",
+              relatedLeadId: collision.leadId,
+              detail,
+            });
+            tx.update(leads)
+              .set({ identityState: "conflicted", conflict: JSON.stringify(conflicts) })
+              .where(eq(leads.id, target.id))
+              .run();
+          }
+          tx.delete(leadAliases).where(eq(leadAliases.id, alias.id)).run();
+        } else {
+          tx.delete(leadAliases).where(eq(leadAliases.id, alias.id)).run();
+        }
+      }
+      tx.update(leads)
+        .set({
+          mergedInto: target.id,
+          conflict: JSON.stringify([
+            ...leadConflicts(source.conflict),
+            {
+              kind: "merged",
+              relatedLeadId: target.id,
+              detail: `Merged into canonical Lead ${target.id}`,
+            },
+          ]),
+          updatedAt: at,
+          revision: sql`${leads.revision} + 1`,
+        })
+        .where(eq(leads.id, source.id))
+        .run();
+      tx.update(leads)
+        .set({ updatedAt: at, revision: sql`${leads.revision} + 1` })
+        .where(eq(leads.id, target.id))
+        .run();
+      const revision = advanceRevision(tx);
+      const value = toLeadSummary(
+        tx,
+        tx.select().from(leads).where(eq(leads.id, target.id)).get() ?? target,
+      );
+      const result = { value, revision, replayed: false };
+      writeReceipt(
+        tx,
+        receiptFor(
+          "lead",
+          command.targetLeadId,
+          "merge",
+          command.idempotencyKey,
+          payloadHash,
+          result,
+          at,
+        ),
+      );
+      notification = { revision, at, ids: [target.id, source.id] };
+      return result;
+    });
+    if (notification)
+      emitChange(notification.revision, "lead", notification.ids, "leads_merged", notification.at);
+    return outcome;
   }
 
   private selectedSourceIds(scoutId: string): string[] {
@@ -1877,7 +2207,14 @@ function persistSignals(db: RecruitingDb, input: SignalPersistenceInput): void {
       .where(eq(sourceItems.id, sourceItem.id))
       .run();
 
-    const lead = ensureLead(db, item, input.observedAt);
+    const priorLeadId = previousSignalId
+      ? db
+          .select({ leadId: leadSignalLinks.leadId })
+          .from(leadSignalLinks)
+          .where(eq(leadSignalLinks.signalId, previousSignalId))
+          .get()?.leadId
+      : undefined;
+    const lead = ensureLead(db, item, input.observedAt, priorLeadId);
     const linkResult = db
       .insert(leadSignalLinks)
       .values({ leadId: lead.id, signalId, relation: "supporting", createdAt: input.observedAt })
@@ -1903,12 +2240,18 @@ function persistSignals(db: RecruitingDb, input: SignalPersistenceInput): void {
   }
 }
 
-function ensureLead(db: RecruitingDb, item: FeedItem, at: number): typeof leads.$inferSelect {
+function ensureLead(
+  db: RecruitingDb,
+  item: FeedItem,
+  at: number,
+  preferredLeadId?: string,
+): typeof leads.$inferSelect {
   const aliases = [
     item.canonicalUrl ? { kind: "canonical_url", value: item.canonicalUrl } : null,
     item.providerIdentity ? { kind: "provider_identity", value: item.providerIdentity } : null,
   ].filter((alias): alias is { kind: string; value: string } => alias !== null);
   let lead: typeof leads.$inferSelect | undefined;
+  const matchingLeadIds = new Set<string>();
   for (const alias of aliases) {
     const match = db
       .select({ lead: leads })
@@ -1916,24 +2259,42 @@ function ensureLead(db: RecruitingDb, item: FeedItem, at: number): typeof leads.
       .innerJoin(leads, eq(leads.id, leadAliases.leadId))
       .where(and(eq(leadAliases.kind, alias.kind), eq(leadAliases.value, alias.value)))
       .get();
-    if (match?.lead) {
-      lead = match.lead;
-      break;
-    }
+    if (match?.lead) matchingLeadIds.add(resolveLeadId(db, match.lead.id));
+  }
+  const preferredId = preferredLeadId ? resolveLeadId(db, preferredLeadId) : null;
+  if (preferredId && (matchingLeadIds.size === 0 || matchingLeadIds.has(preferredId))) {
+    const row = db.select().from(leads).where(eq(leads.id, preferredId)).get();
+    if (row) lead = row;
+  } else if (matchingLeadIds.size === 1) {
+    const id = [...matchingLeadIds][0];
+    const row = db.select().from(leads).where(eq(leads.id, id)).get();
+    if (row) lead = row;
   }
   if (!lead) {
-    const canonicalKey = item.canonicalUrl
+    const canonicalKeyBase = item.canonicalUrl
       ? `url:${item.canonicalUrl}`
       : `provider:${item.providerIdentity}`;
     const id = randomUUID();
+    const ambiguous = matchingLeadIds.size > 1;
+    const canonicalKey = ambiguous
+      ? `ambiguous:${digest(`${canonicalKeyBase}:${[...matchingLeadIds].sort().join(",")}`)}:${id}`
+      : canonicalKeyBase;
     db.insert(leads)
       .values({
         id,
         canonicalKey,
         title: item.title,
         summary: item.content,
-        identityState: "settled",
-        conflict: null,
+        identityState: ambiguous ? "conflicted" : "settled",
+        conflict: ambiguous
+          ? JSON.stringify([
+              {
+                kind: "alias_collision",
+                relatedLeadId: null,
+                detail: `Identity aliases matched Leads ${[...matchingLeadIds].join(", ")}`,
+              },
+            ])
+          : null,
         revision: 0,
         createdAt: at,
         updatedAt: at,
@@ -1942,13 +2303,76 @@ function ensureLead(db: RecruitingDb, item: FeedItem, at: number): typeof leads.
     lead = db.select().from(leads).where(eq(leads.id, id)).get();
   }
   if (!lead) throw new RecruitingError("VALIDATION", "Signal Lead could not be persisted");
+  if (matchingLeadIds.size > 1 && matchingLeadIds.has(lead.id)) {
+    const conflicts = leadConflicts(lead.conflict);
+    const detail = `Identity aliases matched Leads ${[...matchingLeadIds].join(", ")}`;
+    if (!conflicts.some((conflict) => conflict.detail === detail)) {
+      conflicts.push({ kind: "alias_collision", relatedLeadId: null, detail });
+      db.update(leads)
+        .set({ identityState: "conflicted", conflict: JSON.stringify(conflicts) })
+        .where(eq(leads.id, lead.id))
+        .run();
+      lead = db.select().from(leads).where(eq(leads.id, lead.id)).get() ?? lead;
+    }
+  }
+  // An alias collision is intentionally left untouched. It means the item has
+  // multiple plausible identity threads; only an explicit Candidate command
+  // may settle that relationship.
   for (const alias of aliases) {
-    db.insert(leadAliases)
-      .values({ id: randomUUID(), leadId: lead.id, kind: alias.kind, value: alias.value })
-      .onConflictDoNothing()
-      .run();
+    const existing = db
+      .select({ leadId: leadAliases.leadId })
+      .from(leadAliases)
+      .where(and(eq(leadAliases.kind, alias.kind), eq(leadAliases.value, alias.value)))
+      .get();
+    if (!existing || resolveLeadId(db, existing.leadId) === lead.id) {
+      db.insert(leadAliases)
+        .values({ id: randomUUID(), leadId: lead.id, kind: alias.kind, value: alias.value })
+        .onConflictDoNothing()
+        .run();
+    }
   }
   return lead;
+}
+
+function resolveLeadId(db: RecruitingDb, id: string): string {
+  let current = id;
+  const visited = new Set<string>();
+  while (!visited.has(current)) {
+    visited.add(current);
+    const row = db.select().from(leads).where(eq(leads.id, current)).get();
+    if (!row?.mergedInto || row.mergedInto === current) return current;
+    current = row.mergedInto;
+  }
+  return current;
+}
+
+function resolveLead(db: RecruitingDb, row: typeof leads.$inferSelect): typeof leads.$inferSelect {
+  const id = resolveLeadId(db, row.id);
+  return id === row.id ? row : (db.select().from(leads).where(eq(leads.id, id)).get() ?? row);
+}
+
+function leadConflicts(value: string | null): LeadConflictValue[] {
+  if (!value) return [];
+  try {
+    const parsed: unknown = JSON.parse(value);
+    if (!Array.isArray(parsed)) return [];
+    return parsed.flatMap((item) => {
+      if (!item || typeof item !== "object") return [];
+      const candidate = item as Record<string, unknown>;
+      if (typeof candidate.kind !== "string" || typeof candidate.detail !== "string") return [];
+      return [
+        {
+          kind: candidate.kind,
+          signalId: typeof candidate.signalId === "string" ? candidate.signalId : null,
+          relatedLeadId:
+            typeof candidate.relatedLeadId === "string" ? candidate.relatedLeadId : null,
+          detail: candidate.detail,
+        },
+      ];
+    });
+  } catch {
+    return [{ kind: "legacy_conflict", detail: value }];
+  }
 }
 
 function stableItemIdentity(item: FeedItem): string {
@@ -2075,6 +2499,8 @@ function toLeadSummary(db: RecruitingDb, row: typeof leads.$inferSelect): LeadSu
     summary: row.summary,
     identityState: row.identityState === "conflicted" ? "conflicted" : "settled",
     conflict: row.conflict,
+    conflicts: leadConflicts(row.conflict),
+    mergedInto: row.mergedInto ?? null,
     revision: row.revision,
     signalIds,
     sourceIds,
@@ -2485,6 +2911,11 @@ function parseJson(value: string): unknown {
   } catch {
     return [];
   }
+}
+
+function parseResult<T>(result: string | null): T {
+  if (!result) throw new RecruitingError("VALIDATION", "Command receipt has no result");
+  return JSON.parse(result) as T;
 }
 
 function currentRevision(db: RecruitingDb): number {

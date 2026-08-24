@@ -5,6 +5,7 @@ import { type Db, schema } from "../../db/client";
 import { SCHEMA_DDL } from "../../db/ddl";
 import { type MigrationDb, migrate } from "../../db/migrate";
 import { DeterministicFeedProvider, RecruitingApplication } from ".";
+import { RecruitingError } from "./errors";
 
 function makeDb(): Db {
   const sqlite = new Database(":memory:");
@@ -54,6 +55,9 @@ function makeRun(app: RecruitingApplication, suffix = "one") {
 
 const feed = (title: string, content: string, extra = "") =>
   `<rss><channel><title>Engineering Jobs</title><link>https://example.test/jobs</link><item><guid>job-1</guid><title>${title}</title><link>https://example.test/jobs/1</link><description>${content}</description>${extra}</item></channel></rss>`;
+
+const feedWithIdentity = (identity: string, url: string, title: string, content: string) =>
+  `<rss><channel><title>Engineering Jobs</title><link>https://example.test/jobs</link><item><guid>${identity}</guid><title>${title}</title><link>${url}</link><description>${content}</description></item></channel></rss>`;
 
 describe("RSS Signal and Lead pipeline", () => {
   test("records attributable immutable Signals and a durable Lead", async () => {
@@ -223,5 +227,200 @@ describe("RSS Signal and Lead pipeline", () => {
     expect(attempt.quarantinedCount).toBe(0);
     expect(app.listSignals()).toHaveLength(1);
     expect(app.listLeads()).toHaveLength(1);
+  });
+
+  test("converges exact canonical identities across RSS and X-shaped sources while retaining every Scout attribution", async () => {
+    const app = new RecruitingApplication(makeDb(), () => 5_000);
+    const first = makeRun(app, "canonical-rss");
+    const profile = app.listProfiles()[0];
+    if (!profile) throw new Error("expected profile");
+    const secondSource = app.createRssSource({
+      name: "X-shaped mirror",
+      url: "https://example.test/canonical-x.xml",
+      idempotencyKey: "canonical-x-source",
+    });
+    const secondScout = app.createScout({
+      name: "X Scout",
+      harness: "codex",
+      instructionPath: "agents/x",
+      strategyMaterial: "Find public hiring posts.",
+      policyMaterial: "Use public sources only.",
+      defaultProfileId: profile.id,
+      sourceIds: [secondSource.value.id],
+      idempotencyKey: "canonical-x-scout",
+    });
+    const secondRun = app.launchScoutRun({
+      scoutId: secondScout.value.id,
+      idempotencyKey: "canonical-x-run",
+    });
+    const firstProvider = new DeterministicFeedProvider({
+      "https://example.test/canonical-rss.xml": {
+        status: 200,
+        body: feedWithIdentity(
+          "rss-job-1",
+          "https://example.test/jobs/canonical",
+          "Staff Engineer",
+          "Build resilient systems",
+        ),
+      },
+    });
+    const secondProvider = new DeterministicFeedProvider({
+      "https://example.test/canonical-x.xml": {
+        status: 200,
+        body: feedWithIdentity(
+          "x-post-1",
+          "https://example.test/jobs/canonical",
+          "Hiring Staff Engineer",
+          "Build resilient systems",
+        ),
+      },
+    });
+
+    await app.readSource({
+      runId: first.run.id,
+      sourceId: first.source.id,
+      provider: firstProvider,
+    });
+    await app.readSource({
+      runId: secondRun.value.id,
+      sourceId: secondSource.value.id,
+      provider: secondProvider,
+    });
+
+    const signals = app.listSignals();
+    expect(signals).toHaveLength(2);
+    expect(app.listLeads()).toHaveLength(1);
+    expect(app.listLeads()[0]?.signalIds).toEqual(expect.arrayContaining(signals.map((s) => s.id)));
+    expect(app.listLeads()[0]?.scoutIds).toEqual(
+      expect.arrayContaining([first.scout.id, secondScout.value.id]),
+    );
+    expect(signals.every((signal) => signal.attributions.length === 1)).toBe(true);
+  });
+
+  test("merges ambiguous Leads through an idempotent revisioned operation without dropping evidence", async () => {
+    const app = new RecruitingApplication(makeDb(), () => 6_000);
+    const first = makeRun(app, "merge-first");
+    const second = makeRun(app, "merge-second");
+    const firstProvider = new DeterministicFeedProvider({
+      "https://example.test/merge-first.xml": {
+        status: 200,
+        body: feedWithIdentity(
+          "merge-job-a",
+          "https://example.test/jobs/a",
+          "Staff Engineer",
+          "Acme platform team",
+        ),
+      },
+    });
+    const secondProvider = new DeterministicFeedProvider({
+      "https://example.test/merge-second.xml": {
+        status: 200,
+        body: feedWithIdentity(
+          "merge-job-b",
+          "https://example.test/jobs/b",
+          "Platform Engineer",
+          "Acme platform team",
+        ),
+      },
+    });
+    await app.readSource({
+      runId: first.run.id,
+      sourceId: first.source.id,
+      provider: firstProvider,
+    });
+    await app.readSource({
+      runId: second.run.id,
+      sourceId: second.source.id,
+      provider: secondProvider,
+    });
+    const leads = app.listLeads();
+    const firstLead = leads.find((lead) => lead.sourceIds.includes(first.source.id));
+    const secondLead = leads.find((lead) => lead.sourceIds.includes(second.source.id));
+    if (!firstLead || !secondLead) throw new Error("expected two Leads");
+
+    const merged = app.mergeLeads({
+      targetLeadId: firstLead.id,
+      sourceLeadId: secondLead.id,
+      expectedRevision: firstLead.revision,
+      idempotencyKey: "merge-leads-once",
+    });
+    expect(merged.replayed).toBe(false);
+    expect(app.listLeads()).toHaveLength(1);
+    expect(merged.value.signalIds).toEqual(
+      expect.arrayContaining([...firstLead.signalIds, ...secondLead.signalIds]),
+    );
+    const replay = app.mergeLeads({
+      targetLeadId: firstLead.id,
+      sourceLeadId: secondLead.id,
+      expectedRevision: firstLead.revision,
+      idempotencyKey: "merge-leads-once",
+    });
+    expect(replay.replayed).toBe(true);
+    expect(replay.value.id).toBe(merged.value.id);
+    expect(() =>
+      app.mergeLeads({
+        targetLeadId: firstLead.id,
+        sourceLeadId: secondLead.id,
+        expectedRevision: firstLead.revision,
+        idempotencyKey: "merge-leads-stale-payload",
+      }),
+    ).toThrow(RecruitingError);
+  });
+
+  test("links conflicting evidence without silently moving it and exposes conflict metadata", async () => {
+    const app = new RecruitingApplication(makeDb(), () => 7_000);
+    const first = makeRun(app, "conflict-first");
+    const second = makeRun(app, "conflict-second");
+    await app.readSource({
+      runId: first.run.id,
+      sourceId: first.source.id,
+      provider: new DeterministicFeedProvider({
+        "https://example.test/conflict-first.xml": {
+          status: 200,
+          body: feedWithIdentity("conflict-a", "https://example.test/jobs/a", "Acme", "Team A"),
+        },
+      }),
+    });
+    await app.readSource({
+      runId: second.run.id,
+      sourceId: second.source.id,
+      provider: new DeterministicFeedProvider({
+        "https://example.test/conflict-second.xml": {
+          status: 200,
+          body: feedWithIdentity("conflict-b", "https://example.test/jobs/b", "Acme", "Team B"),
+        },
+      }),
+    });
+    const [firstLead, secondLead] = app.listLeads();
+    const secondSignal = app.listSignals().find((signal) => signal.sourceId === second.source.id);
+    if (!firstLead || !secondLead || !secondSignal) throw new Error("expected conflict fixtures");
+    const linked = app.linkSignalToLead({
+      leadId: firstLead.id,
+      signalId: secondSignal.id,
+      relation: "conflict",
+      expectedRevision: firstLead.revision,
+      idempotencyKey: "link-conflict-once",
+    });
+    expect(linked.value.identityState).toBe("conflicted");
+    expect(linked.value.conflicts.length).toBeGreaterThan(0);
+    expect(linked.value.signalIds).toEqual(expect.arrayContaining([secondSignal.id]));
+    expect(app.listLeads()).toHaveLength(2);
+    const replay = app.linkSignalToLead({
+      leadId: firstLead.id,
+      signalId: secondSignal.id,
+      relation: "conflict",
+      expectedRevision: firstLead.revision,
+      idempotencyKey: "link-conflict-once",
+    });
+    expect(replay.replayed).toBe(true);
+    expect(() =>
+      app.linkSignalToLead({
+        leadId: firstLead.id,
+        signalId: secondSignal.id,
+        relation: "conflict",
+        expectedRevision: firstLead.revision,
+        idempotencyKey: "link-conflict-stale",
+      }),
+    ).toThrow(RecruitingError);
   });
 });

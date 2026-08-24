@@ -34,7 +34,7 @@ export interface MigrationDb {
 }
 
 /** Bump on every schema change, with a matching entry in MIGRATIONS. */
-export const SCHEMA_VERSION = 10;
+export const SCHEMA_VERSION = 11;
 
 const MIGRATIONS: Record<number, (db: MigrationDb) => void> = {
   // v2 — headless turn limit: per-agent unattended-turn counter + on/off toggle.
@@ -135,6 +135,11 @@ const MIGRATIONS: Record<number, (db: MigrationDb) => void> = {
         "TEXT NOT NULL DEFAULT 'openrecruit-rss-atom'",
       );
     }
+  },
+  // v11 — retain merged Lead history while redirecting projections to the
+  // canonical Lead. Existing Leads are unmerged by default.
+  11: (db) => {
+    if (hasTable(db, "leads")) addColumnIfMissing(db, "leads", "merged_into", "TEXT");
   },
 };
 

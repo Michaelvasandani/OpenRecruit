@@ -439,8 +439,22 @@ export function ScoutRunsScreen() {
                     <div className="text-sm font-medium">{leadContext.data.lead.title}</div>
                     <p className="text-xs text-muted-foreground">
                       Canonical evidence:{" "}
-                      {leadContext.data.lead.canonicalUrl ?? "provider identity"}
+                      {leadContext.data.lead.canonicalUrl ?? "provider identity"} {" · "}
+                      Scouts: {leadContext.data.lead.scoutIds.length}
                     </p>
+                    {leadContext.data.lead.conflicts.length > 0 && (
+                      <div className="rounded border border-destructive/50 bg-destructive/5 p-2 text-xs">
+                        <div className="font-medium text-destructive">Identity conflicts</div>
+                        {leadContext.data.lead.conflicts.map((conflict, index) => (
+                          <p
+                            key={`${conflict.kind}-${conflict.signalId ?? index}`}
+                            className="mt-1"
+                          >
+                            {conflict.detail}
+                          </p>
+                        ))}
+                      </div>
+                    )}
                     {leadContext.data.signals.map((signal) => (
                       <div key={signal.id} className="rounded border border-border p-2 text-xs">
                         <div className="font-medium">{signal.evidence.title}</div>
@@ -450,6 +464,10 @@ export function ScoutRunsScreen() {
                             "No URL"}
                           {" · "}
                           Run {signal.runId} · Scout {signal.scoutId} · {signal.processor}
+                        </p>
+                        <p className="mt-1 text-muted-foreground">
+                          Attributed by {signal.attributions.length} Scout Run
+                          {signal.attributions.length === 1 ? "" : "s"}
                         </p>
                       </div>
                     ))}

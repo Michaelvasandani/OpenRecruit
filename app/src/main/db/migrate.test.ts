@@ -297,4 +297,33 @@ describe("db migrations", () => {
       ]),
     );
   });
+
+  test("v11 adds merged Lead redirects without rewriting existing identity rows", () => {
+    const db = new Database(":memory:");
+    const m = wrap(db);
+    db.exec(`
+      CREATE TABLE leads (
+        id TEXT PRIMARY KEY,
+        canonical_key TEXT NOT NULL UNIQUE,
+        title TEXT NOT NULL,
+        summary TEXT,
+        identity_state TEXT NOT NULL DEFAULT 'settled',
+        conflict TEXT,
+        revision INTEGER NOT NULL DEFAULT 0,
+        created_at INTEGER NOT NULL,
+        updated_at INTEGER NOT NULL
+      );
+      INSERT INTO leads (id, canonical_key, title, created_at, updated_at)
+      VALUES ('lead-1', 'url:one', 'One', 1, 1);
+      PRAGMA user_version = 10;
+    `);
+    db.exec(SCHEMA_DDL);
+    migrate(m, { fresh: false });
+
+    expect(columns(db, "leads")).toContain("merged_into");
+    expect(db.query("SELECT id, merged_into FROM leads WHERE id = 'lead-1'").get()).toEqual({
+      id: "lead-1",
+      merged_into: null,
+    });
+  });
 });

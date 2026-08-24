@@ -34,6 +34,8 @@ import {
   type CreateSourceCommand,
   type CreateXSourceCommand,
   type LaunchScoutRunCommand,
+  type LinkSignalToLeadCommand,
+  type MergeLeadsCommand,
   type ReadSourceCommand,
   ScoutRunApplication,
   type SetScoutSourcesCommand,
@@ -41,6 +43,7 @@ import {
 } from "./scout-runs";
 
 export {
+  LeadConflict,
   LeadContext,
   LeadSummary,
   SignalEvidence,
@@ -84,6 +87,8 @@ export type {
   CreateSourceCommand,
   CreateXSourceCommand,
   LaunchScoutRunCommand,
+  LinkSignalToLeadCommand,
+  MergeLeadsCommand,
   ReadSourceCommand,
   SetScoutSourcesCommand,
   SetSourceDisabledCommand,
@@ -284,6 +289,14 @@ export class RecruitingApplication {
 
   getLead(id: string) {
     return this.scoutRuns.getLead(id);
+  }
+
+  linkSignalToLead(command: LinkSignalToLeadCommand) {
+    return this.scoutRuns.linkSignalToLead(command);
+  }
+
+  mergeLeads(command: MergeLeadsCommand) {
+    return this.scoutRuns.mergeLeads(command);
   }
 
   getLeadContext(id: string) {

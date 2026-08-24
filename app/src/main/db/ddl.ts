@@ -280,6 +280,7 @@ export const SCHEMA_DDL = `
       summary TEXT,
       identity_state TEXT NOT NULL DEFAULT 'settled',
       conflict TEXT,
+      merged_into TEXT REFERENCES leads(id),
       revision INTEGER NOT NULL DEFAULT 0,
       created_at INTEGER NOT NULL,
       updated_at INTEGER NOT NULL

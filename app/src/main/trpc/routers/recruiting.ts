@@ -188,6 +188,30 @@ export const recruitingRouter = router({
     .input(z.object({ id: z.string().min(1) }))
     .query(({ ctx, input }) => ctx.recruiting.getLeadContext(input.id)),
 
+  linkSignalToLead: publicProcedure
+    .input(
+      z.object({
+        leadId: z.string().min(1),
+        signalId: z.string().min(1),
+        relation: z.enum(["supporting", "conflict"]).optional(),
+        expectedRevision: z.number().int().nonnegative().optional(),
+        idempotencyKey: z.string().trim().min(1).max(200),
+      }),
+    )
+    .mutation(({ ctx, input }) => command(() => ctx.recruiting.linkSignalToLead(input))),
+
+  mergeLeads: publicProcedure
+    .input(
+      z.object({
+        targetLeadId: z.string().min(1),
+        sourceLeadId: z.string().min(1),
+        expectedRevision: z.number().int().nonnegative().optional(),
+        expectedSourceRevision: z.number().int().nonnegative().optional(),
+        idempotencyKey: z.string().trim().min(1).max(200),
+      }),
+    )
+    .mutation(({ ctx, input }) => command(() => ctx.recruiting.mergeLeads(input))),
+
   opportunities: publicProcedure
     .input(z.object({ leadId: z.string().min(1).optional() }).optional())
     .query(({ ctx, input }) => ctx.recruiting.listOpportunities(input?.leadId)),

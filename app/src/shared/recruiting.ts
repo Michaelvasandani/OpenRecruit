@@ -173,6 +173,14 @@ export const SignalSummary = z.object({
 });
 export type SignalSummary = z.infer<typeof SignalSummary>;
 
+export const LeadConflict = z.object({
+  kind: z.string().min(1),
+  signalId: z.string().nullable().optional(),
+  relatedLeadId: z.string().nullable().optional(),
+  detail: z.string().min(1),
+});
+export type LeadConflict = z.infer<typeof LeadConflict>;
+
 export const LeadSummary = z.object({
   id: z.string().min(1),
   canonicalKey: z.string().min(1),
@@ -181,6 +189,8 @@ export const LeadSummary = z.object({
   summary: z.string().nullable(),
   identityState: z.enum(["settled", "conflicted"]),
   conflict: z.string().nullable(),
+  conflicts: z.array(LeadConflict),
+  mergedInto: z.string().nullable(),
   revision: z.number().int().nonnegative(),
   signalIds: z.array(z.string()),
   sourceIds: z.array(z.string()),

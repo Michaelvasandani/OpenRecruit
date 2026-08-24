@@ -415,6 +415,8 @@ export const leads = sqliteTable("leads", {
   summary: text("summary"),
   identityState: text("identity_state").notNull().default("settled"),
   conflict: text("conflict"),
+  /** A merged Lead remains as history and redirects to its canonical Lead. */
+  mergedInto: text("merged_into"),
   revision: integer("revision").notNull().default(0),
   createdAt: integer("created_at").notNull(),
   updatedAt: integer("updated_at").notNull(),
