@@ -172,18 +172,23 @@ export class FitEvaluationApplication {
       const staleEvidence = new Set(
         evidence.filter((item) => item.freshness === "stale").map((item) => item.signalId),
       );
-      const citedEvidenceIds = new Set(evidence.map((item) => item.signalId));
-      for (const item of hardConstraints) {
-        if (
-          ["satisfied", "contradicted", "conflicted"].includes(item.result) &&
-          item.signalIds.length === 0 &&
-          ![...citedEvidenceIds].length
-        ) {
-          throw new RecruitingError(
-            "VALIDATION",
-            `Hard Constraint ${item.key} needs attributable Signal evidence`,
-          );
+      for (const [category, conclusions] of [
+        ["Hard Constraint", hardConstraints],
+        ["Preference", preferences],
+      ] as const) {
+        for (const item of conclusions) {
+          if (
+            ["satisfied", "contradicted", "conflicted"].includes(item.result) &&
+            item.signalIds.length === 0
+          ) {
+            throw new RecruitingError(
+              "VALIDATION",
+              `${category} ${item.key} needs attributable Signal evidence`,
+            );
+          }
         }
+      }
+      for (const item of hardConstraints) {
         if (
           item.result === "satisfied" &&
           (command.freshness === "stale" ||

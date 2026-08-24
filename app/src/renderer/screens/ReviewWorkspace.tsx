@@ -3,6 +3,7 @@ import { AlertTriangle, CheckCircle2, Loader2, PlayCircle, RefreshCw, WifiOff } 
 import { type ReactNode, useEffect, useMemo, useState } from "react";
 import { Button } from "../components/ui/button";
 import { Card } from "../components/ui/card";
+import { deriveFitEvaluationDetails } from "../lib/review-fit";
 import { deriveLeadPresentationLabels } from "../lib/review-labels";
 import { trpc } from "../lib/trpc";
 import { cn } from "../lib/utils";
@@ -520,19 +521,7 @@ function LeadPanelPane({
               <EmptyLine text="No Fit Evaluation yet." />
             ) : (
               query.data.fitEvaluations.map((evaluation) => (
-                <div key={evaluation.id} className="rounded border border-border p-2 text-xs">
-                  <p className="font-medium">
-                    {evaluation.freshness === "fresh" ? "Current" : "Historical"} evaluation
-                  </p>
-                  <p className="mt-1 text-muted-foreground">
-                    {evaluation.freshness} · Profile Version {evaluation.profileVersionId} · Hard
-                    Constraints: {evaluation.hardConstraints.length} · Preferences:{" "}
-                    {evaluation.preferences.length}
-                  </p>
-                  {evaluation.unknowns.length > 0 && (
-                    <p className="mt-1 text-warning">Unknowns: {evaluation.unknowns.length}</p>
-                  )}
-                </div>
+                <FitEvaluationCard key={evaluation.id} evaluation={evaluation} />
               ))
             )}
           </PanelSection>
@@ -586,6 +575,131 @@ function LeadPanelPane({
         </div>
       )}
     </aside>
+  );
+}
+
+function FitEvaluationCard({
+  evaluation,
+}: {
+  evaluation: ReviewLeadPanelProjection["fitEvaluations"][number];
+}) {
+  const details = deriveFitEvaluationDetails(evaluation);
+  return (
+    <Card className="flex flex-col gap-3 p-3 text-xs">
+      <div>
+        <p className="font-medium">
+          {details.label} Fit Evaluation · {details.freshness}
+        </p>
+        <p className="mt-1 text-muted-foreground">
+          Profile Version {evaluation.profileVersionId} · Scout Run {evaluation.runId}
+        </p>
+        {details.staleReason && (
+          <p className="mt-1 text-warning">Historical because {details.staleReason}.</p>
+        )}
+      </div>
+      <FitConclusionGroup title="Hard Constraints" conclusions={details.hardConstraints} />
+      <FitConclusionGroup title="Preferences" conclusions={details.preferences} />
+      <div>
+        <p className="font-medium">Evaluation-to-evidence relationships</p>
+        {details.evidence.length === 0 ? (
+          <p className="mt-1 text-muted-foreground">No Signal citations recorded.</p>
+        ) : (
+          <div className="mt-2 flex flex-col gap-2">
+            {details.evidence.map(({ citation, referencedBy }) => (
+              <div
+                key={`${evaluation.id}-${citation.signalId}-${citation.claim}`}
+                className="rounded border p-2"
+              >
+                <p className="font-medium">
+                  Signal {citation.signalId} · {citation.kind} · {citation.freshness}
+                </p>
+                <p className="mt-1">{citation.claim}</p>
+                <p className="mt-1 text-muted-foreground">
+                  Referenced by: {referencedBy.length > 0 ? referencedBy.join(", ") : "none"}
+                </p>
+                <FitCitationAttribution citation={citation} />
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+      {(details.conflicts.length > 0 || details.unknowns.length > 0) && (
+        <div>
+          <p className="font-medium">Conflicts and unknowns</p>
+          {details.conflicts.length > 0 && (
+            <p className="mt-1 text-warning">Conflicts: {details.conflicts.join(" · ")}</p>
+          )}
+          {details.unknowns.length > 0 && (
+            <p className="mt-1 text-muted-foreground">Unknowns: {details.unknowns.join(" · ")}</p>
+          )}
+        </div>
+      )}
+    </Card>
+  );
+}
+
+function FitConclusionGroup({
+  title,
+  conclusions,
+}: {
+  title: string;
+  conclusions: ReturnType<typeof deriveFitEvaluationDetails>["hardConstraints"];
+}) {
+  return (
+    <div>
+      <p className="font-medium">{title}</p>
+      {conclusions.length === 0 ? (
+        <p className="mt-1 text-muted-foreground">No {title.toLowerCase()} recorded.</p>
+      ) : (
+        <div className="mt-2 flex flex-col gap-2">
+          {conclusions.map((conclusion) => (
+            <div key={`${conclusion.category}-${conclusion.key}`} className="rounded border p-2">
+              <p className="font-medium">
+                {conclusion.key} · {conclusion.result}
+              </p>
+              <p className="mt-1">{conclusion.explanation}</p>
+              <p className="mt-1 text-muted-foreground">
+                {conclusion.inferred ? "Inferred" : "Factual"} · evidence{" "}
+                {conclusion.evidenceFreshness}
+              </p>
+              <p className="mt-1 text-muted-foreground">
+                Signals:{" "}
+                {conclusion.signalIds.length > 0 ? conclusion.signalIds.join(", ") : "none"}
+              </p>
+              {conclusion.citations.length > 0 ? (
+                <div className="mt-2 flex flex-col gap-2 border-l border-border pl-2">
+                  {conclusion.citations.map((citation) => (
+                    <div key={`${conclusion.key}-${citation.signalId}-${citation.claim}`}>
+                      <p>
+                        Citation: {citation.claim} · {citation.kind} · {citation.freshness}
+                      </p>
+                      <FitCitationAttribution citation={citation} />
+                    </div>
+                  ))}
+                </div>
+              ) : (
+                <p className="mt-1 text-muted-foreground">No citation detail recorded.</p>
+              )}
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function FitCitationAttribution({
+  citation,
+}: {
+  citation: ReturnType<typeof deriveFitEvaluationDetails>["evidence"][number]["citation"];
+}) {
+  return citation.attribution ? (
+    <p className="mt-1 text-muted-foreground">
+      Attribution: Source {citation.attribution.sourceId} · Scout Run {citation.attribution.runId} ·
+      Scout {citation.attribution.scoutId}
+    </p>
+  ) : (
+    <p className="mt-1 text-warning">Attribution unavailable.</p>
   );
 }
 

@@ -155,6 +155,70 @@ describe("transparent Fit Evaluations and non-destructive Promotion", () => {
     ).toThrow(RecruitingError);
   });
 
+  test("requires each settled hard constraint to cite its own attributable Signals", async () => {
+    const { app, profile, run, lead, signal } = await fixture();
+
+    expect(() =>
+      app.createFitEvaluation({
+        leadId: lead.id,
+        profileVersionId: profile.currentVersion?.id ?? "",
+        runId: run.id,
+        hardConstraints: [
+          {
+            key: "remote-first",
+            result: "satisfied",
+            explanation: "The listing explicitly describes a remote-first team.",
+            signalIds: [signal.id],
+          },
+          {
+            key: "visa-sponsorship",
+            result: "contradicted",
+            explanation: "The listing says sponsorship is unavailable.",
+            signalIds: [],
+          },
+        ],
+        preferences: [],
+        evidence: [
+          {
+            signalId: signal.id,
+            claim: "The role is described as remote-first.",
+            kind: "fact",
+          },
+        ],
+        idempotencyKey: "constraint-attribution",
+      }),
+    ).toThrow(RecruitingError);
+  });
+
+  test("requires each settled preference to cite its own attributable Signals", async () => {
+    const { app, profile, run, lead, signal } = await fixture();
+
+    expect(() =>
+      app.createFitEvaluation({
+        leadId: lead.id,
+        profileVersionId: profile.currentVersion?.id ?? "",
+        runId: run.id,
+        hardConstraints: [],
+        preferences: [
+          {
+            key: "small-team",
+            result: "satisfied",
+            explanation: "The listing describes a small team.",
+            signalIds: [],
+          },
+        ],
+        evidence: [
+          {
+            signalId: signal.id,
+            claim: "The listing describes a small team.",
+            kind: "fact",
+          },
+        ],
+        idempotencyKey: "preference-attribution",
+      }),
+    ).toThrow(RecruitingError);
+  });
+
   test("confirming a new profile version stales current evaluations without changing run snapshots", async () => {
     const { app, profile, run, lead, signal } = await fixture();
     const first = app.createFitEvaluation({
