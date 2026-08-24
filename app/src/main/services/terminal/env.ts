@@ -2,6 +2,9 @@ import { homedir } from "node:os";
 import { delimiter, join } from "node:path";
 import { OPENTRADE_HOME } from "../../db/client";
 
+/** Credentials owned by the detached host and never made available to Scouts. */
+const HOST_OWNED_SECRET_ENV_KEYS = ["FIRECRAWL_API_KEY"] as const;
+
 /**
  * Build the environment for an agent's PTY. We inherit the app's env, ensure the
  * usual macOS bin dirs are on PATH (so `claude`, `git`, etc. resolve), and inject
@@ -26,6 +29,7 @@ export function buildAgentEnv(
   }
 
   for (const key of opts?.stripEnvKeys ?? []) delete base[key];
+  for (const key of HOST_OWNED_SECRET_ENV_KEYS) delete base[key];
 
   const home = homedir();
   const extraPathDirs = [
@@ -47,5 +51,7 @@ export function buildAgentEnv(
   base.OPENTRADE_AGENT_ID = agentId;
   base.OPENTRADE_HOME = OPENTRADE_HOME;
 
-  return { ...base, ...extra };
+  const safeExtra = { ...extra };
+  for (const key of HOST_OWNED_SECRET_ENV_KEYS) delete safeExtra[key];
+  return { ...base, ...safeExtra };
 }

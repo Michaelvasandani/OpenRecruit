@@ -320,8 +320,13 @@ const TOOLS: ToolDef[] = [
 ];
 
 function describeError(json: unknown): string {
-  if (json && typeof json === "object" && "error" in json)
-    return String((json as { error: unknown }).error);
+  if (json && typeof json === "object" && "error" in json) {
+    const value = json as { error: unknown; category?: unknown };
+    const message = String(value.error);
+    return typeof value.category === "string" && value.category
+      ? `${message} [${value.category}]`
+      : message;
+  }
   return typeof json === "string" ? json : JSON.stringify(json);
 }
 
