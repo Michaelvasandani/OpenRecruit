@@ -7,6 +7,7 @@ import { type Db, schema } from "../../db/client";
 import { SCHEMA_DDL } from "../../db/ddl";
 import { type MigrationDb, migrate } from "../../db/migrate";
 import {
+  DeterministicWebFetchProvider,
   DeterministicWebSearchProvider,
   RecruitingApplication,
   WEB_SEARCH_SOURCE_ID,
@@ -29,7 +30,13 @@ function fixture() {
   const provider = new DeterministicWebSearchProvider({
     query: [{ title: "Result", url: "https://example.com/job", description: "Evidence" }],
   });
-  const app = new RecruitingApplication(makeDb(), () => 10_000, { provider });
+  const fetchProvider = new DeterministicWebFetchProvider({
+    "https://example.com/job": { title: "Result", content: "Selected page evidence" },
+  });
+  const app = new RecruitingApplication(makeDb(), () => 10_000, {
+    provider,
+    webFetchProvider: fetchProvider,
+  });
   const draft = app.importProfile({
     name: "Candidate",
     roleTarget: "Engineer",
@@ -58,11 +65,11 @@ function fixture() {
     arbiter: {},
     recruiting: app,
   } as never);
-  return { app, provider, scout, run, server };
+  return { app, provider, fetchProvider, scout, run, server };
 }
 
 describe("authenticated agent WebSearch route", () => {
-  const { app, provider, scout, run, server } = fixture();
+  const { app, provider, fetchProvider, scout, run, server } = fixture();
   let base = "";
 
   beforeAll(async () => {
@@ -154,5 +161,83 @@ describe("authenticated agent WebSearch route", () => {
     });
     expect(invalid.status).toBe(400);
     expect(provider.requests).toHaveLength(requestsBeforeInvalid);
+  });
+
+  test("routes selected pages through WebFetch and rejects private URLs before its provider", async () => {
+    const response = await fetch(`${base}/web-fetch`, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        "x-opentrade-token": server.token,
+        "x-opentrade-agent": scout.id,
+      },
+      body: JSON.stringify({ urls: ["https://example.com/job"] }),
+    });
+    expect(response.status).toBe(200);
+    expect(await response.json()).toMatchObject({
+      outcomes: [
+        {
+          canonicalUrl: "https://example.com/job",
+          content: "Selected page evidence",
+          trust: "untrusted_evidence",
+        },
+      ],
+    });
+
+    const requestsBeforeInvalid = fetchProvider.requests.length;
+    const invalid = await fetch(`${base}/web-fetch`, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        "x-opentrade-token": server.token,
+        "x-opentrade-agent": scout.id,
+      },
+      body: JSON.stringify({ urls: ["http://127.0.0.1/private"] }),
+    });
+    expect(invalid.status).toBe(400);
+    expect(fetchProvider.requests).toHaveLength(requestsBeforeInvalid);
+  });
+
+  test("exposes WebFetch through the same shared MCP JSON-RPC server", async () => {
+    const mcpPath = join(dirname(fileURLToPath(import.meta.url)), "../../..", "agent-mcp/index.ts");
+    const child = Bun.spawn([process.execPath, mcpPath], {
+      env: {
+        ...process.env,
+        OPENTRADE_PORT: String(server.port),
+        OPENTRADE_TOKEN: server.token,
+        OPENTRADE_AGENT_ID: scout.id,
+        OPENTRADE_HARNESS: "codex",
+      },
+      stdin: "pipe",
+      stdout: "pipe",
+      stderr: "pipe",
+    });
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    await child.stdin.write(
+      `${JSON.stringify({
+        jsonrpc: "2.0",
+        id: 2,
+        method: "tools/call",
+        params: { name: "WebFetch", arguments: { urls: ["https://example.com/job"] } },
+      })}\n`,
+    );
+    const reader = child.stdout.getReader();
+    const decoder = new TextDecoder();
+    let output = "";
+    while (!output.includes("\n")) {
+      const chunk = await reader.read();
+      if (chunk.done) break;
+      output += decoder.decode(chunk.value, { stream: true });
+    }
+    child.kill();
+    const messages = output
+      .trim()
+      .split("\n")
+      .filter(Boolean)
+      .map((line) => JSON.parse(line) as { id?: number; result?: unknown });
+    const response = messages.find((message) => message.id === 2);
+    expect(response?.result).toMatchObject({ content: [{ type: "text" }] });
+    expect(JSON.stringify(response)).toContain("Selected page evidence");
+    expect(JSON.stringify(response)).toContain("untrusted_evidence");
   });
 });

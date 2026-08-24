@@ -9,6 +9,7 @@ import type { StatusArbiter } from "../status/arbiter";
 type WebSearchBoundary = {
   resolveScoutForAgent(agentId: string): string | null;
   webSearch(input: { scoutId: string; query: string; limit?: number }): Promise<unknown>;
+  webFetch(input: { scoutId: string; urls: string[]; contentLimit?: number }): Promise<unknown>;
 };
 
 /** How long a `/wake-stream` long-poll is held open before returning empty (the
@@ -144,6 +145,9 @@ export class LocalApiServer {
     if (req.method === "POST" && url.pathname === "/web-search") {
       return this.handleWebSearch(req, res);
     }
+    if (req.method === "POST" && url.pathname === "/web-fetch") {
+      return this.handleWebFetch(req, res);
+    }
 
     return json(res, 404, { error: "not found" });
   }
@@ -275,6 +279,35 @@ export class LocalApiServer {
       const code =
         error && typeof error === "object" && "code" in error ? String(error.code) : "CONFLICT";
       const message = error instanceof Error ? error.message : "Web Search could not complete";
+      return json(res, code === "NOT_FOUND" ? 404 : 400, { error: message, code });
+    }
+  }
+
+  /** Authenticated agent-facing WebFetch boundary. The caller's agent identity
+   * selects the Scout; URL and content bounds are enforced by Recruiting before
+   * the provider adapter is reached. */
+  private async handleWebFetch(req: IncomingMessage, res: ServerResponse) {
+    const recruiting = this.recruiting;
+    if (!recruiting) return json(res, 503, { error: "recruiting service not ready" });
+    const agentId = header(req, "x-opentrade-agent");
+    if (!agentId) return json(res, 404, { error: "unknown Scout" });
+    const scoutId = recruiting.resolveScoutForAgent(agentId);
+    if (!scoutId) return json(res, 404, { error: "unknown Scout" });
+    const body = await readJson(req);
+    if (!body || !Array.isArray(body.urls)) {
+      return json(res, 400, { error: "WebFetch URLs are required", code: "VALIDATION" });
+    }
+    try {
+      const result = await recruiting.webFetch({
+        scoutId,
+        urls: body.urls as string[],
+        contentLimit: body.contentLimit as number | undefined,
+      });
+      return json(res, 200, result);
+    } catch (error) {
+      const code =
+        error && typeof error === "object" && "code" in error ? String(error.code) : "CONFLICT";
+      const message = error instanceof Error ? error.message : "Web Fetch could not complete";
       return json(res, code === "NOT_FOUND" ? 404 : 400, { error: message, code });
     }
   }

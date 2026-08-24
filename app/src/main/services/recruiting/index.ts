@@ -88,6 +88,12 @@ import {
   type WebSearchSettingsProjection,
 } from "./scout-runs";
 import {
+  WebFetchApplication,
+  type WebFetchProvider,
+  type WebFetchRequest,
+  type WebFetchResponse,
+} from "./web-fetch";
+import {
   WebSearchApplication,
   type WebSearchApplicationOptions,
   type WebSearchRequest,
@@ -214,6 +220,25 @@ export {
   validateFeedUrl,
 } from "./source";
 export {
+  DeterministicWebFetchProvider,
+  FirecrawlWebFetchProvider,
+  normalizeFetchRequest,
+  WebFetchApplication,
+  type WebFetchApplicationOptions,
+  type WebFetchFailure,
+  type WebFetchOutcome,
+  type WebFetchPageError,
+  type WebFetchProvenance,
+  type WebFetchProvider,
+  WebFetchProviderError,
+  type WebFetchProviderErrorCategory,
+  type WebFetchProviderPage,
+  type WebFetchProviderRequest,
+  type WebFetchRequest,
+  type WebFetchResponse,
+  type WebFetchSuccess,
+} from "./web-fetch";
+export {
   DeterministicWebSearchProvider,
   FirecrawlWebSearchProvider,
   normalizeQuery,
@@ -255,6 +280,7 @@ export type CreateScoutCommand = {
 export type RecruitingApplicationOptions = ScoutRunApplicationOptions &
   WebSearchApplicationOptions & {
     webSearchApiKey?: () => string | undefined;
+    webFetchProvider?: WebFetchProvider;
   };
 
 export type ArchiveScoutCommand = {
@@ -305,6 +331,7 @@ export class RecruitingApplication {
   private readonly evidence: EvidenceApplication;
   private readonly webSearchSettings?: () => WebSearchSettingsProjection;
   private readonly webSearchApplication: WebSearchApplication;
+  private readonly webFetchApplication: WebFetchApplication;
 
   constructor(
     private readonly db: Db,
@@ -316,6 +343,10 @@ export class RecruitingApplication {
     this.scoutRuns = new ScoutRunApplication(db, now, options);
     this.webSearchApplication = new WebSearchApplication(db, now, {
       provider: options.provider,
+      apiKey: options.webSearchApiKey ?? options.apiKey,
+    });
+    this.webFetchApplication = new WebFetchApplication(db, now, {
+      provider: options.webFetchProvider,
       apiKey: options.webSearchApiKey ?? options.apiKey,
     });
     this.candidateDecisions = new CandidateDecisionApplication(db, now);
@@ -429,6 +460,10 @@ export class RecruitingApplication {
 
   webSearch(command: WebSearchRequest & { scoutId: string }): Promise<WebSearchResponse> {
     return this.webSearchApplication.search(command);
+  }
+
+  webFetch(command: WebFetchRequest & { scoutId: string }): Promise<WebFetchResponse> {
+    return this.webFetchApplication.fetch(command);
   }
 
   /** Map the authenticated local agent identity to its canonical Scout. New
