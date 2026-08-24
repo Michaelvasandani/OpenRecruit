@@ -2238,6 +2238,19 @@ function persistSignals(db: RecruitingDb, input: SignalPersistenceInput): void {
       continue;
     }
     const fingerprint = itemFingerprint(item);
+    // Candidate deletion leaves the Source Item identity and the deleted
+    // fingerprint as a minimal marker. Normal refreshes must not recreate the
+    // same Signal; a material content change explicitly clears the marker and
+    // is allowed to return as a new immutable observation.
+    if (sourceItem.deletionMarkerAt !== null) {
+      if (sourceItem.latestFingerprint === fingerprint) continue;
+      db.update(sourceItems)
+        .set({ deletionMarkerAt: null, latestSignalId: null, updatedAt: input.observedAt })
+        .where(eq(sourceItems.id, sourceItem.id))
+        .run();
+      sourceItem =
+        db.select().from(sourceItems).where(eq(sourceItems.id, sourceItem.id)).get() ?? sourceItem;
+    }
     const existing = db
       .select()
       .from(signals)
@@ -2288,10 +2301,10 @@ function persistSignals(db: RecruitingDb, input: SignalPersistenceInput): void {
           accessMode: "public",
           adapterVersion: isX ? "x-api-v2" : "rss-atom-v1",
           processor: isX ? "openrecruit-x-api" : "openrecruit-rss-atom",
-          retentionUntil:
-            item.retentionUntil ??
-            item.metadata?.retentionUntil ??
-            input.observedAt + 30 * 24 * 60 * 60 * 1_000,
+          retentionUntil: Math.min(
+            item.retentionUntil ?? item.metadata?.retentionUntil ?? input.observedAt + 30 * DAY_MS,
+            sourceRetentionDeadline(input.source.config, input.observedAt),
+          ),
           supersededSignalId: previousSignalId,
           createdAt: input.observedAt,
         })
@@ -2376,33 +2389,52 @@ function ensureLead(
     const canonicalKeyBase = item.canonicalUrl
       ? `url:${item.canonicalUrl}`
       : `provider:${item.providerIdentity}`;
-    const id = randomUUID();
-    const ambiguous = matchingLeadIds.size > 1;
-    const canonicalKey = ambiguous
-      ? `ambiguous:${digest(`${canonicalKeyBase}:${[...matchingLeadIds].sort().join(",")}`)}:${id}`
-      : canonicalKeyBase;
-    db.insert(leads)
-      .values({
-        id,
-        canonicalKey,
-        title: item.title,
-        summary: item.content,
-        identityState: ambiguous ? "conflicted" : "settled",
-        conflict: ambiguous
-          ? JSON.stringify([
-              {
-                kind: "alias_collision",
-                relatedLeadId: null,
-                detail: `Identity aliases matched Leads ${[...matchingLeadIds].join(", ")}`,
-              },
-            ])
-          : null,
-        revision: 0,
-        createdAt: at,
-        updatedAt: at,
-      })
-      .run();
-    lead = db.select().from(leads).where(eq(leads.id, id)).get();
+    // A Candidate deletion removes the disclosure-bearing Lead aliases but
+    // keeps the stable canonical identity. Reuse that history when a material
+    // replacement is explicitly observed instead of attempting a duplicate
+    // unique canonical Lead.
+    const canonicalHistory = db
+      .select()
+      .from(leads)
+      .where(eq(leads.canonicalKey, canonicalKeyBase))
+      .get();
+    if (canonicalHistory)
+      lead = db
+        .select()
+        .from(leads)
+        .where(eq(leads.id, resolveLeadId(db, canonicalHistory.id)))
+        .get();
+    if (lead) {
+      // Continue below so the new Signal can attach to the surviving history.
+    } else {
+      const id = randomUUID();
+      const ambiguous = matchingLeadIds.size > 1;
+      const canonicalKey = ambiguous
+        ? `ambiguous:${digest(`${canonicalKeyBase}:${[...matchingLeadIds].sort().join(",")}`)}:${id}`
+        : canonicalKeyBase;
+      db.insert(leads)
+        .values({
+          id,
+          canonicalKey,
+          title: item.title,
+          summary: item.content,
+          identityState: ambiguous ? "conflicted" : "settled",
+          conflict: ambiguous
+            ? JSON.stringify([
+                {
+                  kind: "alias_collision",
+                  relatedLeadId: null,
+                  detail: `Identity aliases matched Leads ${[...matchingLeadIds].join(", ")}`,
+                },
+              ])
+            : null,
+          revision: 0,
+          createdAt: at,
+          updatedAt: at,
+        })
+        .run();
+      lead = db.select().from(leads).where(eq(leads.id, id)).get();
+    }
   }
   if (!lead) throw new RecruitingError("VALIDATION", "Signal Lead could not be persisted");
   if (matchingLeadIds.size > 1 && matchingLeadIds.has(lead.id)) {
@@ -2665,6 +2697,25 @@ function toSourceAccessSummary(row: SourceAccessRow): SourceAccessSummaryValue {
 
 function sanitizeSourceConfig(value: Record<string, unknown>): Record<string, unknown> {
   return sanitizeObject(value) as Record<string, unknown>;
+}
+
+const DAY_MS = 24 * 60 * 60 * 1_000;
+
+/** Source-specific raw/evidence retention may shorten, never extend, the
+ * default thirty-day window. Provider payloads themselves are still never
+ * persisted; this deadline only governs the safe normalized Signal. */
+function sourceRetentionDeadline(config: string, at: number): number {
+  let days = 30;
+  try {
+    const parsed = JSON.parse(config) as { retentionDays?: unknown };
+    if (typeof parsed.retentionDays === "number" && Number.isFinite(parsed.retentionDays)) {
+      days = Math.max(1, Math.min(30, Math.floor(parsed.retentionDays)));
+    }
+  } catch {
+    // Malformed Source configuration already fails at the adapter boundary;
+    // retain the safe default here.
+  }
+  return at + days * DAY_MS;
 }
 
 function sanitizeObject(value: unknown, key?: string): unknown {

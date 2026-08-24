@@ -26,6 +26,11 @@ import {
 import { assertSafeMaterial } from "./contract";
 import { RecruitingError } from "./errors";
 import {
+  type DeleteEvidenceCommand,
+  EvidenceApplication,
+  type InspectEvidenceCommand,
+} from "./evidence";
+import {
   type CreateFitEvaluationCommand,
   FitEvaluationApplication,
   type PromoteLeadCommand,
@@ -66,6 +71,13 @@ import {
   type SetSourceDisabledCommand,
 } from "./scout-runs";
 
+export type {
+  EvidenceDeletionSummary,
+  EvidenceInspectionSummary,
+  EvidenceItemSummary,
+  EvidenceRetentionState,
+  EvidenceScope,
+} from "@shared/recruiting";
 export {
   InvestigationAttemptDecision,
   InvestigationAttemptOutcome,
@@ -102,6 +114,11 @@ export {
   validateRecruitingOperation,
 } from "./contract";
 export { RecruitingError } from "./errors";
+export {
+  type DeleteEvidenceCommand,
+  EvidenceApplication,
+  type InspectEvidenceCommand,
+} from "./evidence";
 export {
   type CreateFitEvaluationCommand,
   type FitConclusionInput,
@@ -236,6 +253,7 @@ export class RecruitingApplication {
   private readonly investigations: InvestigationApplication;
   private readonly revisitPlans: RevisitPlanApplication;
   private readonly candidateDecisions: CandidateDecisionApplication;
+  private readonly evidence: EvidenceApplication;
 
   constructor(
     private readonly db: Db,
@@ -244,6 +262,7 @@ export class RecruitingApplication {
     this.profileApplication = new CandidateProfileApplication(db, { now });
     this.scoutRuns = new ScoutRunApplication(db, now);
     this.candidateDecisions = new CandidateDecisionApplication(db, now);
+    this.evidence = new EvidenceApplication(db, now);
     this.fitEvaluations = new FitEvaluationApplication(db, now, (subjectId, at) =>
       this.candidateDecisions.requireCurrentSupportingEvidence(subjectId, at),
     );
@@ -365,6 +384,22 @@ export class RecruitingApplication {
 
   getSignal(id: string) {
     return this.scoutRuns.getSignal(id);
+  }
+
+  inspectEvidence(command: InspectEvidenceCommand = {}) {
+    return this.evidence.inspectEvidence(command);
+  }
+
+  listEvidence(command: InspectEvidenceCommand = {}) {
+    return this.evidence.listEvidence(command);
+  }
+
+  deleteEvidence(command: DeleteEvidenceCommand) {
+    return this.evidence.deleteEvidence(command);
+  }
+
+  removeEvidence(command: DeleteEvidenceCommand) {
+    return this.evidence.removeEvidence(command);
   }
 
   listLeads() {

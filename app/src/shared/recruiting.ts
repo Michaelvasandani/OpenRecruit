@@ -173,6 +173,56 @@ export const SignalSummary = z.object({
 });
 export type SignalSummary = z.infer<typeof SignalSummary>;
 
+/** Candidate-controlled scope for inspecting or deleting saved Source evidence. */
+export const EvidenceScope = z.discriminatedUnion("kind", [
+  z.object({ kind: z.literal("item"), sourceItemId: z.string().min(1) }),
+  z.object({ kind: z.literal("source"), sourceId: z.string().min(1) }),
+  z.object({ kind: z.literal("all") }),
+]);
+export type EvidenceScope = z.infer<typeof EvidenceScope>;
+
+export const EvidenceRetentionState = z.enum(["retained", "expired"]);
+export type EvidenceRetentionState = z.infer<typeof EvidenceRetentionState>;
+
+/** Safe saved-evidence projection. Raw captures and provider transcripts are
+ * never persisted or returned as evidence records. */
+export const EvidenceItemSummary = z.object({
+  sourceItemId: z.string().min(1),
+  signalId: z.string().min(1),
+  sourceId: z.string().min(1),
+  sourceAttemptId: z.string().min(1),
+  canonicalUrl: z.string().nullable(),
+  providerIdentity: z.string().nullable(),
+  fingerprint: z.string().min(1),
+  evidence: SignalEvidence,
+  retentionUntil: z.number().int().nullable(),
+  retentionState: EvidenceRetentionState,
+  observedAt: z.number().int(),
+  createdAt: z.number().int(),
+});
+export type EvidenceItemSummary = z.infer<typeof EvidenceItemSummary>;
+
+export const EvidenceInspectionSummary = z.object({
+  scope: EvidenceScope,
+  revision: z.number().int().nonnegative(),
+  items: z.array(EvidenceItemSummary),
+  rawCapturesRetained: z.literal(false),
+  providerTranscriptsRetained: z.literal(false),
+});
+export type EvidenceInspectionSummary = z.infer<typeof EvidenceInspectionSummary>;
+
+export const EvidenceDeletionSummary = z.object({
+  scope: EvidenceScope,
+  deletedSignalIds: z.array(z.string().min(1)),
+  affectedSourceItemIds: z.array(z.string().min(1)),
+  affectedLeadIds: z.array(z.string().min(1)),
+  affectedOpportunityIds: z.array(z.string().min(1)),
+  affectedInvestigationIds: z.array(z.string().min(1)),
+  affectedFitEvaluationIds: z.array(z.string().min(1)),
+  revision: z.number().int().nonnegative(),
+});
+export type EvidenceDeletionSummary = z.infer<typeof EvidenceDeletionSummary>;
+
 export const LeadConflict = z.object({
   kind: z.string().min(1),
   signalId: z.string().nullable().optional(),

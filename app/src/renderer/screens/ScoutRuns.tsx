@@ -17,6 +17,7 @@ export function ScoutRunsScreen() {
   const sources = trpc.recruiting.sources.useQuery();
   const sourceAttempts = trpc.recruiting.sourceAttempts.useQuery();
   const signals = trpc.recruiting.signals.useQuery();
+  const evidence = trpc.recruiting.evidence.useQuery();
   const leads = trpc.recruiting.leads.useQuery();
   const [selectedLeadId, setSelectedLeadId] = useState<string | undefined>();
   const leadContext = trpc.recruiting.leadContext.useQuery(
@@ -51,13 +52,16 @@ export function ScoutRunsScreen() {
         event.kind === "run" ||
         event.kind === "scout" ||
         event.kind === "source" ||
-        event.kind === "lead"
+        event.kind === "lead" ||
+        event.kind === "review" ||
+        event.reason === "evidence_deleted"
       ) {
         void utils.recruiting.scoutRuns.invalidate();
         void utils.recruiting.scoutRunCenter.invalidate();
         void utils.recruiting.scouts.invalidate();
         void utils.recruiting.sources.invalidate();
         void utils.recruiting.signals.invalidate();
+        void utils.recruiting.evidence.invalidate();
         void utils.recruiting.leads.invalidate();
         void utils.recruiting.leadContext.invalidate();
       }
@@ -95,6 +99,14 @@ export function ScoutRunsScreen() {
       // A stale panel is recoverable: refetch authoritative state so the
       // Candidate can retry with the current Lead revision.
       void leadContext.refetch();
+    },
+  });
+  const deleteEvidence = trpc.recruiting.deleteEvidence.useMutation({
+    onSuccess: () => {
+      void utils.recruiting.evidence.invalidate();
+      void utils.recruiting.signals.invalidate();
+      void utils.recruiting.leads.invalidate();
+      void utils.recruiting.leadContext.invalidate();
     },
   });
   useEffect(() => {
@@ -464,6 +476,98 @@ export function ScoutRunsScreen() {
                   </details>
                 </div>
               ))}
+            </Card>
+            <Card className="flex flex-col gap-3 p-5">
+              <div className="flex items-start justify-between gap-3">
+                <div>
+                  <h2 className="text-sm font-medium">Saved evidence</h2>
+                  <p className="mt-1 text-xs text-muted-foreground">
+                    Inspect retention state and delete an item, a Source, or all OpenRecruit
+                    evidence. Raw captures and provider transcripts are never retained.
+                  </p>
+                </div>
+                <Button
+                  type="button"
+                  size="sm"
+                  variant="destructive"
+                  disabled={deleteEvidence.isPending || !evidence.data?.items.length}
+                  onClick={() =>
+                    deleteEvidence.mutate({
+                      scope: { kind: "all" },
+                      idempotencyKey: `delete-all-evidence-${crypto.randomUUID()}`,
+                    })
+                  }
+                >
+                  Delete all
+                </Button>
+              </div>
+              {evidence.data?.items.length === 0 ? (
+                <p className="text-xs text-muted-foreground">No saved evidence.</p>
+              ) : (
+                <>
+                  {sources.data
+                    ?.filter((source) =>
+                      evidence.data?.items.some((item) => item.sourceId === source.id),
+                    )
+                    .map((source) => (
+                      <div
+                        key={`source-${source.id}`}
+                        className="flex items-center justify-between rounded border border-border p-2 text-xs"
+                      >
+                        <span className="font-medium">{source.name}</span>
+                        <Button
+                          type="button"
+                          size="sm"
+                          variant="outline"
+                          disabled={deleteEvidence.isPending}
+                          onClick={() =>
+                            deleteEvidence.mutate({
+                              scope: { kind: "source", sourceId: source.id },
+                              idempotencyKey: `delete-source-evidence-${source.id}-${crypto.randomUUID()}`,
+                            })
+                          }
+                        >
+                          Delete Source evidence
+                        </Button>
+                      </div>
+                    ))}
+                  {evidence.data?.items.map((item) => (
+                    <div
+                      key={item.signalId}
+                      className="flex items-start justify-between gap-3 rounded border border-border p-2 text-xs"
+                    >
+                      <div className="min-w-0">
+                        <div className="font-medium">
+                          {item.evidence.title || "Untitled evidence"}
+                        </div>
+                        <p className="mt-1 truncate text-muted-foreground">
+                          {item.retentionState} until{" "}
+                          {item.retentionUntil
+                            ? new Date(item.retentionUntil).toLocaleDateString()
+                            : "unspecified"}
+                        </p>
+                      </div>
+                      <Button
+                        type="button"
+                        size="sm"
+                        variant="outline"
+                        disabled={deleteEvidence.isPending}
+                        onClick={() =>
+                          deleteEvidence.mutate({
+                            scope: { kind: "item", sourceItemId: item.sourceItemId },
+                            idempotencyKey: `delete-evidence-${item.sourceItemId}-${crypto.randomUUID()}`,
+                          })
+                        }
+                      >
+                        Delete item
+                      </Button>
+                    </div>
+                  ))}
+                </>
+              )}
+              {deleteEvidence.error && (
+                <p className="text-xs text-destructive">{deleteEvidence.error.message}</p>
+              )}
             </Card>
             {selectedLeadId && (
               <Card className="flex flex-col gap-3 p-5">

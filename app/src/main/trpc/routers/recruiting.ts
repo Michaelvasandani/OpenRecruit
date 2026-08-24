@@ -242,6 +242,34 @@ export const recruitingRouter = router({
     .input(z.object({ id: z.string().min(1) }))
     .query(({ ctx, input }) => ctx.recruiting.getSignal(input.id)),
 
+  evidence: publicProcedure
+    .input(z.object({ scope: evidenceScopeInput().optional() }).optional())
+    .query(({ ctx, input }) => ctx.recruiting.inspectEvidence(input ?? {})),
+
+  inspectEvidence: publicProcedure
+    .input(z.object({ scope: evidenceScopeInput().optional() }).optional())
+    .query(({ ctx, input }) => ctx.recruiting.inspectEvidence(input ?? {})),
+
+  deleteEvidence: publicProcedure
+    .input(
+      z.object({
+        scope: evidenceScopeInput(),
+        expectedRevision: z.number().int().nonnegative().optional(),
+        idempotencyKey: z.string().trim().min(1).max(200),
+      }),
+    )
+    .mutation(({ ctx, input }) => command(() => ctx.recruiting.deleteEvidence(input))),
+
+  removeEvidence: publicProcedure
+    .input(
+      z.object({
+        scope: evidenceScopeInput(),
+        expectedRevision: z.number().int().nonnegative().optional(),
+        idempotencyKey: z.string().trim().min(1).max(200),
+      }),
+    )
+    .mutation(({ ctx, input }) => command(() => ctx.recruiting.deleteEvidence(input))),
+
   leads: publicProcedure.query(({ ctx }) => ctx.recruiting.listLeads()),
 
   lead: publicProcedure
@@ -780,6 +808,14 @@ function investigationAttemptInput() {
     freshness: z.enum(["fresh", "stale"]).optional(),
     idempotencyKey: z.string().trim().min(1).max(200),
   });
+}
+
+function evidenceScopeInput() {
+  return z.discriminatedUnion("kind", [
+    z.object({ kind: z.literal("item"), sourceItemId: z.string().min(1) }),
+    z.object({ kind: z.literal("source"), sourceId: z.string().min(1) }),
+    z.object({ kind: z.literal("all") }),
+  ]);
 }
 
 function command<T>(run: () => T): T {
