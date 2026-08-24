@@ -6,7 +6,7 @@ import type { Scheduler } from "../scheduler";
 import type { WakeTransport } from "../scheduler/wake/types";
 import type { StatusArbiter } from "../status/arbiter";
 
-type WebSearchBoundary = {
+type WebAccessBoundary = {
   resolveScoutForAgent(agentId: string): string | null;
   webSearch(input: { scoutId: string; query: string; limit?: number }): Promise<unknown>;
   webFetch(input: { scoutId: string; urls: string[]; contentLimit?: number }): Promise<unknown>;
@@ -23,7 +23,7 @@ interface Deps {
   port?: number;
   /** Persisted bearer token. Reused across restarts; omit (→ random) in tests. */
   token?: string;
-  recruiting?: WebSearchBoundary;
+  recruiting?: WebAccessBoundary;
 }
 
 /** EADDRINUSE retries before falling back to an ephemeral port. Covers the dev
@@ -51,7 +51,7 @@ export class LocalApiServer {
   /** Late-bound: the wake transport backing the `/wake-stream` long-poll (the single
    *  wake authority — owns the queue + the parked-poll rendezvous). */
   private wake: WakeTransport | null = null;
-  private recruiting: WebSearchBoundary | null;
+  private recruiting: WebAccessBoundary | null;
 
   constructor(private deps: Deps) {
     this.token = deps.token ?? randomBytes(24).toString("hex");
@@ -71,7 +71,7 @@ export class LocalApiServer {
 
   /** Wire the host-owned Recruiting boundary after construction. The MCP server
    * remains a transport shim; all Scout/Run/Source policy stays in Recruiting. */
-  setRecruiting(recruiting: WebSearchBoundary): void {
+  setRecruiting(recruiting: WebAccessBoundary): void {
     this.recruiting = recruiting;
   }
 

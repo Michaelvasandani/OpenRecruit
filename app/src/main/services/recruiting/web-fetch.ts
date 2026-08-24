@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { lookup } from "node:dns/promises";
 import { isIP } from "node:net";
 import type { SourceAttemptSummary } from "@shared/recruiting";
 import { and, asc, eq, inArray } from "drizzle-orm";
@@ -38,6 +39,8 @@ export type WebFetchProviderPage = {
   content: string;
   requestId?: string | null;
   creditsUsed?: number | null;
+  retryCount?: number;
+  retryAt?: number | null;
 };
 
 export type WebFetchProvider = {
@@ -60,6 +63,8 @@ export class WebFetchProviderError extends Error {
     message: string,
     readonly requestId: string | null = null,
     readonly creditsUsed: number | null = null,
+    readonly retryCount = 0,
+    readonly retryAt: number | null = null,
   ) {
     super(message);
     this.name = "WebFetchProviderError";
@@ -114,6 +119,12 @@ export type WebFetchResponse = {
 export type WebFetchApplicationOptions = {
   provider?: WebFetchProvider;
   apiKey?: () => string | undefined;
+  webSearchSettings?: () => {
+    configured: boolean;
+    readiness: string;
+    safeFailure: string | null;
+  };
+  webFetchResolveHostname?: (hostname: string) => Promise<readonly string[]>;
 };
 
 type WebFetchAttemptDetails = {
@@ -123,6 +134,8 @@ type WebFetchAttemptDetails = {
   contentLimit: number | null;
   requestIds: string[];
   creditsUsed: number[];
+  retryCount: number;
+  retryAt: number | null;
   returnedUrls: string[];
   errorCategories: string[];
 };
@@ -156,27 +169,43 @@ export class FirecrawlWebFetchProvider implements WebFetchProvider {
   async fetch(request: WebFetchProviderRequest): Promise<WebFetchProviderPage> {
     const key = this.apiKey()?.trim();
     if (!key) throw new WebFetchProviderError("not_configured", "Firecrawl is not configured");
-    let response: Response;
-    try {
-      response = await this.fetchImpl(FIRECRAWL_SCRAPE_URL, {
-        method: "POST",
-        headers: {
-          accept: "application/json",
-          "content-type": "application/json",
-          authorization: `Bearer ${key}`,
-        },
-        body: JSON.stringify({
-          url: request.url,
-          formats: ["markdown"],
-          onlyMainContent: true,
-        }),
-        signal: AbortSignal.timeout(20_000),
-      });
-    } catch (_error) {
-      throw new WebFetchProviderError("transient_failure", "Firecrawl is temporarily unavailable");
-    }
-    const requestId = safeRequestId(response.headers.get("x-request-id"));
-    if (!response.ok) {
+    const body = {
+      url: request.url,
+      formats: ["markdown"],
+      onlyMainContent: true,
+    };
+    let response: Response | undefined;
+    let retryCount = 0;
+    let retryAt: number | null = null;
+    for (let attempt = 0; attempt < 2; attempt++) {
+      try {
+        response = await this.fetchImpl(FIRECRAWL_SCRAPE_URL, {
+          method: "POST",
+          headers: {
+            accept: "application/json",
+            "content-type": "application/json",
+            authorization: `Bearer ${key}`,
+          },
+          body: JSON.stringify(body),
+          signal: AbortSignal.timeout(20_000),
+        });
+      } catch (_error) {
+        if (attempt === 0) {
+          retryCount = 1;
+          retryAt = Date.now();
+          continue;
+        }
+        throw new WebFetchProviderError(
+          "transient_failure",
+          "Firecrawl is temporarily unavailable",
+          null,
+          null,
+          retryCount,
+          retryAt,
+        );
+      }
+      if (response.ok) break;
+      const requestId = safeRequestId(response.headers.get("x-request-id"));
       if (response.status === 401 || response.status === 403) {
         throw new WebFetchProviderError(
           "authentication",
@@ -198,19 +227,35 @@ export class FirecrawlWebFetchProvider implements WebFetchProvider {
           requestId,
         );
       }
-      if (response.status === 429) {
+      if (response.status !== 408 && response.status !== 429 && response.status < 500) {
         throw new WebFetchProviderError(
-          "rate_limited",
-          "Firecrawl is temporarily rate limited",
+          "provider_failure",
+          "Firecrawl could not fetch the page",
           requestId,
         );
       }
+      if (attempt === 0) {
+        retryCount = 1;
+        const retryAfter = boundedRetryAfter(response.headers.get("retry-after"));
+        retryAt = Date.now() + retryAfter;
+        await delay(retryAfter);
+        continue;
+      }
       throw new WebFetchProviderError(
-        response.status >= 500 ? "transient_failure" : "provider_failure",
-        "Firecrawl could not fetch the page",
+        response.status === 429 ? "rate_limited" : "transient_failure",
+        response.status === 429
+          ? "Firecrawl is temporarily rate limited"
+          : "Firecrawl is temporarily unavailable",
         requestId,
+        null,
+        retryCount,
+        retryAt,
       );
     }
+    if (!response?.ok) {
+      throw new WebFetchProviderError("transient_failure", "Firecrawl is temporarily unavailable");
+    }
+    const requestId = safeRequestId(response.headers.get("x-request-id"));
     let payload: unknown;
     try {
       payload = await response.json();
@@ -255,12 +300,16 @@ export class FirecrawlWebFetchProvider implements WebFetchProvider {
       content,
       requestId,
       creditsUsed: safeCredits(value?.creditsUsed ?? data?.creditsUsed),
+      retryCount,
+      retryAt,
     };
   }
 }
 
 export class WebFetchApplication {
   private readonly provider: WebFetchProvider;
+  private readonly webSearchSettings?: WebFetchApplicationOptions["webSearchSettings"];
+  private readonly resolveHostname: (hostname: string) => Promise<readonly string[]>;
 
   constructor(
     private readonly db: Db,
@@ -269,6 +318,8 @@ export class WebFetchApplication {
   ) {
     this.provider =
       options.provider ?? new FirecrawlWebFetchProvider(options.apiKey ?? (() => undefined));
+    this.webSearchSettings = options.webSearchSettings;
+    this.resolveHostname = options.webFetchResolveHostname ?? resolveHostname;
   }
 
   async fetch(command: WebFetchRequest & { scoutId: string }): Promise<WebFetchResponse> {
@@ -282,6 +333,8 @@ export class WebFetchApplication {
       contentLimit: null,
       requestIds: [],
       creditsUsed: [],
+      retryCount: 0,
+      retryAt: null,
       returnedUrls: [],
       errorCategories: [],
     };
@@ -302,6 +355,7 @@ export class WebFetchApplication {
         contentLimit: normalized.contentLimit,
       };
       this.updateAttempt(attemptId, details);
+      await assertResolvedPublicUrls(normalized.urls, this.resolveHostname);
     } catch (error) {
       const message =
         error instanceof RecruitingError ? error.message : "WebFetch request was rejected";
@@ -311,6 +365,13 @@ export class WebFetchApplication {
     if (!context.access) return reject("Web Search Source Access was not found", "NOT_FOUND");
     if (context.access.readiness === "candidate_disabled")
       return reject("The Candidate disabled Web Search");
+    if (context.access.readiness !== "ready" && context.access.readiness !== "not_configured") {
+      return reject(`Web Search Source is ${context.access.readiness}`);
+    }
+    const settings = this.webSearchSettings?.();
+    if (settings && (!settings.configured || settings.readiness !== "ready")) {
+      return reject(settings.safeFailure ?? "Web Search Source is not ready");
+    }
 
     const retrievedAt = this.now();
     const outcomes: WebFetchOutcome[] = [];
@@ -340,6 +401,8 @@ export class WebFetchApplication {
           requestIds: requestId ? [...details.requestIds, requestId] : details.requestIds,
           creditsUsed:
             creditsUsed === null ? details.creditsUsed : [...details.creditsUsed, creditsUsed],
+          retryCount: details.retryCount + safeRetryCount(page.retryCount),
+          retryAt: safeRetryAt(page.retryAt) ?? details.retryAt,
           returnedUrls: [...details.returnedUrls, canonicalUrl],
         };
         outcomes.push({
@@ -367,6 +430,8 @@ export class WebFetchApplication {
           requestIds: requestId ? [...details.requestIds, requestId] : details.requestIds,
           creditsUsed:
             creditsUsed === null ? details.creditsUsed : [...details.creditsUsed, creditsUsed],
+          retryCount: details.retryCount + safeRetryCount(providerError.retryCount),
+          retryAt: safeRetryAt(providerError.retryAt) ?? details.retryAt,
           errorCategories: [...details.errorCategories, providerError.category],
         };
         outcomes.push({
@@ -454,6 +519,7 @@ export class WebFetchApplication {
         outcome,
         itemCount,
         pageCount: details.urls.length,
+        retryAt: details.retryAt,
         safeFailure,
         completedAt: this.now(),
       })
@@ -551,7 +617,7 @@ function canonicalizePublicUrl(value: string): string | null {
 }
 
 function isPrivateHostname(hostname: string): boolean {
-  const normalized = hostname.replace(/\.+$/, "");
+  const normalized = hostname.toLowerCase().replace(/\.+$/, "");
   if (
     normalized === "localhost" ||
     normalized.endsWith(".localhost") ||
@@ -594,6 +660,44 @@ function isPrivateHostname(hostname: string): boolean {
     );
   }
   return false;
+}
+
+async function assertResolvedPublicUrls(
+  entries: NormalizedFetchUrl[],
+  resolve: (hostname: string) => Promise<readonly string[]>,
+): Promise<void> {
+  for (const entry of entries) {
+    const hostname = new URL(entry.canonicalUrl).hostname.replace(/^\[|\]$/g, "");
+    if (isIP(hostname)) continue;
+    let addresses: readonly string[];
+    try {
+      addresses = await resolveWithTimeout(resolve(hostname));
+    } catch {
+      throw new RecruitingError("VALIDATION", "WebFetch URLs must resolve to public hosts");
+    }
+    if (addresses.length === 0 || addresses.some((address) => isPrivateHostname(address))) {
+      throw new RecruitingError("VALIDATION", "WebFetch URLs must resolve to public hosts");
+    }
+  }
+}
+
+async function resolveWithTimeout<T>(promise: Promise<T>): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([
+      promise,
+      new Promise<T>((_, reject) => {
+        timer = setTimeout(() => reject(new Error("DNS lookup timed out")), 2_000);
+      }),
+    ]);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
+
+async function resolveHostname(hostname: string): Promise<readonly string[]> {
+  const addresses = await lookup(hostname, { all: true, verbatim: true });
+  return addresses.map(({ address }) => address);
 }
 
 function normalizeTitle(value: string | null | undefined): string | null {
@@ -655,6 +759,28 @@ function safeRequestId(value: unknown): string | null {
 
 function safeCredits(value: unknown): number | null {
   return typeof value === "number" && Number.isFinite(value) && value >= 0 ? value : null;
+}
+
+function boundedRetryAfter(value: string | null): number {
+  if (!value) return 0;
+  const seconds = Number(value);
+  if (Number.isFinite(seconds)) return Math.min(2_000, Math.max(0, seconds * 1_000));
+  const timestamp = Date.parse(value);
+  return Number.isFinite(timestamp) ? Math.min(2_000, Math.max(0, timestamp - Date.now())) : 0;
+}
+
+function safeRetryCount(value: unknown): number {
+  return typeof value === "number" && Number.isInteger(value) && value >= 0
+    ? Math.min(value, 2)
+    : 0;
+}
+
+function safeRetryAt(value: unknown): number | null {
+  return typeof value === "number" && Number.isInteger(value) && value >= 0 ? value : null;
+}
+
+function delay(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 function parseSnapshotSourceIds(value: string | null): string[] | null {

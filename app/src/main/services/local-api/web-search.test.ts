@@ -36,6 +36,7 @@ function fixture() {
   const app = new RecruitingApplication(makeDb(), () => 10_000, {
     provider,
     webFetchProvider: fetchProvider,
+    webFetchResolveHostname: async () => ["93.184.216.34"],
   });
   const draft = app.importProfile({
     name: "Candidate",

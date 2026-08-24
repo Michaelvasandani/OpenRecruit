@@ -281,6 +281,7 @@ export type RecruitingApplicationOptions = ScoutRunApplicationOptions &
   WebSearchApplicationOptions & {
     webSearchApiKey?: () => string | undefined;
     webFetchProvider?: WebFetchProvider;
+    webFetchResolveHostname?: (hostname: string) => Promise<readonly string[]>;
   };
 
 export type ArchiveScoutCommand = {
@@ -348,6 +349,8 @@ export class RecruitingApplication {
     this.webFetchApplication = new WebFetchApplication(db, now, {
       provider: options.webFetchProvider,
       apiKey: options.webSearchApiKey ?? options.apiKey,
+      webSearchSettings: options.webSearchSettings,
+      webFetchResolveHostname: options.webFetchResolveHostname,
     });
     this.candidateDecisions = new CandidateDecisionApplication(db, now);
     this.evidence = new EvidenceApplication(db, now);
