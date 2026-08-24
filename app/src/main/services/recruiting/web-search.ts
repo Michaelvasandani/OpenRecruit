@@ -448,7 +448,8 @@ export function normalizeQuery(query: string, limit?: number): NormalizedQuery &
   if (typeof query !== "string" || !query.trim()) {
     throw new RecruitingError("VALIDATION", "WebSearch query is required");
   }
-  const original = query.trim();
+  const original = query;
+  const providerInput = query.trim();
   if (original.length > MAX_QUERY_LENGTH) {
     throw new RecruitingError(
       "VALIDATION",
@@ -463,7 +464,7 @@ export function normalizeQuery(query: string, limit?: number): NormalizedQuery &
     );
   }
   const domains: string[] = [];
-  let providerQuery = original.replace(
+  let providerQuery = providerInput.replace(
     /(^|\s)site:([^\s]*)/gi,
     (_token, prefix: string, value: string) => {
       if (

@@ -182,6 +182,18 @@ describe("host-owned WebSearch", () => {
     );
   });
 
+  test("preserves the Candidate-authored query while normalizing provider input", async () => {
+    const { app, provider, scout } = fixture();
+    const query = '  site:jobs.ashbyhq.com "Forward Deployed Engineer"  ';
+    const result = await app.webSearch({ scoutId: scout.id, query });
+
+    expect(result.query).toBe(query);
+    expect(provider.requests[0]).toMatchObject({
+      query: '"Forward Deployed Engineer"',
+      includeDomains: ["jobs.ashbyhq.com"],
+    });
+  });
+
   test("rejects a disabled Scout before calling the provider", async () => {
     const { app, provider, scout } = fixture();
     app.disableSource(WEB_SEARCH_SOURCE_ID);
