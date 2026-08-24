@@ -453,6 +453,72 @@ export function ScoutRunsScreen() {
                         </p>
                       </div>
                     ))}
+                    <div className="mt-2 rounded border border-border p-2">
+                      <div className="text-xs font-medium">Opportunities</div>
+                      {leadContext.data.opportunities.length === 0 ? (
+                        <p className="mt-1 text-xs text-muted-foreground">
+                          This Lead has not been promoted yet.
+                        </p>
+                      ) : (
+                        leadContext.data.opportunities.map((opportunity) => (
+                          <div key={opportunity.id} className="mt-1 text-xs">
+                            {opportunity.title} · {opportunity.state}
+                          </div>
+                        ))
+                      )}
+                    </div>
+                    <div className="mt-2 rounded border border-border p-2">
+                      <div className="text-xs font-medium">Fit Evaluations</div>
+                      {leadContext.data.fitEvaluations.length === 0 ? (
+                        <p className="mt-1 text-xs text-muted-foreground">
+                          No transparent evaluation has been recorded.
+                        </p>
+                      ) : (
+                        leadContext.data.fitEvaluations.map((evaluation) => (
+                          <div key={evaluation.id} className="mt-2 rounded bg-muted p-2 text-xs">
+                            <div className="flex items-center justify-between gap-2">
+                              <span className="font-medium">
+                                {evaluation.freshness === "stale" ? "Stale" : "Current"} · Profile
+                                Version {evaluation.profileVersionId}
+                              </span>
+                              <span className="text-muted-foreground">
+                                {evaluation.hardConstraints.length} Hard Constraints ·{" "}
+                                {evaluation.preferences.length} Preferences
+                              </span>
+                            </div>
+                            <p className="mt-1 text-muted-foreground">
+                              Evidence: {evaluation.evidence.length} cited · unknowns{" "}
+                              {evaluation.unknowns.length} · conflicts {evaluation.conflicts.length}
+                              {evaluation.staleReason ? ` · ${evaluation.staleReason}` : ""}
+                            </p>
+                            <div className="mt-1 grid gap-1 sm:grid-cols-2">
+                              {evaluation.hardConstraints.map((constraint) => (
+                                <span key={`hard-${constraint.key}`}>
+                                  Hard: {constraint.key} · {constraint.result}
+                                </span>
+                              ))}
+                              {evaluation.preferences.map((preference) => (
+                                <span key={`preference-${preference.key}`}>
+                                  Preference: {preference.key} · {preference.result}
+                                </span>
+                              ))}
+                            </div>
+                            <details className="mt-1">
+                              <summary className="cursor-pointer text-muted-foreground">
+                                Evidence links and reasoning
+                              </summary>
+                              {evaluation.evidence.map((citation) => (
+                                <p key={`${evaluation.id}-${citation.signalId}`} className="mt-1">
+                                  {citation.kind === "inference" ? "Inference" : "Fact"}:{" "}
+                                  {citation.claim} · Signal {citation.signalId} ·{" "}
+                                  {citation.freshness}
+                                </p>
+                              ))}
+                            </details>
+                          </div>
+                        ))
+                      )}
+                    </div>
                   </>
                 )}
               </Card>

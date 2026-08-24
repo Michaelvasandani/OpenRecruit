@@ -1,5 +1,11 @@
 import { createHash, randomUUID } from "node:crypto";
-import { type RecruitingInvalidation, ScoutHarness, type ScoutSummary } from "@shared/recruiting";
+import {
+  type FitEvaluationSummary,
+  type OpportunitySummary,
+  type RecruitingInvalidation,
+  ScoutHarness,
+  type ScoutSummary,
+} from "@shared/recruiting";
 import { and, asc, eq, inArray, sql } from "drizzle-orm";
 import type { Db } from "../../db/client";
 import {
@@ -13,6 +19,11 @@ import {
 import { bus } from "../event-bus";
 import { assertSafeMaterial } from "./contract";
 import { RecruitingError } from "./errors";
+import {
+  type CreateFitEvaluationCommand,
+  FitEvaluationApplication,
+  type PromoteLeadCommand,
+} from "./fit";
 import type { ConfirmProfileCommand, ImportProfileCommand, UpdateDraftCommand } from "./profile";
 import { CandidateProfileApplication } from "./profile";
 import {
@@ -47,6 +58,13 @@ export {
   validateRecruitingOperation,
 } from "./contract";
 export { RecruitingError } from "./errors";
+export {
+  type CreateFitEvaluationCommand,
+  type FitConclusionInput,
+  FitEvaluationApplication,
+  type FitEvidenceInput,
+  type PromoteLeadCommand,
+} from "./fit";
 export type {
   ConfirmProfileCommand,
   GitHubFactInput,
@@ -135,6 +153,7 @@ type RecruitingDb = Pick<Db, "select" | "insert" | "update" | "delete">;
 export class RecruitingApplication {
   private readonly profileApplication: CandidateProfileApplication;
   private readonly scoutRuns: ScoutRunApplication;
+  private readonly fitEvaluations: FitEvaluationApplication;
 
   constructor(
     private readonly db: Db,
@@ -142,6 +161,7 @@ export class RecruitingApplication {
   ) {
     this.profileApplication = new CandidateProfileApplication(db, { now });
     this.scoutRuns = new ScoutRunApplication(db, now);
+    this.fitEvaluations = new FitEvaluationApplication(db, now);
   }
 
   listProfiles() {
@@ -249,7 +269,55 @@ export class RecruitingApplication {
   }
 
   getLeadContext(id: string) {
-    return this.scoutRuns.getLeadContext(id);
+    const context = this.scoutRuns.getLeadContext(id);
+    if (!context) return null;
+    const opportunities = this.fitEvaluations.listOpportunities(id);
+    return {
+      ...context,
+      opportunities,
+      fitEvaluations: [
+        ...this.fitEvaluations.listFitEvaluations(id),
+        ...opportunities.flatMap((opportunity) =>
+          this.fitEvaluations.listFitEvaluations(opportunity.id),
+        ),
+      ],
+    };
+  }
+
+  createFitEvaluation(command: CreateFitEvaluationCommand): FitEvaluationSummary {
+    return this.fitEvaluations.createFitEvaluation(command);
+  }
+
+  evaluateFit(command: CreateFitEvaluationCommand): FitEvaluationSummary {
+    return this.fitEvaluations.evaluateFit(command);
+  }
+
+  createEvaluation(command: CreateFitEvaluationCommand): FitEvaluationSummary {
+    return this.createFitEvaluation(command);
+  }
+
+  listFitEvaluations(subjectId?: string): FitEvaluationSummary[] {
+    return this.fitEvaluations.listFitEvaluations(subjectId);
+  }
+
+  getFitEvaluation(id: string): FitEvaluationSummary | null {
+    return this.fitEvaluations.getFitEvaluation(id);
+  }
+
+  listOpportunities(leadId?: string): OpportunitySummary[] {
+    return this.fitEvaluations.listOpportunities(leadId);
+  }
+
+  getOpportunity(id: string): OpportunitySummary | null {
+    return this.fitEvaluations.getOpportunity(id);
+  }
+
+  promoteLead(command: PromoteLeadCommand) {
+    return this.fitEvaluations.promoteLead(command);
+  }
+
+  promote(command: PromoteLeadCommand) {
+    return this.promoteLead(command);
   }
 
   setScoutSources(command: SetScoutSourcesCommand) {

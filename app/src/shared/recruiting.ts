@@ -177,9 +177,93 @@ export const LeadSummary = z.object({
 });
 export type LeadSummary = z.infer<typeof LeadSummary>;
 
+export const FitEvaluationResult = z.enum([
+  "satisfied",
+  "contradicted",
+  "unknown",
+  "not_applicable",
+  "conflicted",
+]);
+export type FitEvaluationResult = z.infer<typeof FitEvaluationResult>;
+
+export const FitEvidenceFreshness = z.enum(["fresh", "stale"]);
+export type FitEvidenceFreshness = z.infer<typeof FitEvidenceFreshness>;
+/** Shared domain spelling used by projections and future Revisit Plans. */
+export const Freshness = FitEvidenceFreshness;
+export type Freshness = FitEvidenceFreshness;
+
+export const FitEvidenceCitation = z.object({
+  signalId: z.string().min(1),
+  claim: z.string().min(1),
+  kind: z.enum(["fact", "inference"]),
+  /** Inferences are always labeled and stale citations can never satisfy a Hard Constraint. */
+  freshness: FitEvidenceFreshness.default("fresh"),
+  attribution: z
+    .object({
+      sourceId: z.string().min(1),
+      runId: z.string().min(1),
+      scoutId: z.string().min(1),
+    })
+    .optional(),
+});
+export type FitEvidenceCitation = z.infer<typeof FitEvidenceCitation>;
+
+export const FitConstraintConclusion = z.object({
+  key: z.string().min(1),
+  result: FitEvaluationResult,
+  explanation: z.string().min(1),
+  signalIds: z.array(z.string().min(1)),
+  inferred: z.boolean().default(false),
+  evidenceFreshness: FitEvidenceFreshness.default("fresh"),
+});
+export type FitConstraintConclusion = z.infer<typeof FitConstraintConclusion>;
+
+export const OpportunitySummary = z.object({
+  id: z.string().min(1),
+  leadId: z.string().min(1),
+  title: z.string().min(1),
+  state: z.string().min(1),
+  revision: z.number().int().nonnegative(),
+  createdAt: z.number().int(),
+  updatedAt: z.number().int(),
+});
+export type OpportunitySummary = z.infer<typeof OpportunitySummary>;
+
+/**
+ * A transparent, immutable evaluation. There is intentionally no score/rank
+ * field: callers must order from these explainable conclusions and Freshness.
+ */
+export const FitEvaluationSummary = z.object({
+  id: z.string().min(1),
+  leadId: z.string().nullable(),
+  opportunityId: z.string().nullable(),
+  profileVersionId: z.string().min(1),
+  runId: z.string().min(1),
+  strategyHash: z.string().nullable(),
+  policyHash: z.string().nullable(),
+  strategyMaterial: z.string(),
+  policyMaterial: z.string(),
+  hardConstraints: z.array(FitConstraintConclusion),
+  preferences: z.array(FitConstraintConclusion),
+  evidence: z.array(FitEvidenceCitation),
+  conflicts: z.array(z.string()),
+  unknowns: z.array(z.string()),
+  freshness: FitEvidenceFreshness,
+  staleReason: z.string().nullable(),
+  staleAt: z.number().int().nullable(),
+  currentProfileVersionId: z.string().nullable(),
+  nextReconsiderationAt: z.number().int().nullable(),
+  createdAt: z.number().int(),
+});
+export type FitEvaluationSummary = z.infer<typeof FitEvaluationSummary>;
+export const FitEvaluation = FitEvaluationSummary;
+export type FitEvaluation = FitEvaluationSummary;
+
 export const LeadContext = z.object({
   lead: LeadSummary,
   signals: z.array(SignalSummary),
+  opportunities: z.array(OpportunitySummary).default([]),
+  fitEvaluations: z.array(FitEvaluationSummary).default([]),
 });
 export type LeadContext = z.infer<typeof LeadContext>;
 

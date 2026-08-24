@@ -168,6 +168,42 @@ export const recruitingRouter = router({
     .input(z.object({ id: z.string().min(1) }))
     .query(({ ctx, input }) => ctx.recruiting.getLeadContext(input.id)),
 
+  opportunities: publicProcedure
+    .input(z.object({ leadId: z.string().min(1).optional() }).optional())
+    .query(({ ctx, input }) => ctx.recruiting.listOpportunities(input?.leadId)),
+
+  opportunity: publicProcedure
+    .input(z.object({ id: z.string().min(1) }))
+    .query(({ ctx, input }) => ctx.recruiting.getOpportunity(input.id)),
+
+  fitEvaluations: publicProcedure
+    .input(z.object({ subjectId: z.string().min(1).optional() }).optional())
+    .query(({ ctx, input }) => ctx.recruiting.listFitEvaluations(input?.subjectId)),
+
+  fitEvaluation: publicProcedure
+    .input(z.object({ id: z.string().min(1) }))
+    .query(({ ctx, input }) => ctx.recruiting.getFitEvaluation(input.id)),
+
+  createFitEvaluation: publicProcedure
+    .input(fitEvaluationInput())
+    .mutation(({ ctx, input }) => command(() => ctx.recruiting.createFitEvaluation(input))),
+
+  evaluateFit: publicProcedure
+    .input(fitEvaluationInput())
+    .mutation(({ ctx, input }) => command(() => ctx.recruiting.evaluateFit(input))),
+
+  promoteLead: publicProcedure
+    .input(
+      z.object({
+        leadId: z.string().min(1),
+        title: z.string().trim().min(1).max(500).optional(),
+        opportunityId: z.string().min(1).nullable().optional(),
+        expectedRevision: z.number().int().nonnegative().optional(),
+        idempotencyKey: z.string().trim().min(1).max(200),
+      }),
+    )
+    .mutation(({ ctx, input }) => command(() => ctx.recruiting.promoteLead(input))),
+
   readSource: publicProcedure
     .input(
       z.object({
@@ -379,6 +415,41 @@ export const recruitingRouter = router({
     }),
   ),
 });
+
+function fitEvaluationInput() {
+  const conclusion = z.object({
+    key: z.string().trim().min(1).max(500),
+    result: z.enum(["satisfied", "contradicted", "unknown", "not_applicable", "conflicted"]),
+    explanation: z.string().trim().min(1).max(10_000),
+    signalIds: z.array(z.string().min(1)).max(500).optional(),
+    inferred: z.boolean().optional(),
+    evidenceFreshness: z.enum(["fresh", "stale"]).optional(),
+  });
+  return z.object({
+    leadId: z.string().min(1).optional(),
+    opportunityId: z.string().min(1).optional(),
+    profileVersionId: z.string().min(1),
+    runId: z.string().min(1),
+    hardConstraints: z.array(conclusion).max(500),
+    preferences: z.array(conclusion).max(500),
+    evidence: z
+      .array(
+        z.object({
+          signalId: z.string().min(1),
+          claim: z.string().trim().min(1).max(10_000),
+          kind: z.enum(["fact", "inference"]),
+          freshness: z.enum(["fresh", "stale"]).optional(),
+        }),
+      )
+      .max(1_000)
+      .optional(),
+    conflicts: z.array(z.string().trim().min(1).max(1_000)).max(500).optional(),
+    unknowns: z.array(z.string().trim().min(1).max(1_000)).max(500).optional(),
+    freshness: z.enum(["fresh", "stale"]).optional(),
+    nextReconsiderationAt: z.number().int().nullable().optional(),
+    idempotencyKey: z.string().trim().min(1).max(200),
+  });
+}
 
 function command<T>(run: () => T): T {
   try {

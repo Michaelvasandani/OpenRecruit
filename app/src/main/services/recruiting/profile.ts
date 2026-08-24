@@ -14,17 +14,12 @@ import {
   ProfileFactSource as ProfileFactSourceSchema,
   type ProfileSection,
 } from "@shared/recruiting";
-import { and, asc, desc, eq, inArray, sql } from "drizzle-orm";
+import { and, asc, desc, eq, sql } from "drizzle-orm";
 import type { Db } from "../../db/client";
-import {
-  commandReceipts,
-  domainClock,
-  fitEvaluations,
-  profiles,
-  profileVersions,
-} from "../../db/schema";
+import { commandReceipts, domainClock, profiles, profileVersions } from "../../db/schema";
 import { bus } from "../event-bus";
 import { RecruitingError } from "./errors";
+import { markFitEvaluationsStale } from "./fit";
 
 export interface ProfileArtifactStore {
   write(path: string, contents: string): void;
@@ -438,15 +433,12 @@ export class CandidateProfileApplication {
         const previousVersionIds = tx
           .select({ id: profileVersions.id })
           .from(profileVersions)
-          .where(eq(profileVersions.profileId, row.id))
+          .where(
+            and(eq(profileVersions.profileId, row.id), sql`${profileVersions.id} <> ${versionId}`),
+          )
           .all()
           .map((item) => item.id);
-        if (previousVersionIds.length > 0) {
-          tx.update(fitEvaluations)
-            .set({ freshness: "stale", staleReason: "candidate_profile_changed", staleAt: at })
-            .where(inArray(fitEvaluations.profileVersionId, previousVersionIds))
-            .run();
-        }
+        markFitEvaluationsStale(tx, previousVersionIds, versionId, at);
       }
       if (!version) throw new RecruitingError("VALIDATION", "Profile draft could not be confirmed");
       tx.update(profiles)
