@@ -27,8 +27,7 @@ export const OPENRECRUIT_ISSUES_URL = "https://github.com/Michaelvasandani/OpenR
 const COLLECTED = [
   {
     label: "App usage",
-    detail:
-      "launches, onboarding progress, and settings you change",
+    detail: "launches, onboarding progress, and settings you change",
   },
   {
     label: "Agent activity",

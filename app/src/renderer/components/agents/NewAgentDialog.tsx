@@ -1,14 +1,5 @@
 import type { HarnessId } from "@shared/agent";
-import {
-  ArrowUp,
-  Check,
-  ChevronsUpDown,
-  Cloud,
-  File,
-  FileText,
-  Laptop,
-  Wand2,
-} from "lucide-react";
+import { ArrowUp, Check, ChevronsUpDown, Cloud, File, FileText, Laptop, Wand2 } from "lucide-react";
 import { type ReactNode, useEffect, useRef, useState } from "react";
 import { useCreateAgent } from "../../hooks/useCreateAgent";
 import { trpc } from "../../lib/trpc";
@@ -150,7 +141,6 @@ function NewAgentForm() {
     >
       {/* Name */}
       <Input
-        // biome-ignore lint/a11y/noAutofocus: focusing the name field on open matches the prior behavior
         autoFocus
         value={name}
         onChange={(e) => setName(e.target.value)}

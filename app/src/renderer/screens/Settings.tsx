@@ -1,8 +1,8 @@
-import { Bell, Bot, Info, SlidersHorizontal, type LucideIcon } from "lucide-react";
+import { Bell, Bot, Info, type LucideIcon, SlidersHorizontal } from "lucide-react";
 import { type CSSProperties, useState } from "react";
+import { SettingNumber } from "../components/settings/SettingNumber";
 import { SettingsRow } from "../components/settings/SettingsRow";
 import { SettingsSection } from "../components/settings/SettingsSection";
-import { SettingNumber } from "../components/settings/SettingNumber";
 import { SettingToggle } from "../components/settings/SettingToggle";
 import { Button } from "../components/ui/button";
 import { useAgents } from "../hooks/useAgents";
