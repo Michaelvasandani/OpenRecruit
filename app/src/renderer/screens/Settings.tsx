@@ -5,6 +5,7 @@ import { SettingsRow } from "../components/settings/SettingsRow";
 import { SettingsSection } from "../components/settings/SettingsSection";
 import { SettingToggle } from "../components/settings/SettingToggle";
 import { Button } from "../components/ui/button";
+import { Input } from "../components/ui/input";
 import { useAgents } from "../hooks/useAgents";
 import { useSettings, useUpdateSettings } from "../hooks/useSettings";
 import { trpc } from "../lib/trpc";
@@ -108,6 +109,7 @@ function GeneralPanel() {
           </Button>
         </SettingsRow>
       </SettingsSection>
+      <FirecrawlSourcePanel />
       {window.__opentradeShell && (
         <SettingsSection title="Runtime">
           <SettingsRow
@@ -125,6 +127,86 @@ function GeneralPanel() {
         </SettingsSection>
       )}
     </div>
+  );
+}
+
+function FirecrawlSourcePanel() {
+  const settings = useSettings();
+  const status = settings.data?.firecrawl;
+  const [draft, setDraft] = useState("");
+  const [feedback, setFeedback] = useState<string | null>(null);
+  const setKey = trpc.settings.setFirecrawlApiKey.useMutation({
+    onSuccess: () => {
+      setDraft("");
+      setFeedback("Firecrawl is configured.");
+    },
+    onError: () => setFeedback("The Firecrawl API key could not be saved."),
+  });
+  const testKey = trpc.settings.testFirecrawlApiKey.useMutation({
+    onSuccess: (result) => setFeedback(result.safeFailure ?? "Firecrawl is ready."),
+    onError: () => setFeedback("Firecrawl could not be tested."),
+  });
+  const clearKey = trpc.settings.clearFirecrawlApiKey.useMutation({
+    onSuccess: () => {
+      setDraft("");
+      setFeedback("Firecrawl was cleared.");
+    },
+    onError: () => setFeedback("The Firecrawl API key could not be cleared."),
+  });
+
+  if (!status) return null;
+  const hasDraft = draft.trim().length > 0;
+  const readiness = status.readiness.replaceAll("_", " ");
+  return (
+    <SettingsSection
+      title="Web Search Source"
+      description="Use a Candidate-supplied Firecrawl key for OpenRecruit's provider-neutral web search. The saved key is never shown again."
+    >
+      <SettingsRow
+        label={status.configured ? "Replace Firecrawl API key" : "Firecrawl API key"}
+        hint={`Status: ${readiness}. Test a draft key before saving, or test the saved key when the field is empty.`}
+      >
+        <div className="flex max-w-sm flex-col items-end gap-2">
+          <Input
+            type="password"
+            autoComplete="off"
+            value={draft}
+            onChange={(event) => setDraft(event.target.value)}
+            placeholder={status.configured ? "Enter a replacement key" : "Paste API key"}
+            aria-label="Firecrawl API key"
+          />
+          <div className="flex flex-wrap justify-end gap-2">
+            <Button
+              type="button"
+              variant="outline"
+              disabled={!hasDraft || setKey.isPending}
+              onClick={() => setKey.mutate({ apiKey: draft })}
+            >
+              {status.configured ? "Replace" : "Save"}
+            </Button>
+            <Button
+              type="button"
+              variant="outline"
+              disabled={testKey.isPending || (!hasDraft && !status.configured)}
+              onClick={() => testKey.mutate(hasDraft ? { apiKey: draft } : undefined)}
+            >
+              Test
+            </Button>
+            {status.configured && (
+              <Button
+                type="button"
+                variant="outline"
+                disabled={clearKey.isPending}
+                onClick={() => clearKey.mutate()}
+              >
+                Clear
+              </Button>
+            )}
+          </div>
+          {feedback && <p className="text-xs text-muted-foreground">{feedback}</p>}
+        </div>
+      </SettingsRow>
+    </SettingsSection>
   );
 }
 

@@ -69,7 +69,9 @@ export const brokerCache = sqliteTable("broker_cache", {
   fetchedAt: integer("fetched_at").notNull(),
 });
 
-/** Simple kv. oauth_tokens stored as safeStorage-encrypted blob. */
+/** Host-owned kv. oauth_tokens are safeStorage-encrypted blobs; provider
+ * credentials (such as Firecrawl) are read only by host services and never
+ * included in renderer projections or agent configuration. */
 export const settings = sqliteTable("settings", {
   key: text("key").primaryKey(),
   value: text("value").notNull(),

@@ -1,5 +1,31 @@
 import { z } from "zod";
 
+/** Safe readiness for the Candidate-supplied Firecrawl credential lane. The
+ * credential itself is deliberately not part of this projection. */
+export const FirecrawlReadiness = z.enum([
+  "not_configured",
+  "ready",
+  "reauthentication_required",
+  "rate_limited",
+  "degraded",
+]);
+export type FirecrawlReadiness = z.infer<typeof FirecrawlReadiness>;
+
+export const FirecrawlSafeFailure = z.enum([
+  "Firecrawl rejected the configured API key",
+  "Firecrawl is temporarily rate limited",
+  "Firecrawl is temporarily unavailable",
+  "Firecrawl could not verify the configured API key",
+]);
+export type FirecrawlSafeFailure = z.infer<typeof FirecrawlSafeFailure>;
+
+export const FirecrawlSettings = z.object({
+  configured: z.boolean(),
+  readiness: FirecrawlReadiness,
+  safeFailure: FirecrawlSafeFailure.nullable(),
+});
+export type FirecrawlSettings = z.infer<typeof FirecrawlSettings>;
+
 /**
  * Global app settings (the `settings` kv table, distinct from per-agent config
  * and from the encrypted OAuth/token rows). This is the single source of truth
@@ -47,8 +73,15 @@ export const AppSettings = z.object({
    *  there when the window is closed / ⌘Q'd, so agent status + notifications keep
    *  flowing while the app is "closed". On by default; off restores plain quit. */
   showInMenuBar: z.boolean(),
+  /** Safe Firecrawl Source readiness. The API key is never part of this value. */
+  firecrawl: FirecrawlSettings,
 });
 export type AppSettings = z.infer<typeof AppSettings>;
+
+/** Settings that may be changed through the generic settings patch. Secret-backed
+ * provider state has explicit operations below and cannot be smuggled into a patch. */
+export const EditableAppSettings = AppSettings.omit({ firecrawl: true });
+export type EditableAppSettings = z.infer<typeof EditableAppSettings>;
 
 export const DEFAULT_SETTINGS: AppSettings = {
   onboardingComplete: false,
@@ -62,8 +95,13 @@ export const DEFAULT_SETTINGS: AppSettings = {
   notifyUpdates: true,
   notifyMutedAgents: [],
   showInMenuBar: true,
+  firecrawl: {
+    configured: false,
+    readiness: "not_configured",
+    safeFailure: null,
+  },
 };
 
 /** A partial update of the editable settings. */
-export const SettingsUpdate = AppSettings.partial().strict();
+export const SettingsUpdate = EditableAppSettings.partial().strict();
 export type SettingsUpdate = z.infer<typeof SettingsUpdate>;
