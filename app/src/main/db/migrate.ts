@@ -34,7 +34,7 @@ export interface MigrationDb {
 }
 
 /** Bump on every schema change, with a matching entry in MIGRATIONS. */
-export const SCHEMA_VERSION = 9;
+export const SCHEMA_VERSION = 10;
 
 const MIGRATIONS: Record<number, (db: MigrationDb) => void> = {
   // v2 — headless turn limit: per-agent unattended-turn counter + on/off toggle.
@@ -109,6 +109,33 @@ const MIGRATIONS: Record<number, (db: MigrationDb) => void> = {
     addColumnIfMissing(db, "source_access", "cursor", "TEXT");
     addColumnIfMissing(db, "source_access", "source_identity", "TEXT");
   },
+  // v10 — immutable RSS/Atom Signal provenance and malformed-item quarantine count.
+  // All additions have defaults so existing Source Attempts and Signals remain valid.
+  10: (db) => {
+    if (hasTable(db, "source_attempts")) {
+      addColumnIfMissing(db, "source_attempts", "quarantined_count", "INTEGER NOT NULL DEFAULT 0");
+    }
+    if (hasTable(db, "signals")) {
+      addColumnIfMissing(db, "signals", "source_id", "TEXT");
+      if (hasTable(db, "source_items")) {
+        db.exec(`
+          UPDATE signals
+          SET source_id = (
+            SELECT source_id FROM source_items WHERE source_items.id = signals.source_item_id
+          )
+          WHERE source_id IS NULL
+        `);
+      }
+      addColumnIfMissing(db, "signals", "access_mode", "TEXT NOT NULL DEFAULT 'public'");
+      addColumnIfMissing(db, "signals", "adapter_version", "TEXT NOT NULL DEFAULT 'rss-atom-v1'");
+      addColumnIfMissing(
+        db,
+        "signals",
+        "processor",
+        "TEXT NOT NULL DEFAULT 'openrecruit-rss-atom'",
+      );
+    }
+  },
 };
 
 export function userVersion(db: MigrationDb): number {
@@ -120,6 +147,12 @@ function hasColumn(db: MigrationDb, table: string, column: string): boolean {
   return db
     .rows(`PRAGMA table_info(${table})`)
     .some((r) => (r as { name: string }).name === column);
+}
+
+function hasTable(db: MigrationDb, table: string): boolean {
+  return (
+    db.rows(`SELECT name FROM sqlite_master WHERE type = 'table' AND name = '${table}'`).length > 0
+  );
 }
 
 function addColumnIfMissing(db: MigrationDb, table: string, column: string, ddl: string): void {

@@ -329,6 +329,7 @@ export const sourceAttempts = sqliteTable(
     cursor: text("cursor"),
     outcome: text("outcome").notNull().default("started"),
     itemCount: integer("item_count").notNull().default(0),
+    quarantinedCount: integer("quarantined_count").notNull().default(0),
     pageCount: integer("page_count").notNull().default(0),
     retryAt: integer("retry_at"),
     safeFailure: text("safe_failure"),
@@ -364,6 +365,9 @@ export const signals = sqliteTable(
     sourceItemId: text("source_item_id")
       .notNull()
       .references(() => sourceItems.id),
+    sourceId: text("source_id")
+      .notNull()
+      .references(() => sources.id),
     sourceAttemptId: text("source_attempt_id")
       .notNull()
       .references(() => sourceAttempts.id),
@@ -376,6 +380,9 @@ export const signals = sqliteTable(
     observedAt: integer("observed_at").notNull(),
     retrievedAt: integer("retrieved_at").notNull(),
     evidence: text("evidence").notNull(),
+    accessMode: text("access_mode").notNull().default("public"),
+    adapterVersion: text("adapter_version").notNull().default("rss-atom-v1"),
+    processor: text("processor").notNull().default("openrecruit-rss-atom"),
     retentionUntil: integer("retention_until"),
     supersededSignalId: text("superseded_signal_id"),
     createdAt: integer("created_at").notNull(),

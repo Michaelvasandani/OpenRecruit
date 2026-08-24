@@ -1,10 +1,16 @@
 import { createHash, randomUUID } from "node:crypto";
 import {
+  LeadContext,
+  type LeadContext as LeadContextValue,
+  LeadSummary,
+  type LeadSummary as LeadSummaryValue,
   type ScoutRunPhase as ScoutRunPhaseValue,
   ScoutRunStatus,
   type ScoutRunStatus as ScoutRunStatusValue,
   ScoutRunSummary,
   type ScoutRunSummary as ScoutRunSummaryValue,
+  SignalSummary,
+  type SignalSummary as SignalSummaryValue,
   SourceAccessSummary,
   type SourceAccessSummary as SourceAccessSummaryValue,
   SourceAttemptOutcome,
@@ -19,13 +25,19 @@ import type { Db } from "../../db/client";
 import {
   commandReceipts,
   domainClock,
+  leadAliases,
+  leadSignalLinks,
+  leads,
   profiles,
   profileVersions,
   scoutRuns,
   scoutSources,
   scouts,
+  signalAttributions,
+  signals,
   sourceAccess,
   sourceAttempts,
+  sourceItems,
   sources,
 } from "../../db/schema";
 import { bus } from "../event-bus";
@@ -487,8 +499,11 @@ export class ScoutRunApplication {
     ): Promise<SourceAttemptResult> => {
       const completedAt = this.now();
       const items = input.items ?? [];
+      const acceptedItems = items.filter(isAttributableItem);
+      const quarantinedCount = items.length - acceptedItems.length;
       const value = this.db.transaction((tx) => {
         const current = requireSourceAccess(tx, source.id);
+        let persistedAccess = current;
         const accessPatch = input.accessPatch;
         if (accessPatch) {
           const next = {
@@ -510,12 +525,14 @@ export class ScoutRunApplication {
             })
             .where(eq(sources.id, source.id))
             .run();
+          persistedAccess = requireSourceAccess(tx, source.id);
         }
         tx.update(sourceAttempts)
           .set({
             outcome,
-            cursor: input.cursor === undefined ? access.cursor : input.cursor,
+            cursor: input.cursor === undefined ? persistedAccess.cursor : input.cursor,
             itemCount: items.length,
+            quarantinedCount,
             pageCount: input.pageCount ?? 0,
             retryAt: input.retryAt ?? null,
             safeFailure: input.safeFailure ?? null,
@@ -523,15 +540,33 @@ export class ScoutRunApplication {
           })
           .where(eq(sourceAttempts.id, attemptId))
           .run();
+        persistSignals(tx, {
+          run,
+          source,
+          sourceAccess: persistedAccess,
+          attemptId,
+          items: acceptedItems,
+          observedAt: completedAt,
+        });
         return toSourceAttemptSummary(requireSourceAttempt(tx, attemptId), items);
       });
-      emitChange(
-        currentRevision(this.db),
-        "source",
-        [source.id],
-        "source_attempt_recorded",
-        completedAt,
-      );
+      const revision = this.db.transaction((tx) => advanceRevision(tx));
+      emitChange(revision, "source", [source.id], "source_attempt_recorded", completedAt);
+      const affectedLeadIds = this.db
+        .select({ leadId: leadSignalLinks.leadId })
+        .from(leadSignalLinks)
+        .innerJoin(signals, eq(signals.id, leadSignalLinks.signalId))
+        .where(eq(signals.sourceAttemptId, attemptId))
+        .all()
+        .map((row) => row.leadId);
+      if (affectedLeadIds.length > 0)
+        emitChange(
+          revision,
+          "lead",
+          [...new Set(affectedLeadIds)],
+          "signals_attributed",
+          completedAt,
+        );
       return { ...value.summary, items: value.items };
     };
 
@@ -806,7 +841,7 @@ export class ScoutRunApplication {
           ? "partial"
           : exhausted
             ? "budget_exhausted"
-            : boundedItems.length > 0
+            : boundedItems.some(isAttributableItem)
               ? "succeeded_with_items"
               : "succeeded_empty";
     const cursor = `feed:${digest(`${feed.identity}\0${boundedItems.at(-1)?.identityKey ?? nextCursor ?? ""}`)}`;
@@ -828,6 +863,49 @@ export class ScoutRunApplication {
         lastModified: response.lastModified ?? access.lastModified,
         sourceIdentity: feed.identity,
       },
+    });
+  }
+
+  /** Return immutable evidence projections, optionally scoped to a Run or Source. */
+  listSignals(filter: { runId?: string; sourceId?: string } = {}): SignalSummaryValue[] {
+    let rows = this.db
+      .select()
+      .from(signals)
+      .orderBy(asc(signals.observedAt), asc(signals.id))
+      .all();
+    if (filter.runId) rows = rows.filter((row) => row.runId === filter.runId);
+    if (filter.sourceId) rows = rows.filter((row) => row.sourceId === filter.sourceId);
+    return rows.map((row) => toSignalSummary(this.db, row));
+  }
+
+  getSignal(id: string): SignalSummaryValue | null {
+    const row = this.db.select().from(signals).where(eq(signals.id, id)).get();
+    return row ? toSignalSummary(this.db, row) : null;
+  }
+
+  /** Leads are durable employment-path identities, never Source Item aliases. */
+  listLeads(): LeadSummaryValue[] {
+    return this.db
+      .select()
+      .from(leads)
+      .orderBy(desc(leads.updatedAt), asc(leads.id))
+      .all()
+      .map((row) => toLeadSummary(this.db, row));
+  }
+
+  getLead(id: string): LeadSummaryValue | null {
+    const row = this.db.select().from(leads).where(eq(leads.id, id)).get();
+    return row ? toLeadSummary(this.db, row) : null;
+  }
+
+  getLeadContext(id: string): LeadContextValue | null {
+    const lead = this.getLead(id);
+    if (!lead) return null;
+    return LeadContext.parse({
+      lead,
+      signals: lead.signalIds
+        .map((signalId) => this.getSignal(signalId))
+        .filter((signal): signal is SignalSummaryValue => signal !== null),
     });
   }
 
@@ -1190,6 +1268,23 @@ export class ScoutRunApplication {
       .all()
       .map((item) => item.sourceId);
     const sourceIds = snapshotSourceIds(row.overrideSnapshot) ?? currentSourceIds;
+    const runSignalIds = db
+      .select({ id: signals.id })
+      .from(signals)
+      .where(eq(signals.runId, row.id))
+      .orderBy(asc(signals.observedAt), asc(signals.id))
+      .all()
+      .map((signal) => signal.id);
+    const runLeadIds = runSignalIds.length
+      ? db
+          .select({ leadId: leadSignalLinks.leadId })
+          .from(leadSignalLinks)
+          .innerJoin(signals, eq(signals.id, leadSignalLinks.signalId))
+          .where(eq(signals.runId, row.id))
+          .orderBy(asc(leadSignalLinks.createdAt), asc(leadSignalLinks.leadId))
+          .all()
+          .map((lead) => lead.leadId)
+      : [];
     return ScoutRunSummary.parse({
       id: row.id,
       scoutId: row.scoutId,
@@ -1203,6 +1298,8 @@ export class ScoutRunApplication {
       policySnapshot: row.policySnapshot,
       overrideSnapshot: row.overrideSnapshot,
       sourceIds,
+      signalIds: runSignalIds,
+      leadIds: [...new Set(runLeadIds)],
       checkpoint: row.checkpoint,
       safeFailure: row.safeFailure,
       startedAt: row.startedAt,
@@ -1210,6 +1307,311 @@ export class ScoutRunApplication {
       createdAt: row.createdAt,
     });
   }
+}
+
+type SignalPersistenceInput = {
+  run: RunRow;
+  source: SourceRow;
+  sourceAccess: SourceAccessRow;
+  attemptId: string;
+  items: FeedItem[];
+  observedAt: number;
+};
+
+function isAttributableItem(item: FeedItem): boolean {
+  // Content-derived identity is useful for parsing and bounded Attempt metrics,
+  // but it is not attributable evidence. Signals require a provider identity or
+  // a canonical public URL so a Candidate can inspect their provenance later.
+  return Boolean(item.providerIdentity || item.canonicalUrl);
+}
+
+function persistSignals(db: RecruitingDb, input: SignalPersistenceInput): void {
+  const strategyMaterial = strategyMaterialFromSnapshot(input.run.strategySnapshot);
+  const strategyKey = digest(strategyMaterial);
+  for (const item of input.items) {
+    const identityKey = stableItemIdentity(item);
+    let sourceItem = db
+      .select()
+      .from(sourceItems)
+      .where(
+        and(eq(sourceItems.sourceId, input.source.id), eq(sourceItems.identityKey, identityKey)),
+      )
+      .get();
+    if (!sourceItem) {
+      const id = randomUUID();
+      db.insert(sourceItems)
+        .values({
+          id,
+          sourceId: input.source.id,
+          identityKey,
+          canonicalUrl: item.canonicalUrl,
+          providerIdentity: item.providerIdentity,
+          latestFingerprint: null,
+          latestSignalId: null,
+          deletionMarkerAt: null,
+          createdAt: input.observedAt,
+          updatedAt: input.observedAt,
+        })
+        .run();
+      sourceItem = db.select().from(sourceItems).where(eq(sourceItems.id, id)).get();
+    }
+    if (!sourceItem) continue;
+
+    const fingerprint = itemFingerprint(item);
+    const existing = db
+      .select()
+      .from(signals)
+      .where(and(eq(signals.sourceItemId, sourceItem.id), eq(signals.fingerprint, fingerprint)))
+      .get();
+    const previousSignalId = sourceItem.latestSignalId;
+    let signalId = existing?.id;
+    if (!existing) {
+      signalId = randomUUID();
+      const evidence = {
+        title: item.title,
+        content: item.content,
+        canonicalUrl: item.canonicalUrl,
+        providerIdentity: item.providerIdentity,
+        sourceIdentity: input.sourceAccess.sourceIdentity,
+      };
+      db.insert(signals)
+        .values({
+          id: signalId,
+          sourceItemId: sourceItem.id,
+          sourceId: input.source.id,
+          sourceAttemptId: input.attemptId,
+          runId: input.run.id,
+          fingerprint,
+          provenance: JSON.stringify({
+            sourceId: input.source.id,
+            sourceKind: input.source.kind,
+            sourceAttemptId: input.attemptId,
+            runId: input.run.id,
+            scoutId: input.run.scoutId,
+            sourceIdentity: input.sourceAccess.sourceIdentity,
+            accessMode: "public",
+            adapterVersion: "rss-atom-v1",
+            processor: "openrecruit-rss-atom",
+            strategyKey,
+          }),
+          publicationAt: item.publicationAt,
+          observedAt: input.observedAt,
+          retrievedAt: input.observedAt,
+          evidence: JSON.stringify(evidence),
+          accessMode: "public",
+          adapterVersion: "rss-atom-v1",
+          processor: "openrecruit-rss-atom",
+          retentionUntil: input.observedAt + 30 * 24 * 60 * 60 * 1_000,
+          supersededSignalId: previousSignalId,
+          createdAt: input.observedAt,
+        })
+        .run();
+    }
+    if (!signalId) continue;
+    db.update(sourceItems)
+      .set({
+        canonicalUrl: item.canonicalUrl ?? sourceItem.canonicalUrl,
+        providerIdentity: item.providerIdentity ?? sourceItem.providerIdentity,
+        latestFingerprint: fingerprint,
+        latestSignalId: signalId,
+        updatedAt: input.observedAt,
+      })
+      .where(eq(sourceItems.id, sourceItem.id))
+      .run();
+
+    const lead = ensureLead(db, item, input.observedAt);
+    const linkResult = db
+      .insert(leadSignalLinks)
+      .values({ leadId: lead.id, signalId, relation: "supporting", createdAt: input.observedAt })
+      .onConflictDoNothing()
+      .run();
+    const attributionResult = db
+      .insert(signalAttributions)
+      .values({
+        signalId,
+        runId: input.run.id,
+        scoutId: input.run.scoutId,
+        strategyKey,
+        createdAt: input.observedAt,
+      })
+      .onConflictDoNothing()
+      .run();
+    if (linkResult.changes > 0 || attributionResult.changes > 0) {
+      db.update(leads)
+        .set({ updatedAt: input.observedAt, revision: sql`${leads.revision} + 1` })
+        .where(eq(leads.id, lead.id))
+        .run();
+    }
+  }
+}
+
+function ensureLead(db: RecruitingDb, item: FeedItem, at: number): typeof leads.$inferSelect {
+  const aliases = [
+    item.canonicalUrl ? { kind: "canonical_url", value: item.canonicalUrl } : null,
+    item.providerIdentity ? { kind: "provider_identity", value: item.providerIdentity } : null,
+  ].filter((alias): alias is { kind: string; value: string } => alias !== null);
+  let lead: typeof leads.$inferSelect | undefined;
+  for (const alias of aliases) {
+    const match = db
+      .select({ lead: leads })
+      .from(leadAliases)
+      .innerJoin(leads, eq(leads.id, leadAliases.leadId))
+      .where(and(eq(leadAliases.kind, alias.kind), eq(leadAliases.value, alias.value)))
+      .get();
+    if (match?.lead) {
+      lead = match.lead;
+      break;
+    }
+  }
+  if (!lead) {
+    const canonicalKey = item.canonicalUrl
+      ? `url:${item.canonicalUrl}`
+      : `provider:${item.providerIdentity}`;
+    const id = randomUUID();
+    db.insert(leads)
+      .values({
+        id,
+        canonicalKey,
+        title: item.title,
+        summary: item.content,
+        identityState: "settled",
+        conflict: null,
+        revision: 0,
+        createdAt: at,
+        updatedAt: at,
+      })
+      .run();
+    lead = db.select().from(leads).where(eq(leads.id, id)).get();
+  }
+  if (!lead) throw new RecruitingError("VALIDATION", "Signal Lead could not be persisted");
+  for (const alias of aliases) {
+    db.insert(leadAliases)
+      .values({ id: randomUUID(), leadId: lead.id, kind: alias.kind, value: alias.value })
+      .onConflictDoNothing()
+      .run();
+  }
+  return lead;
+}
+
+function stableItemIdentity(item: FeedItem): string {
+  if (item.canonicalUrl) return `url:${item.canonicalUrl}`;
+  if (item.providerIdentity) return `provider:${item.providerIdentity}`;
+  return item.identityKey;
+}
+
+function itemFingerprint(item: FeedItem): string {
+  return digest(
+    JSON.stringify({
+      canonicalUrl: item.canonicalUrl,
+      providerIdentity: item.providerIdentity,
+      title: item.title,
+      content: item.content,
+      publicationAt: item.publicationAt,
+    }),
+  );
+}
+
+function strategyMaterialFromSnapshot(snapshot: string | null): string {
+  if (!snapshot) return "";
+  const value = parseJson(snapshot);
+  return value && typeof value === "object" && "material" in value
+    ? String((value as { material?: unknown }).material ?? "")
+    : "";
+}
+
+function toSignalSummary(db: RecruitingDb, row: typeof signals.$inferSelect): SignalSummaryValue {
+  const item = db.select().from(sourceItems).where(eq(sourceItems.id, row.sourceItemId)).get();
+  const attributions = db
+    .select()
+    .from(signalAttributions)
+    .where(eq(signalAttributions.signalId, row.id))
+    .orderBy(asc(signalAttributions.createdAt), asc(signalAttributions.runId))
+    .all();
+  const attribution = attributions[0];
+  const run = db.select().from(scoutRuns).where(eq(scoutRuns.id, row.runId)).get();
+  const evidence = parseJson(row.evidence);
+  const provenance = parseJson(row.provenance);
+  return SignalSummary.parse({
+    id: row.id,
+    sourceItemId: row.sourceItemId,
+    sourceId: row.sourceId ?? item?.sourceId ?? "unknown-source",
+    sourceAttemptId: row.sourceAttemptId,
+    runId: row.runId,
+    scoutId: attribution?.scoutId ?? run?.scoutId ?? "unknown",
+    fingerprint: row.fingerprint,
+    provenance: provenance && typeof provenance === "object" ? provenance : {},
+    publicationAt: row.publicationAt,
+    observedAt: row.observedAt,
+    retrievedAt: row.retrievedAt,
+    evidence,
+    retentionUntil: row.retentionUntil,
+    supersededSignalId: row.supersededSignalId,
+    canonicalUrl: item?.canonicalUrl ?? null,
+    providerIdentity: item?.providerIdentity ?? null,
+    accessMode: "public",
+    adapterVersion: row.adapterVersion,
+    processor: row.processor,
+    attribution: {
+      strategyKey: attribution?.strategyKey ?? null,
+      strategyMaterial: strategyMaterialFromSnapshot(run?.strategySnapshot ?? null),
+    },
+    attributions: attributions.map((item) => {
+      const itemRun = db.select().from(scoutRuns).where(eq(scoutRuns.id, item.runId)).get();
+      return {
+        runId: item.runId,
+        scoutId: item.scoutId,
+        strategyKey: item.strategyKey,
+        strategyMaterial: strategyMaterialFromSnapshot(itemRun?.strategySnapshot ?? null),
+        createdAt: item.createdAt,
+      };
+    }),
+    createdAt: row.createdAt,
+  });
+}
+
+function toLeadSummary(db: RecruitingDb, row: typeof leads.$inferSelect): LeadSummaryValue {
+  const links = db
+    .select({ signalId: leadSignalLinks.signalId })
+    .from(leadSignalLinks)
+    .where(eq(leadSignalLinks.leadId, row.id))
+    .orderBy(asc(leadSignalLinks.createdAt), asc(leadSignalLinks.signalId))
+    .all();
+  const signalIds = links.map((link) => link.signalId);
+  const signalRows = signalIds.length
+    ? db.select().from(signals).where(inArray(signals.id, signalIds)).all()
+    : [];
+  const sourceIds = [...new Set(signalRows.map((signal) => signal.sourceId))].sort();
+  const scoutIds = [
+    ...new Set(
+      db
+        .select({ scoutId: signalAttributions.scoutId })
+        .from(signalAttributions)
+        .where(inArray(signalAttributions.signalId, signalIds.length ? signalIds : [""]))
+        .all()
+        .map((attribution) => attribution.scoutId),
+    ),
+  ].sort();
+  const canonicalUrl =
+    db
+      .select({ value: leadAliases.value })
+      .from(leadAliases)
+      .where(and(eq(leadAliases.leadId, row.id), eq(leadAliases.kind, "canonical_url")))
+      .get()?.value ?? null;
+  return LeadSummary.parse({
+    id: row.id,
+    canonicalKey: row.canonicalKey,
+    canonicalUrl,
+    title: row.title,
+    summary: row.summary,
+    identityState: row.identityState === "conflicted" ? "conflicted" : "settled",
+    conflict: row.conflict,
+    revision: row.revision,
+    signalIds,
+    sourceIds,
+    scoutIds,
+    updatedAt: row.updatedAt,
+    createdAt: row.createdAt,
+  });
 }
 
 function snapshotSourceIds(value: string | null): string[] | null {
@@ -1432,6 +1834,7 @@ function toSourceAttemptSummary(
         ? row.outcome
         : "transient_failure",
       itemCount: row.itemCount,
+      quarantinedCount: row.quarantinedCount,
       pageCount: row.pageCount,
       retryAt: row.retryAt,
       safeFailure: row.safeFailure,
@@ -1565,7 +1968,7 @@ function advanceRevision(db: RecruitingDb): number {
 
 function emitChange(
   revision: number,
-  kind: "scout" | "run" | "source",
+  kind: "scout" | "run" | "source" | "lead",
   ids: string[],
   reason: string,
   at: number,

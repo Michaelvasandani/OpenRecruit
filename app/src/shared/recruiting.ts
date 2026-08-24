@@ -104,6 +104,7 @@ export const SourceAttemptSummary = z.object({
   cursor: z.string().nullable(),
   outcome: SourceAttemptOutcome,
   itemCount: z.number().int().nonnegative(),
+  quarantinedCount: z.number().int().nonnegative(),
   pageCount: z.number().int().nonnegative(),
   retryAt: z.number().int().nullable(),
   safeFailure: z.string().nullable(),
@@ -111,6 +112,76 @@ export const SourceAttemptSummary = z.object({
   completedAt: z.number().int().nullable(),
 });
 export type SourceAttemptSummary = z.infer<typeof SourceAttemptSummary>;
+
+/** Safe immutable evidence captured from an attributable public Source item. */
+export const SignalEvidence = z.object({
+  title: z.string(),
+  content: z.string(),
+  canonicalUrl: z.string().nullable(),
+  providerIdentity: z.string().nullable(),
+  sourceIdentity: z.string().nullable(),
+});
+export type SignalEvidence = z.infer<typeof SignalEvidence>;
+
+export const SignalSummary = z.object({
+  id: z.string().min(1),
+  sourceItemId: z.string().min(1),
+  sourceId: z.string().min(1),
+  sourceAttemptId: z.string().min(1),
+  runId: z.string().min(1),
+  scoutId: z.string().min(1),
+  fingerprint: z.string().min(1),
+  provenance: z.record(z.string(), z.unknown()),
+  publicationAt: z.number().int().nullable(),
+  observedAt: z.number().int(),
+  retrievedAt: z.number().int(),
+  evidence: SignalEvidence,
+  retentionUntil: z.number().int().nullable(),
+  supersededSignalId: z.string().nullable(),
+  canonicalUrl: z.string().nullable(),
+  providerIdentity: z.string().nullable(),
+  accessMode: z.literal("public"),
+  adapterVersion: z.string().min(1),
+  processor: z.string().min(1),
+  attribution: z.object({
+    strategyKey: z.string().nullable(),
+    strategyMaterial: z.string(),
+  }),
+  attributions: z.array(
+    z.object({
+      runId: z.string().min(1),
+      scoutId: z.string().min(1),
+      strategyKey: z.string().nullable(),
+      strategyMaterial: z.string(),
+      createdAt: z.number().int(),
+    }),
+  ),
+  createdAt: z.number().int(),
+});
+export type SignalSummary = z.infer<typeof SignalSummary>;
+
+export const LeadSummary = z.object({
+  id: z.string().min(1),
+  canonicalKey: z.string().min(1),
+  canonicalUrl: z.string().nullable(),
+  title: z.string(),
+  summary: z.string().nullable(),
+  identityState: z.enum(["settled", "conflicted"]),
+  conflict: z.string().nullable(),
+  revision: z.number().int().nonnegative(),
+  signalIds: z.array(z.string()),
+  sourceIds: z.array(z.string()),
+  scoutIds: z.array(z.string()),
+  updatedAt: z.number().int(),
+  createdAt: z.number().int(),
+});
+export type LeadSummary = z.infer<typeof LeadSummary>;
+
+export const LeadContext = z.object({
+  lead: LeadSummary,
+  signals: z.array(SignalSummary),
+});
+export type LeadContext = z.infer<typeof LeadContext>;
 
 export const ScoutRunStatus = z.enum([
   "queued",
@@ -142,6 +213,8 @@ export const ScoutRunSummary = z.object({
   policySnapshot: z.string().nullable(),
   overrideSnapshot: z.string().nullable(),
   sourceIds: z.array(z.string()),
+  signalIds: z.array(z.string()).default([]),
+  leadIds: z.array(z.string()).default([]),
   checkpoint: z.string().nullable(),
   safeFailure: z.string().nullable(),
   startedAt: z.number().int().nullable(),

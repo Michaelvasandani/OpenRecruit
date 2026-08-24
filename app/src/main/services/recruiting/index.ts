@@ -29,6 +29,10 @@ import {
 } from "./scout-runs";
 
 export {
+  LeadContext,
+  LeadSummary,
+  SignalEvidence,
+  SignalSummary,
   SourceAccessSummary,
   SourceAttemptOutcome,
   SourceAttemptSummary,
@@ -226,6 +230,26 @@ export class RecruitingApplication {
 
   getSourceAttempt(id: string) {
     return this.scoutRuns.getSourceAttempt(id);
+  }
+
+  listSignals(filter: { runId?: string; sourceId?: string } = {}) {
+    return this.scoutRuns.listSignals(filter);
+  }
+
+  getSignal(id: string) {
+    return this.scoutRuns.getSignal(id);
+  }
+
+  listLeads() {
+    return this.scoutRuns.listLeads();
+  }
+
+  getLead(id: string) {
+    return this.scoutRuns.getLead(id);
+  }
+
+  getLeadContext(id: string) {
+    return this.scoutRuns.getLeadContext(id);
   }
 
   setScoutSources(command: SetScoutSourcesCommand) {

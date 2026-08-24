@@ -16,6 +16,13 @@ export function ScoutRunsScreen() {
   const scouts = trpc.recruiting.scouts.useQuery();
   const sources = trpc.recruiting.sources.useQuery();
   const sourceAttempts = trpc.recruiting.sourceAttempts.useQuery();
+  const signals = trpc.recruiting.signals.useQuery();
+  const leads = trpc.recruiting.leads.useQuery();
+  const [selectedLeadId, setSelectedLeadId] = useState<string | undefined>();
+  const leadContext = trpc.recruiting.leadContext.useQuery(
+    { id: selectedLeadId ?? "" },
+    { enabled: Boolean(selectedLeadId) },
+  );
   const profiles = trpc.recruiting.profiles.useQuery();
   const [selectedScoutId, setSelectedScoutId] = useState<string | undefined>();
   const [strategyMaterial, setStrategyMaterial] = useState("");
@@ -38,11 +45,15 @@ export function ScoutRunsScreen() {
         event.reason === "resync" ||
         event.kind === "run" ||
         event.kind === "scout" ||
-        event.kind === "source"
+        event.kind === "source" ||
+        event.kind === "lead"
       ) {
         void utils.recruiting.scoutRuns.invalidate();
         void utils.recruiting.scouts.invalidate();
         void utils.recruiting.sources.invalidate();
+        void utils.recruiting.signals.invalidate();
+        void utils.recruiting.leads.invalidate();
+        void utils.recruiting.leadContext.invalidate();
       }
     },
   });
@@ -365,6 +376,39 @@ export function ScoutRunsScreen() {
                         {attempt.safeFailure ? ` · ${attempt.safeFailure}` : ""}
                       </p>
                     ))}
+                  <p className="mt-1 text-muted-foreground">
+                    Signals: {signals.data?.filter((signal) => signal.runId === run.id).length ?? 0}{" "}
+                    · Leads:{" "}
+                    {
+                      new Set(
+                        signals.data
+                          ?.filter((signal) => signal.runId === run.id)
+                          .map(
+                            (signal) =>
+                              leads.data?.find((lead) => lead.signalIds.includes(signal.id))?.id,
+                          )
+                          .filter(Boolean),
+                      ).size
+                    }
+                  </p>
+                  <div className="mt-2 flex flex-wrap gap-1">
+                    {leads.data
+                      ?.filter((lead) =>
+                        signals.data?.some(
+                          (signal) => signal.runId === run.id && lead.signalIds.includes(signal.id),
+                        ),
+                      )
+                      .map((lead) => (
+                        <button
+                          key={lead.id}
+                          type="button"
+                          className="rounded border border-border px-2 py-1 text-primary hover:bg-muted"
+                          onClick={() => setSelectedLeadId(lead.id)}
+                        >
+                          {lead.title}
+                        </button>
+                      ))}
+                  </div>
                   {run.safeFailure && <p className="mt-1 text-destructive">{run.safeFailure}</p>}
                   <details className="mt-2">
                     <summary className="cursor-pointer text-muted-foreground">
@@ -377,6 +421,42 @@ export function ScoutRunsScreen() {
                 </div>
               ))}
             </Card>
+            {selectedLeadId && (
+              <Card className="flex flex-col gap-3 p-5">
+                <div className="flex items-center justify-between gap-2">
+                  <h2 className="text-sm font-medium">Lead context</h2>
+                  <button
+                    type="button"
+                    className="text-xs text-muted-foreground underline"
+                    onClick={() => setSelectedLeadId(undefined)}
+                  >
+                    Close
+                  </button>
+                </div>
+                {leadContext.isLoading && <Loader2 className="size-4 animate-spin" />}
+                {leadContext.data && (
+                  <>
+                    <div className="text-sm font-medium">{leadContext.data.lead.title}</div>
+                    <p className="text-xs text-muted-foreground">
+                      Canonical evidence:{" "}
+                      {leadContext.data.lead.canonicalUrl ?? "provider identity"}
+                    </p>
+                    {leadContext.data.signals.map((signal) => (
+                      <div key={signal.id} className="rounded border border-border p-2 text-xs">
+                        <div className="font-medium">{signal.evidence.title}</div>
+                        <p className="mt-1 text-muted-foreground">
+                          {signal.evidence.canonicalUrl ??
+                            signal.evidence.providerIdentity ??
+                            "No URL"}
+                          {" · "}
+                          Run {signal.runId} · Scout {signal.scoutId} · {signal.processor}
+                        </p>
+                      </div>
+                    ))}
+                  </>
+                )}
+              </Card>
+            )}
           </div>
         </div>
       </div>

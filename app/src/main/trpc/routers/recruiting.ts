@@ -143,6 +143,31 @@ export const recruitingRouter = router({
     .input(z.object({ id: z.string().min(1) }))
     .query(({ ctx, input }) => ctx.recruiting.getSourceAttempt(input.id)),
 
+  signals: publicProcedure
+    .input(
+      z
+        .object({
+          runId: z.string().min(1).optional(),
+          sourceId: z.string().min(1).optional(),
+        })
+        .optional(),
+    )
+    .query(({ ctx, input }) => ctx.recruiting.listSignals(input)),
+
+  signal: publicProcedure
+    .input(z.object({ id: z.string().min(1) }))
+    .query(({ ctx, input }) => ctx.recruiting.getSignal(input.id)),
+
+  leads: publicProcedure.query(({ ctx }) => ctx.recruiting.listLeads()),
+
+  lead: publicProcedure
+    .input(z.object({ id: z.string().min(1) }))
+    .query(({ ctx, input }) => ctx.recruiting.getLead(input.id)),
+
+  leadContext: publicProcedure
+    .input(z.object({ id: z.string().min(1) }))
+    .query(({ ctx, input }) => ctx.recruiting.getLeadContext(input.id)),
+
   readSource: publicProcedure
     .input(
       z.object({
