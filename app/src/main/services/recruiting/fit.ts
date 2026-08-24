@@ -193,8 +193,7 @@ export class FitEvaluationApplication {
           item.result === "satisfied" &&
           (command.freshness === "stale" ||
             item.evidenceFreshness === "stale" ||
-            item.signalIds.some((id) => staleEvidence.has(id)) ||
-            staleEvidence.size > 0)
+            item.signalIds.some((id) => staleEvidence.has(id)))
         ) {
           throw new RecruitingError(
             "VALIDATION",

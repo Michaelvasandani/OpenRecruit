@@ -155,6 +155,56 @@ describe("transparent Fit Evaluations and non-destructive Promotion", () => {
     ).toThrow(RecruitingError);
   });
 
+  test("does not let stale evidence for another Signal invalidate a fresh hard constraint", async () => {
+    const { app, profile, run, lead, signal } = await fixture();
+    const source = app.listSources()[0];
+    if (!source) throw new Error("fixture source missing");
+    await app.readSource({
+      runId: run.id,
+      sourceId: source.id,
+      provider: new DeterministicFeedProvider({
+        "https://example.test/jobs.xml": {
+          status: 200,
+          body: `<rss><channel><title>Jobs</title><item><guid>job-2</guid><title>Unrelated Signal</title><link>https://example.test/job-2</link><description>Unrelated stale context</description></item></channel></rss>`,
+        },
+      }),
+    });
+    const unrelatedSignal = app.listSignals().find((candidate) => candidate.id !== signal.id);
+    if (!unrelatedSignal) throw new Error("fixture unrelated signal missing");
+
+    const evaluation = app.createFitEvaluation({
+      leadId: lead.id,
+      profileVersionId: profile.currentVersion?.id ?? "",
+      runId: run.id,
+      hardConstraints: [
+        {
+          key: "remote-first",
+          result: "satisfied",
+          explanation: "The hard constraint has fresh supporting evidence.",
+          signalIds: [signal.id],
+        },
+      ],
+      preferences: [],
+      evidence: [
+        { signalId: signal.id, claim: "Remote-first team", kind: "fact" },
+        {
+          signalId: unrelatedSignal.id,
+          claim: "Unrelated stale context",
+          kind: "fact",
+          freshness: "stale",
+        },
+      ],
+      freshness: "fresh",
+      idempotencyKey: "unrelated-stale-evidence",
+    });
+
+    expect(evaluation.hardConstraints[0]).toMatchObject({
+      key: "remote-first",
+      result: "satisfied",
+      signalIds: [signal.id],
+    });
+  });
+
   test("requires each settled hard constraint to cite its own attributable Signals", async () => {
     const { app, profile, run, lead, signal } = await fixture();
 
