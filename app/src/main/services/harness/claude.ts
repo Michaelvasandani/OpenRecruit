@@ -5,11 +5,12 @@ import {
   existsSync,
   mkdirSync,
   readdirSync,
+  readFileSync,
   writeFileSync,
 } from "node:fs";
 import { join } from "node:path";
 import { promisify } from "node:util";
-import { resolveHooksDir } from "../agents/paths";
+import { resolveAgentMcp, resolveHooksDir } from "../agents/paths";
 import type { Harness, ProbeResult, SessionMode } from "./types";
 
 const execFileAsync = promisify(execFile);
@@ -96,6 +97,24 @@ export const claudeHarness: Harness = {
     const claudeDir = join(agentDir, ".claude");
     const hooksDir = join(claudeDir, "hooks");
     mkdirSync(hooksDir, { recursive: true });
+    const mcpPath = join(agentDir, ".mcp.json");
+    let mcpConfig: { mcpServers?: Record<string, unknown> } = {};
+    if (existsSync(mcpPath)) {
+      try {
+        mcpConfig = JSON.parse(readFileSync(mcpPath, "utf8"));
+      } catch {
+        mcpConfig = {};
+      }
+    }
+    mcpConfig.mcpServers = {
+      ...(mcpConfig.mcpServers ?? {}),
+      opentrade: {
+        command: process.execPath,
+        args: [resolveAgentMcp()],
+        env: { ELECTRON_RUN_AS_NODE: "1" },
+      },
+    };
+    writeFileSync(mcpPath, `${JSON.stringify(mcpConfig, null, 2)}\n`);
     writeFileSync(join(claudeDir, "settings.json"), CLAUDE_SETTINGS_JSON);
     const hooksSrc = resolveHooksDir();
     if (existsSync(hooksSrc)) {

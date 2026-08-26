@@ -172,6 +172,17 @@ export type CheckpointScoutRunCommand = {
   idempotencyKey: string;
 };
 
+export type RecordSourceOutcomeCommand = {
+  runId: string;
+  sourceAttemptId: string;
+  items: Array<{
+    canonicalUrl: string;
+    title: string;
+    content: string;
+    publicationAt?: number | null;
+  }>;
+};
+
 export type LinkSignalToLeadCommand = {
   leadId: string;
   signalId: string;
@@ -2171,6 +2182,116 @@ export class ScoutRunApplication {
       .map((row) => ScoutRunCheckpointSummary.parse(row));
   }
 
+  /** Promote only Scout-selected pages from a completed host-owned WebFetch
+   * Attempt into durable Signals and Leads. The Attempt is the authorization:
+   * callers cannot submit arbitrary URLs or choose another Run/Source. */
+  recordSourceOutcome(command: RecordSourceOutcomeCommand): ScoutRunSummaryValue {
+    if (!Array.isArray(command.items) || command.items.length < 1 || command.items.length > 100) {
+      throw new RecruitingError("VALIDATION", "RecordSourceOutcome accepts 1 to 100 items");
+    }
+    let notification: { revision: number; at: number } | undefined;
+    const value = this.db.transaction((tx) => {
+      const run = requireRun(tx, command.runId);
+      if (!(ACTIVE_RUN_STATUSES as readonly string[]).includes(run.status)) {
+        throw new RecruitingError(
+          "CONFLICT",
+          `Run ${run.id} is ${run.status}; it cannot record evidence`,
+        );
+      }
+      const attempt = tx
+        .select()
+        .from(sourceAttempts)
+        .where(eq(sourceAttempts.id, command.sourceAttemptId))
+        .get();
+      if (!attempt || attempt.runId !== run.id) {
+        throw new RecruitingError(
+          "NOT_FOUND",
+          `Source Attempt ${command.sourceAttemptId} was not found for Run ${run.id}`,
+        );
+      }
+      const details = parseJson(attempt.requestedScope) as Record<string, unknown>;
+      const returnedUrls = new Set(
+        Array.isArray(details?.returnedUrls)
+          ? details.returnedUrls.filter((url): url is string => typeof url === "string")
+          : [],
+      );
+      if (details?.operation !== "web_fetch" || attempt.completedAt === null) {
+        throw new RecruitingError(
+          "CONFLICT",
+          "Selected evidence must come from a completed OpenRecruit WebFetch Attempt",
+        );
+      }
+      const items: FeedItem[] = command.items.map((item) => {
+        const canonicalUrl = normalizeRecordedUrl(item.canonicalUrl);
+        if (!returnedUrls.has(canonicalUrl)) {
+          throw new RecruitingError(
+            "VALIDATION",
+            "Selected evidence URL was not returned by this WebFetch Attempt",
+          );
+        }
+        const title = typeof item.title === "string" ? item.title.trim().slice(0, 500) : "";
+        const content =
+          typeof item.content === "string" ? item.content.trim().slice(0, 30_000) : "";
+        if (!title || !content) {
+          throw new RecruitingError("VALIDATION", "Selected evidence requires a title and content");
+        }
+        const publicationAt = item.publicationAt ?? null;
+        if (publicationAt !== null && (!Number.isInteger(publicationAt) || publicationAt < 0)) {
+          throw new RecruitingError("VALIDATION", "Selected evidence publicationAt is invalid");
+        }
+        return {
+          identityKey: digest(canonicalUrl),
+          providerIdentity: null,
+          canonicalUrl,
+          title,
+          content,
+          publicationAt,
+          metadata: { provider: "web_fetch", state: "available" },
+        };
+      });
+      const source = tx.select().from(sources).where(eq(sources.id, attempt.sourceId)).get();
+      const access = tx
+        .select()
+        .from(sourceAccess)
+        .where(
+          and(
+            eq(sourceAccess.sourceId, attempt.sourceId),
+            eq(sourceAccess.accountRef, ""),
+            eq(sourceAccess.scopeKey, "public"),
+          ),
+        )
+        .get();
+      if (!source || !access) {
+        throw new RecruitingError(
+          "NOT_FOUND",
+          "Source metadata for the WebFetch Attempt was not found",
+        );
+      }
+      const at = this.now();
+      persistSignals(tx, {
+        run,
+        source,
+        sourceAccess: access,
+        attemptId: attempt.id,
+        items,
+        observedAt: at,
+      });
+      const revision = advanceRevision(tx);
+      notification = { revision, at };
+      return this.toRunSummary(tx, requireRun(tx, run.id));
+    });
+    if (notification) {
+      emitChange(
+        notification.revision,
+        "run",
+        [command.runId],
+        "signals_attributed",
+        notification.at,
+      );
+    }
+    return value;
+  }
+
   private toRunSummary(db: RecruitingDb, row: RunRow): ScoutRunSummaryValue {
     const currentSourceIds = db
       .select({ sourceId: scoutSources.sourceId })
@@ -3183,6 +3304,22 @@ function isValidTransition(from: ScoutRunStatusValue, to: ScoutRunStatusValue): 
   if (from === "finalizing")
     return to === "completed" || to === "incomplete" || to === "failed" || to === "cancelled";
   return false;
+}
+
+function normalizeRecordedUrl(value: string): string {
+  if (typeof value !== "string") {
+    throw new RecruitingError("VALIDATION", "Selected evidence requires a canonical URL");
+  }
+  try {
+    const url = new URL(value.trim());
+    if ((url.protocol !== "https:" && url.protocol !== "http:") || url.username || url.password) {
+      throw new Error("unsafe URL");
+    }
+    url.hash = "";
+    return url.toString().slice(0, 2_000);
+  } catch {
+    throw new RecruitingError("VALIDATION", "Selected evidence requires a public HTTP(S) URL");
+  }
 }
 
 function phaseForStatus(status: ScoutRunStatusValue): ScoutRunPhaseValue {

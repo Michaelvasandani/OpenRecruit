@@ -104,10 +104,23 @@ export function recruitingProviderInstructions(input: {
     "Do not use unrestricted SQL, arbitrary HTTP, posting, messaging, applications, or access-control bypasses.",
     "Preserve bounded budgets and record safe structured outcomes; never persist provider transcripts.",
     "",
+    recruitingRunWorkflowInstructions(input.runId),
+    "",
     "Discovery Strategy:",
     input.strategyMaterial,
     "",
     "Scout Policy:",
     input.policyMaterial,
+  ].join("\n");
+}
+
+export function recruitingRunWorkflowInstructions(runId: string): string {
+  return [
+    `Recruiting Run workflow for ${runId}:`,
+    "1. Call read_run_context and list_selected_sources before discovery.",
+    "2. Use OpenRecruit WebSearch and WebFetch (not native web tools) so Source Attempts are recorded.",
+    "3. Call record_source_outcome for selected attributable evidence to create Signals and Fresh Leads.",
+    "4. Call record_checkpoint as work progresses.",
+    "5. Always call complete_run with the final outcome before ending the turn.",
   ].join("\n");
 }

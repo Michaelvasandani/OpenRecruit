@@ -204,15 +204,32 @@ describe("AgentRegistry — codex scaffold divergence", () => {
 
   test("claude writeConfig generates the local runtime config from a bare dir", async () => {
     const { claudeHarness } = await import("../harness/claude");
-    const { existsSync, readFileSync, mkdtempSync, rmSync } = await import("node:fs");
+    const { resolveAgentMcp } = await import("./paths");
+    const { existsSync, readFileSync, mkdtempSync, rmSync, writeFileSync } = await import(
+      "node:fs"
+    );
     const { join } = await import("node:path");
     const { tmpdir } = await import("node:os");
     const dir = mkdtempSync(join(tmpdir(), "claude-writeconfig-"));
     try {
       expect(existsSync(join(dir, ".claude", "settings.json"))).toBe(false); // bare
+      writeFileSync(
+        join(dir, ".mcp.json"),
+        JSON.stringify({
+          mcpServers: {
+            opentrade: { command: "/stale/electron", args: ["/stale/agent-mcp.js"] },
+          },
+        }),
+      );
       claudeHarness.writeConfig?.(dir, "agent-x");
       const settings = JSON.parse(readFileSync(join(dir, ".claude", "settings.json"), "utf8"));
+      const mcp = JSON.parse(readFileSync(join(dir, ".mcp.json"), "utf8"));
       expect(settings.enabledMcpjsonServers).toEqual(["opentrade"]);
+      expect(mcp.mcpServers.opentrade).toEqual({
+        command: process.execPath,
+        args: [resolveAgentMcp()],
+        env: { ELECTRON_RUN_AS_NODE: "1" },
+      });
       expect(settings.hooks.PreToolUse).toBeUndefined();
       expect(settings.hooks.PostToolUse).toBeUndefined();
       expect(existsSync(join(dir, ".claude", "hooks", "status-notify.sh"))).toBe(true);

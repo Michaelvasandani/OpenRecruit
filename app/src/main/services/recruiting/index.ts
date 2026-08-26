@@ -37,7 +37,7 @@ import {
   type RecordCandidateDecisionCommand,
   type RequestCandidateReconsiderationCommand,
 } from "./candidate-decisions";
-import { assertSafeMaterial } from "./contract";
+import { assertSafeMaterial, recruitingProviderInstructions } from "./contract";
 import { RecruitingError } from "./errors";
 import {
   type DeleteEvidenceCommand,
@@ -140,6 +140,7 @@ export {
   RECRUITING_OPERATIONS,
   recruitingOperationsFor,
   recruitingProviderInstructions,
+  recruitingRunWorkflowInstructions,
   validateRecruitingOperation,
 } from "./contract";
 export { RecruitingError } from "./errors";
@@ -196,6 +197,7 @@ export type {
   LinkSignalToLeadCommand,
   MergeLeadsCommand,
   ReadSourceCommand,
+  RecordSourceOutcomeCommand,
   ScoutRunApplicationOptions,
   SetScoutSourcesCommand,
   SetSourceDisabledCommand,
@@ -335,6 +337,7 @@ export class RecruitingApplication {
   private readonly webSearchSettings?: () => WebSearchSettingsProjection;
   private readonly webSearchApplication: WebSearchApplication;
   private readonly webFetchApplication: WebFetchApplication;
+  private wake?: WakeTransport;
 
   constructor(
     private readonly db: Db,
@@ -376,7 +379,17 @@ export class RecruitingApplication {
   }
 
   setWake(wake: WakeTransport): void {
+    this.wake = wake;
     this.revisitPlans.setWake(wake);
+    for (const run of this.scoutRuns
+      .listScoutRuns()
+      .filter(
+        (candidate) =>
+          candidate.trigger === "manual" &&
+          ["preflight", "running", "finalizing"].includes(candidate.status),
+      )) {
+      this.dispatchManualRun(run);
+    }
   }
 
   listProfiles() {
@@ -471,6 +484,112 @@ export class RecruitingApplication {
     return this.webFetchApplication.fetch(command);
   }
 
+  readRunContextForScout(scoutId: string) {
+    const run = this.requireActiveRunForScout(scoutId);
+    return {
+      runId: run.id,
+      scoutId: run.scoutId,
+      status: run.status,
+      phase: run.phase,
+      budget: parseSafeJson(run.budget),
+      profile: parseSafeJson(run.profileSnapshot),
+      strategy: parseSafeJson(run.strategySnapshot),
+      policy: parseSafeJson(run.policySnapshot),
+      sourceIds: run.sourceIds,
+    };
+  }
+
+  listSelectedSourcesForScout(scoutId: string) {
+    const run = this.requireActiveRunForScout(scoutId);
+    const selected = new Set(run.sourceIds);
+    return this.listSources().filter((source) => selected.has(source.id));
+  }
+
+  beginRunForScout(scoutId: string): ScoutRunSummary {
+    let run = this.requireActiveRunForScout(scoutId);
+    if (run.status === "queued") {
+      run = this.scoutRuns.advanceScoutRun({
+        runId: run.id,
+        status: "preflight",
+        expectedStatus: "queued",
+        idempotencyKey: `agent:${run.id}:preflight`,
+      }).value;
+    }
+    if (run.status === "preflight") {
+      run = this.scoutRuns.advanceScoutRun({
+        runId: run.id,
+        status: "running",
+        phase: "discovery",
+        expectedStatus: "preflight",
+        idempotencyKey: `agent:${run.id}:running`,
+      }).value;
+    }
+    return run;
+  }
+
+  recordCheckpointForScout(input: {
+    scoutId: string;
+    phase: "preflight" | "discovery" | "finalization";
+    checkpoint: string;
+  }) {
+    const run = this.beginRunForScout(input.scoutId);
+    return this.scoutRuns.checkpointScoutRun({
+      runId: run.id,
+      phase: input.phase,
+      checkpoint: input.checkpoint,
+      idempotencyKey: `agent:${run.id}:checkpoint:${hashPayload(input)}`,
+    }).value;
+  }
+
+  recordSourceOutcomeForScout(input: {
+    scoutId: string;
+    sourceAttemptId: string;
+    items: Array<{ canonicalUrl: string }>;
+  }) {
+    const run = this.beginRunForScout(input.scoutId);
+    if (this.getSourceAttempt(input.sourceAttemptId)?.runId !== run.id) {
+      throw new RecruitingError(
+        "NOT_FOUND",
+        "Source Attempt was not found for the active Scout Run",
+      );
+    }
+    const items = this.webFetchApplication.selectEvidence({
+      scoutId: input.scoutId,
+      sourceAttemptId: input.sourceAttemptId,
+      canonicalUrls: input.items.map((item) => item.canonicalUrl),
+    });
+    return this.scoutRuns.recordSourceOutcome({
+      runId: run.id,
+      sourceAttemptId: input.sourceAttemptId,
+      items,
+    });
+  }
+
+  completeRunForScout(input: {
+    scoutId: string;
+    outcome: "completed" | "incomplete" | "failed" | "cancelled";
+    safeFailure?: string | null;
+  }): ScoutRunSummary {
+    let run = this.beginRunForScout(input.scoutId);
+    if (input.outcome === "completed" && run.status === "running") {
+      run = this.scoutRuns.advanceScoutRun({
+        runId: run.id,
+        status: "finalizing",
+        phase: "finalization",
+        expectedStatus: "running",
+        idempotencyKey: `agent:${run.id}:finalizing`,
+      }).value;
+    }
+    return this.scoutRuns.advanceScoutRun({
+      runId: run.id,
+      status: input.outcome,
+      phase: "finalization",
+      safeFailure: input.safeFailure,
+      expectedStatus: run.status,
+      idempotencyKey: `agent:${run.id}:complete:${input.outcome}:${hashPayload(input.safeFailure ?? null)}`,
+    }).value;
+  }
+
   /** Map the authenticated local agent identity to its canonical Scout. New
    * Scouts may use their own id in tests and future harness adapters; migrated
    * Scouts use the legacy agent id that rides the existing MCP environment. */
@@ -483,6 +602,30 @@ export class RecruitingApplication {
       .where(eq(scouts.legacyAgentId, agentId))
       .get();
     return legacy?.id ?? null;
+  }
+
+  private requireActiveRunForScout(scoutId: string): ScoutRunSummary {
+    const run = this.scoutRuns
+      .listScoutRuns(scoutId)
+      .find((candidate) =>
+        ["queued", "preflight", "running", "finalizing"].includes(candidate.status),
+      );
+    if (!run) throw new RecruitingError("NOT_FOUND", `Scout ${scoutId} has no active Run`);
+    return run;
+  }
+
+  private dispatchManualRun(run: ScoutRunSummary): void {
+    if (!this.wake) return;
+    const scout = this.getScout(run.scoutId);
+    if (!scout) return;
+    const prompt = [
+      recruitingProviderInstructions({
+        strategyMaterial: materialFromSnapshot(run.strategySnapshot),
+        policyMaterial: materialFromSnapshot(run.policySnapshot),
+        runId: run.id,
+      }),
+    ].join("\n");
+    this.wake.enqueue(scout.legacyAgentId ?? scout.id, prompt);
   }
 
   listSourceAttempts(runId?: string) {
@@ -665,7 +808,9 @@ export class RecruitingApplication {
   }
 
   launchScoutRun(command: LaunchScoutRunCommand) {
-    return this.scoutRuns.launchScoutRun(command);
+    const result = this.scoutRuns.launchScoutRun(command);
+    if (!result.replayed) this.dispatchManualRun(result.value);
+    return result;
   }
 
   /** Alias used by UI/agent adapters: a manual launch always performs preflight. */
@@ -1360,6 +1505,21 @@ function assertSourceIdsExist(db: RecruitingDb, sourceIds: string[]): void {
 
 function hashPayload(value: unknown): string {
   return createHash("sha256").update(JSON.stringify(value)).digest("hex");
+}
+
+function parseSafeJson(value: string | null): unknown {
+  if (!value) return null;
+  try {
+    return JSON.parse(value);
+  } catch {
+    return null;
+  }
+}
+
+function materialFromSnapshot(value: string | null): string {
+  const snapshot = parseSafeJson(value);
+  if (!snapshot || typeof snapshot !== "object" || !("material" in snapshot)) return "";
+  return typeof snapshot.material === "string" ? snapshot.material : "";
 }
 
 function findReceipt(

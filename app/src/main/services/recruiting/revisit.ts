@@ -27,6 +27,7 @@ import {
 } from "../../db/schema";
 import { bus } from "../event-bus";
 import type { WakeTransport } from "../scheduler/wake/types";
+import { recruitingRunWorkflowInstructions } from "./contract";
 import { RecruitingError } from "./errors";
 import type { LaunchScoutRunCommand, RunBudget } from "./scout-runs";
 
@@ -727,7 +728,11 @@ export class RevisitPlanApplication {
       const agentId = scout?.legacyAgentId ?? scoutId;
       wake.enqueue(
         agentId,
-        `[OpenRecruit Scout Run ${runId}] ${trigger} request accepted. Resume from the latest committed checkpoint and report a structured final outcome.`,
+        [
+          `[OpenRecruit Scout Run ${runId}] ${trigger} request accepted. Resume from the latest committed checkpoint.`,
+          "",
+          recruitingRunWorkflowInstructions(runId),
+        ].join("\n"),
       );
       tx.update(scoutRunRequests)
         .set({ wakeDeliveredAt: this.now() })

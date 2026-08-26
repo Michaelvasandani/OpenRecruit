@@ -169,6 +169,9 @@ describe("Recruiting Revisit Plans and durable Run requests", () => {
     app.processRunRequests();
     app.processRunRequests();
     expect(wakes).toHaveLength(1);
+    expect(wakes[0]).toContain("read_run_context");
+    expect(wakes[0]).toContain("record_source_outcome");
+    expect(wakes[0]).toContain("complete_run");
   });
 
   test("does not redeliver an active Run wake after application reconstruction", () => {

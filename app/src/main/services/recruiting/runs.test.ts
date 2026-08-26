@@ -169,6 +169,50 @@ describe("Recruiting Scout configuration and manual Runs", () => {
     expect(app.getScoutRun(run.value.id)?.sourceIds).toEqual([source.value.id]);
   });
 
+  test("dispatches a manual Run to its Scout with the bounded persistence workflow", () => {
+    const app = new RecruitingApplication(makeDb(), () => 3500);
+    const profile = confirmedProfile(app, "dispatch");
+    const source = app.createSource({
+      kind: "rss",
+      name: "Dispatch feed",
+      idempotencyKey: "source-create-dispatch",
+    });
+    const scout = app.createScout({
+      name: "Dispatched Scout",
+      harness: "claude",
+      instructionPath: "agents/dispatched",
+      defaultProfileId: profile.id,
+      sourceIds: [source.value.id],
+      idempotencyKey: "scout-create-dispatch",
+    }).value;
+    const wakes: Array<{ agentId: string; prompt: string }> = [];
+    app.setWake({
+      enqueue: (agentId: string, prompt: string) => wakes.push({ agentId, prompt }),
+      wouldDropWake: () => false,
+      awaitPoll: async () => null,
+      onInteractiveUp: () => {},
+      onInteractiveDown: () => {},
+      stop: () => false,
+      stopAll: () => {},
+    });
+
+    const run = app.launchScoutRun({
+      scoutId: scout.id,
+      idempotencyKey: "run-dispatch",
+    }).value;
+
+    expect(wakes).toEqual([
+      {
+        agentId: scout.id,
+        prompt: expect.stringContaining(`Recruiting Run: ${run.id}`),
+      },
+    ]);
+    expect(wakes[0]?.prompt).toContain("read_run_context");
+    expect(wakes[0]?.prompt).toContain("record_source_outcome");
+    expect(wakes[0]?.prompt).toContain("complete_run");
+    expect(wakes[0]?.prompt).toContain("OpenRecruit WebSearch and WebFetch");
+  });
+
   test("allows different Scouts to run concurrently but only one active Run per Scout", () => {
     const app = new RecruitingApplication(makeDb(), () => 4000);
     const profile = confirmedProfile(app, "concurrency");

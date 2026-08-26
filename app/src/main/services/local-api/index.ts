@@ -10,6 +10,24 @@ type WebAccessBoundary = {
   resolveScoutForAgent(agentId: string): string | null;
   webSearch(input: { scoutId: string; query: string; limit?: number }): Promise<unknown>;
   webFetch(input: { scoutId: string; urls: string[]; contentLimit?: number }): Promise<unknown>;
+  readRunContextForScout(scoutId: string): unknown;
+  listSelectedSourcesForScout(scoutId: string): unknown;
+  beginRunForScout(scoutId: string): unknown;
+  recordCheckpointForScout(input: {
+    scoutId: string;
+    phase: "preflight" | "discovery" | "finalization";
+    checkpoint: string;
+  }): unknown;
+  recordSourceOutcomeForScout(input: {
+    scoutId: string;
+    sourceAttemptId: string;
+    items: Array<{ canonicalUrl: string }>;
+  }): unknown;
+  completeRunForScout(input: {
+    scoutId: string;
+    outcome: "completed" | "incomplete" | "failed" | "cancelled";
+    safeFailure?: string | null;
+  }): unknown;
 };
 
 /** How long a `/wake-stream` long-poll is held open before returning empty (the
@@ -148,6 +166,9 @@ export class LocalApiServer {
     if (req.method === "POST" && url.pathname === "/web-fetch") {
       return this.handleWebFetch(req, res);
     }
+    if (url.pathname.startsWith("/recruiting/run")) {
+      return this.handleRecruitingRun(req, res, url);
+    }
 
     return json(res, 404, { error: "not found" });
   }
@@ -269,6 +290,7 @@ export class LocalApiServer {
       return json(res, 400, { error: "WebSearch query is required", code: "VALIDATION" });
     }
     try {
+      recruiting.beginRunForScout(scoutId);
       const result = await recruiting.webSearch({
         scoutId,
         query: body.query,
@@ -306,6 +328,7 @@ export class LocalApiServer {
       return json(res, 400, { error: "WebFetch URLs are required", code: "VALIDATION" });
     }
     try {
+      recruiting.beginRunForScout(scoutId);
       const result = await recruiting.webFetch({
         scoutId,
         urls: body.urls as string[],
@@ -324,6 +347,86 @@ export class LocalApiServer {
         error: message,
         code,
         ...(category && category !== "null" ? { category } : {}),
+      });
+    }
+  }
+
+  /** Bounded Scout Run persistence. Agent identity selects the Scout and active
+   * Run; request bodies can never choose a database, Scout, Run, or Source. */
+  private async handleRecruitingRun(req: IncomingMessage, res: ServerResponse, url: URL) {
+    const recruiting = this.recruiting;
+    if (!recruiting) return json(res, 503, { error: "recruiting service not ready" });
+    const agentId = header(req, "x-opentrade-agent");
+    const scoutId = agentId ? recruiting.resolveScoutForAgent(agentId) : null;
+    if (!scoutId) return json(res, 404, { error: "unknown Scout" });
+    try {
+      if (req.method === "GET" && url.pathname === "/recruiting/run/context") {
+        return json(res, 200, recruiting.readRunContextForScout(scoutId));
+      }
+      if (req.method === "GET" && url.pathname === "/recruiting/run/sources") {
+        return json(res, 200, recruiting.listSelectedSourcesForScout(scoutId));
+      }
+      const body = await readJson(req);
+      if (req.method === "POST" && url.pathname === "/recruiting/run/checkpoint") {
+        if (
+          !body ||
+          !["preflight", "discovery", "finalization"].includes(String(body.phase)) ||
+          typeof body.checkpoint !== "string"
+        ) {
+          return json(res, 400, { error: "phase and checkpoint are required", code: "VALIDATION" });
+        }
+        return json(
+          res,
+          200,
+          recruiting.recordCheckpointForScout({
+            scoutId,
+            phase: body.phase as "preflight" | "discovery" | "finalization",
+            checkpoint: body.checkpoint,
+          }),
+        );
+      }
+      if (req.method === "POST" && url.pathname === "/recruiting/run/source-outcome") {
+        if (!body || typeof body.sourceAttemptId !== "string" || !Array.isArray(body.items)) {
+          return json(res, 400, {
+            error: "sourceAttemptId and items are required",
+            code: "VALIDATION",
+          });
+        }
+        return json(
+          res,
+          200,
+          recruiting.recordSourceOutcomeForScout({
+            scoutId,
+            sourceAttemptId: body.sourceAttemptId,
+            items: body.items as Array<{ canonicalUrl: string }>,
+          }),
+        );
+      }
+      if (req.method === "POST" && url.pathname === "/recruiting/run/complete") {
+        const outcome = body?.outcome;
+        if (
+          !body ||
+          !["completed", "incomplete", "failed", "cancelled"].includes(String(outcome))
+        ) {
+          return json(res, 400, { error: "valid outcome is required", code: "VALIDATION" });
+        }
+        return json(
+          res,
+          200,
+          recruiting.completeRunForScout({
+            scoutId,
+            outcome: outcome as "completed" | "incomplete" | "failed" | "cancelled",
+            safeFailure: typeof body.safeFailure === "string" ? body.safeFailure : null,
+          }),
+        );
+      }
+      return json(res, 404, { error: "not found" });
+    } catch (error) {
+      const code =
+        error && typeof error === "object" && "code" in error ? String(error.code) : "CONFLICT";
+      return json(res, code === "NOT_FOUND" ? 404 : 400, {
+        error: error instanceof Error ? error.message : "Scout Run operation could not complete",
+        code,
       });
     }
   }

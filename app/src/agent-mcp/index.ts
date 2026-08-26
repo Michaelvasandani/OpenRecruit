@@ -199,6 +199,118 @@ const TOOLS: ToolDef[] = [
     },
   },
   {
+    name: "read_run_context",
+    description:
+      "Read the authenticated Scout's active Run context, pinned Candidate Profile, Strategy, Policy, and budget. No SQL or credentials are exposed.",
+    inputSchema: obj({}),
+    run: async () => {
+      const { status, json } = await callHost("GET", "/recruiting/run/context");
+      if (status !== 200) throw new Error(describeError(json));
+      return JSON.stringify(json, null, 2);
+    },
+  },
+  {
+    name: "list_selected_sources",
+    description: "List safe metadata for Sources explicitly selected for the active Scout Run.",
+    inputSchema: obj({}),
+    run: async () => {
+      const { status, json } = await callHost("GET", "/recruiting/run/sources");
+      if (status !== 200) throw new Error(describeError(json));
+      return JSON.stringify(json, null, 2);
+    },
+  },
+  {
+    name: "record_checkpoint",
+    description:
+      "Commit a short structured progress checkpoint to the active Scout Run. This starts the Run if it is still in preflight.",
+    inputSchema: obj(
+      {
+        phase: {
+          type: "string",
+          enum: ["preflight", "discovery", "finalization"],
+          description: "The bounded Run phase represented by this checkpoint.",
+        },
+        checkpoint: {
+          type: "string",
+          minLength: 1,
+          maxLength: 2_000,
+          description: "A concise provider-free summary of committed progress.",
+        },
+      },
+      ["phase", "checkpoint"],
+    ),
+    run: async (a) => {
+      const { status, json } = await callHost("POST", "/recruiting/run/checkpoint", {
+        phase: a.phase,
+        checkpoint: a.checkpoint,
+      });
+      if (status !== 200) throw new Error(describeError(json));
+      return JSON.stringify(json, null, 2);
+    },
+  },
+  {
+    name: "record_source_outcome",
+    description:
+      "Promote Scout-selected evidence from a completed OpenRecruit WebFetch Attempt into durable Signals and Fresh Leads. The host uses the exact fetched page content; URLs not returned by that Attempt are rejected.",
+    inputSchema: obj(
+      {
+        sourceAttemptId: {
+          type: "string",
+          minLength: 1,
+          description: "The sourceAttemptId returned by OpenRecruit WebFetch.",
+        },
+        items: {
+          type: "array",
+          minItems: 1,
+          maxItems: 100,
+          items: {
+            type: "object",
+            properties: {
+              canonicalUrl: { type: "string", format: "uri", pattern: "^https?://" },
+            },
+            required: ["canonicalUrl"],
+          },
+        },
+      },
+      ["sourceAttemptId", "items"],
+    ),
+    run: async (a) => {
+      const { status, json } = await callHost("POST", "/recruiting/run/source-outcome", {
+        sourceAttemptId: a.sourceAttemptId,
+        items: a.items,
+      });
+      if (status !== 200) throw new Error(describeError(json));
+      return JSON.stringify(json, null, 2);
+    },
+  },
+  {
+    name: "complete_run",
+    description:
+      "Finalize the active Scout Run with an explicit completed, incomplete, failed, or cancelled outcome.",
+    inputSchema: obj(
+      {
+        outcome: {
+          type: "string",
+          enum: ["completed", "incomplete", "failed", "cancelled"],
+        },
+        safeFailure: {
+          type: ["string", "null"],
+          maxLength: 2_000,
+          description: "A safe explanation for incomplete, failed, or cancelled outcomes.",
+        },
+      },
+      ["outcome"],
+    ),
+    run: async (a) => {
+      const { status, json } = await callHost("POST", "/recruiting/run/complete", {
+        outcome: a.outcome,
+        safeFailure: a.safeFailure,
+      });
+      if (status !== 200) throw new Error(describeError(json));
+      return JSON.stringify(json, null, 2);
+    },
+  },
+  {
     name: "CronCreate",
     description:
       "Schedule a recurring (or one-shot) wake for this agent on a cron timer. " +

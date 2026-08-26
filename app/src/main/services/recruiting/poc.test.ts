@@ -309,7 +309,8 @@ describe("source-built two-Scout OpenRecruit POC", () => {
     expect(app.processRunRequests()).toHaveLength(1);
     const revisitRunId = app.getRunRequest(revisitRequests[0]?.id ?? "")?.runId;
     if (!revisitRunId) throw new Error("revisit request did not dispatch a Run");
-    expect(wakes).toHaveLength(1);
+    // Two manual Runs were dispatched above; the Revisit adds one more wake.
+    expect(wakes).toHaveLength(3);
     app.checkpointScoutRun({
       runId: revisitRunId,
       phase: "discovery",

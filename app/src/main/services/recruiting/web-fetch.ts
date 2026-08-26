@@ -116,6 +116,13 @@ export type WebFetchResponse = {
   outcomes: WebFetchOutcome[];
 };
 
+export type SelectedWebFetchEvidence = {
+  canonicalUrl: string;
+  title: string;
+  content: string;
+  publicationAt: number;
+};
+
 export type WebFetchApplicationOptions = {
   provider?: WebFetchProvider;
   apiKey?: () => string | undefined;
@@ -334,6 +341,12 @@ export class WebFetchApplication {
   private readonly provider: WebFetchProvider;
   private readonly webSearchSettings?: WebFetchApplicationOptions["webSearchSettings"];
   private readonly resolveHostname: (hostname: string) => Promise<readonly string[]>;
+  /** Raw fetched pages live only in host memory until the Scout selects them.
+   * Source Attempts retain safe audit metadata, never page content. */
+  private readonly fetchedEvidence = new Map<
+    string,
+    { scoutId: string; pages: Map<string, SelectedWebFetchEvidence> }
+  >();
 
   constructor(
     private readonly db: Db,
@@ -518,6 +531,7 @@ export class WebFetchApplication {
         : null,
       outcomes.filter((outcome) => "content" in outcome).length,
     );
+    this.rememberFetchedEvidence(attemptId, context.scout.id, outcomes);
     return {
       urls: normalized.urls.map((entry) => entry.requestedUrl),
       contentLimit: normalized.contentLimit,
@@ -529,6 +543,61 @@ export class WebFetchApplication {
       },
       outcomes,
     };
+  }
+
+  selectEvidence(input: {
+    scoutId: string;
+    sourceAttemptId: string;
+    canonicalUrls: string[];
+  }): SelectedWebFetchEvidence[] {
+    const cached = this.fetchedEvidence.get(input.sourceAttemptId);
+    if (!cached || cached.scoutId !== input.scoutId) {
+      throw new RecruitingError(
+        "NOT_FOUND",
+        "Fetched evidence is no longer available; call OpenRecruit WebFetch again",
+      );
+    }
+    if (
+      !Array.isArray(input.canonicalUrls) ||
+      input.canonicalUrls.length < 1 ||
+      input.canonicalUrls.length > 100
+    ) {
+      throw new RecruitingError("VALIDATION", "Select between 1 and 100 fetched URLs");
+    }
+    return input.canonicalUrls.map((value) => {
+      const canonicalUrl = canonicalizePublicUrl(value);
+      const page = canonicalUrl ? cached.pages.get(canonicalUrl) : undefined;
+      if (!page) {
+        throw new RecruitingError(
+          "VALIDATION",
+          "Selected evidence URL was not returned by this WebFetch Attempt",
+        );
+      }
+      return { ...page };
+    });
+  }
+
+  private rememberFetchedEvidence(
+    sourceAttemptId: string,
+    scoutId: string,
+    outcomes: WebFetchOutcome[],
+  ): void {
+    const pages = new Map<string, SelectedWebFetchEvidence>();
+    for (const outcome of outcomes) {
+      if (!("content" in outcome)) continue;
+      pages.set(outcome.canonicalUrl, {
+        canonicalUrl: outcome.canonicalUrl,
+        title: outcome.title?.trim() || outcome.canonicalUrl,
+        content: outcome.content,
+        publicationAt: outcome.retrievedAt,
+      });
+    }
+    this.fetchedEvidence.set(sourceAttemptId, { scoutId, pages });
+    while (this.fetchedEvidence.size > 200) {
+      const oldest = this.fetchedEvidence.keys().next().value;
+      if (typeof oldest !== "string") break;
+      this.fetchedEvidence.delete(oldest);
+    }
   }
 
   private insertAttempt(

@@ -19,6 +19,14 @@ describe("provider-neutral Recruiting contract", () => {
       "record_source_outcome",
       "complete_run",
     ]);
+    const instructions = recruitingProviderInstructions({
+      runId: "run-1",
+      strategyMaterial: "Find matching public roles.",
+      policyMaterial: "Use selected Sources only.",
+    });
+    expect(instructions).toContain("OpenRecruit WebSearch and WebFetch");
+    expect(instructions).toContain("record_source_outcome");
+    expect(instructions).toContain("complete_run");
   });
 
   test("fails closed for unrestricted or externally communicative capabilities", () => {

@@ -291,6 +291,95 @@ function fixture() {
 }
 
 describe("Issue #44 agent-facing web discovery journey", () => {
+  test("lets a Scout persist selected evidence and complete its active Run through bounded MCP tools", async () => {
+    const fixtureValue = fixture();
+    await fixtureValue.server.start();
+    const { app, scouts, server } = fixtureValue;
+    const client = await startMcp(server, scouts.claude.scout.id, "claude");
+    try {
+      const listed = (await client.list()).result as { tools?: Array<{ name: string }> };
+      expect(listed.tools?.map((tool) => tool.name)).toEqual(
+        expect.arrayContaining([
+          "read_run_context",
+          "list_selected_sources",
+          "record_checkpoint",
+          "record_source_outcome",
+          "complete_run",
+        ]),
+      );
+
+      const context = resultJson<{ runId: string; status: string }>(
+        await client.call("read_run_context"),
+      );
+      expect(context).toMatchObject({ runId: scouts.claude.run.id, status: "preflight" });
+
+      const fetched = resultJson<{
+        sourceAttemptId: string;
+        outcomes: Array<{
+          canonicalUrl: string;
+          title: string | null;
+          content: string;
+          retrievedAt: number;
+        }>;
+      }>(
+        await client.call("WebFetch", {
+          urls: ["https://jobs.ashbyhq.com/acme/forward-deployed-engineer"],
+        }),
+      );
+      const page = fetched.outcomes[0];
+      expect(page).toBeDefined();
+
+      const recorded = resultJson<{ signalIds: string[]; leadIds: string[] }>(
+        await client.call("record_source_outcome", {
+          sourceAttemptId: fetched.sourceAttemptId,
+          items: [
+            {
+              canonicalUrl: page?.canonicalUrl,
+            },
+          ],
+        }),
+      );
+      expect(recorded.signalIds).toHaveLength(1);
+      expect(recorded.leadIds).toHaveLength(1);
+
+      await client.call("record_checkpoint", {
+        phase: "discovery",
+        checkpoint: "Selected one attributable role from Web Search.",
+      });
+      const completed = resultJson<{ status: string; completedAt: number | null }>(
+        await client.call("complete_run", { outcome: "completed" }),
+      );
+      expect(completed).toMatchObject({ status: "completed", completedAt: 10_000 });
+
+      expect(app.getScoutRun(scouts.claude.run.id)).toMatchObject({
+        status: "completed",
+        phase: "finalization",
+        startedAt: 10_000,
+        completedAt: 10_000,
+        signalIds: recorded.signalIds,
+        leadIds: recorded.leadIds,
+      });
+      expect(app.listSignals({ runId: scouts.claude.run.id })).toEqual([
+        expect.objectContaining({
+          evidence: expect.objectContaining({
+            title: "Forward Deployed Engineer",
+            content: "Selected bounded job-page evidence.",
+          }),
+        }),
+      ]);
+      expect(app.listLeads()).toHaveLength(1);
+      expect(app.listScoutRunCheckpoints(scouts.claude.run.id)).toEqual([
+        expect.objectContaining({
+          phase: "discovery",
+          checkpoint: "Selected one attributable role from Web Search.",
+        }),
+      ]);
+    } finally {
+      client.close();
+      server.stop();
+    }
+  });
+
   test("Codex and Claude expose equivalent MCP tools, journey outputs, and permissions", async () => {
     const fixtureValue = fixture();
     await fixtureValue.server.start();

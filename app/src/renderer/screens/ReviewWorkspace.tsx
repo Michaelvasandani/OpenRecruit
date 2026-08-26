@@ -93,25 +93,30 @@ export function ReviewWorkspaceScreen() {
             Structured discovery activity and Candidate review context.
           </p>
         </div>
-        <Button
-          type="button"
-          size="sm"
-          disabled={!scoutId || launch.isPending}
-          onClick={() =>
-            scoutId &&
-            launch.mutate({
-              scoutId,
-              idempotencyKey: `review-run-${crypto.randomUUID()}`,
-            })
-          }
-        >
-          {launch.isPending ? (
-            <Loader2 className="size-4 animate-spin" />
-          ) : (
-            <PlayCircle className="size-4" />
-          )}
-          Run now
-        </Button>
+        <div className="flex flex-col items-end gap-1">
+          <Button
+            type="button"
+            size="sm"
+            disabled={!scoutId || launch.isPending || Boolean(center.data?.activeRun)}
+            onClick={() =>
+              scoutId &&
+              launch.mutate({
+                scoutId,
+                idempotencyKey: `review-run-${crypto.randomUUID()}`,
+              })
+            }
+          >
+            {launch.isPending ? (
+              <Loader2 className="size-4 animate-spin" />
+            ) : (
+              <PlayCircle className="size-4" />
+            )}
+            {center.data?.activeRun ? "Run in progress" : "Run now"}
+          </Button>
+          {launch.error ? (
+            <p className="max-w-80 text-right text-xs text-destructive">{launch.error.message}</p>
+          ) : null}
+        </div>
       </header>
       <div className="grid min-h-0 flex-1 grid-cols-[minmax(0,1fr)_22rem]">
         <RunCenterPane query={center} connected={connected} onSelectLead={setSelectedLeadId} />
