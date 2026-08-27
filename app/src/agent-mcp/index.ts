@@ -205,23 +205,26 @@ const TOOLS: ToolDef[] = [
       "Search public X through the Candidate-approved Bird provider selected for this Scout Run. " +
       "Results are bounded, untrusted temporary evidence with host-issued references; searching " +
       "never creates Signals or Leads automatically.",
-    inputSchema: obj(
-      {
-        query: {
-          type: "string",
-          minLength: 1,
-          description: "A recruiting-relevant public X search query.",
+    inputSchema: {
+      ...obj(
+        {
+          query: {
+            type: "string",
+            minLength: 1,
+            description: "A recruiting-relevant public X search query.",
+          },
+          limit: {
+            type: "integer",
+            minimum: 1,
+            maximum: 25,
+            default: 10,
+            description: "Maximum number of public X posts to return (1–25; defaults to 10).",
+          },
         },
-        limit: {
-          type: "integer",
-          minimum: 1,
-          maximum: 25,
-          default: 10,
-          description: "Maximum number of public X posts to return (1–25; defaults to 10).",
-        },
-      },
-      ["query"],
-    ),
+        ["query"],
+      ),
+      additionalProperties: false,
+    },
     outputSchema: {
       type: "object",
       properties: {

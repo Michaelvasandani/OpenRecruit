@@ -343,7 +343,11 @@ export class LocalApiServer {
     const scoutId = recruiting.resolveScoutForAgent(agentId);
     if (!scoutId) return json(res, 404, { error: "unknown Scout" });
     const body = await readJson(req);
-    if (!body || typeof body.query !== "string") {
+    if (
+      !body ||
+      typeof body.query !== "string" ||
+      Object.keys(body).some((key) => key !== "query" && key !== "limit")
+    ) {
       return json(res, 400, { error: "XSearch query is required", code: "VALIDATION" });
     }
     const controller = new AbortController();
