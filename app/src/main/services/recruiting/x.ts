@@ -773,7 +773,22 @@ function birdUnavailable(value: unknown, depth = 0): boolean {
 }
 
 function birdRecordUnavailable(value: Record<string, unknown>): boolean {
-  if (value.deleted === true || value.available === false) return true;
+  if (
+    value.deleted === true ||
+    value.available === false ||
+    value.protected === true ||
+    (value.withheld !== undefined && value.withheld !== null)
+  )
+    return true;
+  const author = isRecord(value.author)
+    ? value.author
+    : isRecord(value.user)
+      ? value.user
+      : isRecord(value.author_identity)
+        ? value.author_identity
+        : birdIncludedAuthor(value);
+  if (author?.protected === true || (author?.withheld !== undefined && author?.withheld !== null))
+    return true;
   const status = value.status ?? value.code ?? value.error_code ?? value.errorCode;
   return status === 404 || status === 410 || status === "404" || status === "410";
 }
@@ -1019,23 +1034,43 @@ function normalizeBirdPost(value: Record<string, unknown>, retentionUntil?: numb
   );
   const text = stringValue(value.text ?? value.full_text ?? value.content, 10_000) ?? "";
   const createdAt = normalizeBirdTimestamp(value.created_at ?? value.createdAt ?? value.timestamp);
+  const authorProtected =
+    authorValue?.protected === true ||
+    authorValue?.isProtected === true ||
+    value.protected === true;
+  const authorWithheld =
+    value.withheld ?? value.withheldReason ?? authorValue?.withheld ?? authorValue?.withheldReason;
   const author = authorId
     ? {
         id: authorId,
         username,
         name,
-        protected: false,
-        withheld: null,
+        protected: authorProtected,
+        withheld: authorWithheld ?? null,
       }
     : null;
+  const state: FeedItemMetadata["state"] =
+    value.deleted === true
+      ? "deleted"
+      : authorProtected
+        ? "protected"
+        : authorWithheld !== undefined && authorWithheld !== null
+          ? "withheld"
+          : value.available === false ||
+              value.status === 404 ||
+              value.status === 410 ||
+              value.status === "404" ||
+              value.status === "410"
+            ? "deleted_or_unavailable"
+            : "available";
   const metadata: FeedItemMetadata = {
     provider: "bird",
-    state: "available",
+    state,
     trust: "untrusted_evidence",
     author,
     editHistory: [id],
-    withheld: null,
-    protected: false,
+    withheld: authorWithheld ?? null,
+    protected: authorProtected,
     retentionUntil: retentionUntil ?? null,
   };
   return [
@@ -1216,7 +1251,7 @@ function normalizeXPost(
   ];
 }
 
-function unavailableXItem(
+export function unavailableXItem(
   id: string,
   state: FeedItemMetadata["state"],
   retentionUntil?: number,

@@ -1,10 +1,11 @@
 import { createHash, randomUUID } from "node:crypto";
-import { and, asc, eq, inArray } from "drizzle-orm";
+import { and, asc, eq, inArray, lte } from "drizzle-orm";
 import type { Db } from "../../db/client";
 import {
   candidateDecisions,
   commandReceipts,
   domainClock,
+  fitEvaluationSignalLinks,
   fitEvaluations,
   leadSignalLinks,
   leads,
@@ -332,7 +333,21 @@ export class CandidateDecisionApplication {
           : eq(fitEvaluations.opportunityId, subjectId),
       )
       .all()
-      .filter((row) => row.freshness === "fresh" && row.staleAt === null && row.createdAt <= at);
+      .filter((row) => row.freshness === "fresh" && row.staleAt === null && row.createdAt <= at)
+      .filter(
+        (row) =>
+          !this.db
+            .select({ signalId: fitEvaluationSignalLinks.signalId })
+            .from(fitEvaluationSignalLinks)
+            .innerJoin(signals, eq(signals.id, fitEvaluationSignalLinks.signalId))
+            .where(
+              and(
+                eq(fitEvaluationSignalLinks.evaluationId, row.id),
+                lte(signals.retentionUntil, at),
+              ),
+            )
+            .get(),
+      );
     const latestDismissal = state.latestDismissalId
       ? this.getCandidateDecision(state.latestDismissalId)
       : latestReversal;

@@ -42,11 +42,15 @@ class ReadProvider implements XProvider {
   }
 }
 
-function fixture(provider: XProvider) {
-  const app = new RecruitingApplication(makeDb(), () => Date.parse("2026-08-23T16:00:00Z"), {
+function fixture(
+  provider: XProvider,
+  resolvedPath = "/private/bird",
+  now = () => Date.parse("2026-08-23T16:00:00Z"),
+) {
+  const app = new RecruitingApplication(makeDb(), now, {
     birdAccess: () => ({
-      configuredPath: "/private/bird",
-      resolvedPath: "/private/bird",
+      configuredPath: resolvedPath,
+      resolvedPath,
       fingerprint: "fingerprint",
       version: "0.8.0",
       accountIdentity: { id: "42", username: "candidate", displayName: "Candidate" },
@@ -261,6 +265,255 @@ describe("Bird XRead", () => {
     expect(
       app.listSignals().some((signal) => signal.evidence.content === "A different hiring update"),
     ).toBe(true);
+  });
+
+  test("revalidates stale Bird evidence, refreshes unchanged metadata, and records the Attempt", async () => {
+    let now = Date.parse("2026-08-23T16:00:00Z");
+    const provider = new DeterministicXProvider({
+      read: [
+        { status: 200, body: JSON.stringify(responseBody) },
+        { status: 200, body: JSON.stringify(responseBody) },
+      ],
+    });
+    const { app, scout } = fixture(provider, "/private/bird", () => now);
+    const first = await app.xRead({ scoutId: scout.id, target: postId });
+    app.recordSignalForScout({ scoutId: scout.id, evidenceReference: first.evidenceReference });
+    const original = app.listSignals()[0];
+    if (!original) throw new Error("expected recorded Signal");
+    now += 24 * 60 * 60 * 1_000 + 1;
+    expect(app.listSignals()[0]?.freshness).toBe("stale");
+    expect(app.listSignals()[0]?.evidence.content).toBe("");
+    expect(app.listLeads()[0]?.summary).toBeNull();
+    app.completeRunForScout({ scoutId: scout.id, outcome: "completed" });
+    const revalidationRun = app.launchScoutRun({
+      scoutId: scout.id,
+      idempotencyKey: "x-read-revalidation-run",
+    }).value;
+
+    const refreshed = await app.revalidateXSignal({
+      runId: revalidationRun.id,
+      signalId: original.id,
+    });
+
+    expect(refreshed.outcome).toBe("succeeded_with_items");
+    expect(provider.requests.at(-1)?.operation).toBe("read");
+    expect(app.listSignals()).toHaveLength(1);
+    const current = app.listSignals()[0];
+    expect(current?.id).toBe(original.id);
+    expect(current?.observedAt).toBe(now);
+    expect(current?.retentionUntil).toBe(now + 24 * 60 * 60 * 1_000);
+    expect(JSON.parse(refreshed.requestedScope)).toMatchObject({
+      revalidation: true,
+      requestedPostId: postId,
+    });
+  });
+
+  test("material revalidation appends immutable evidence and links the superseding Signal", async () => {
+    let now = Date.parse("2026-08-23T16:00:00Z");
+    const provider = new DeterministicXProvider({
+      read: [
+        { status: 200, body: JSON.stringify(responseBody) },
+        {
+          status: 200,
+          body: JSON.stringify({ ...responseBody, text: "A materially edited post" }),
+        },
+      ],
+    });
+    const { app, scout } = fixture(provider, "/private/bird", () => now);
+    const first = await app.xRead({ scoutId: scout.id, target: postId });
+    app.recordSignalForScout({ scoutId: scout.id, evidenceReference: first.evidenceReference });
+    const original = app.listSignals()[0];
+    if (!original) throw new Error("expected recorded Signal");
+    now += 24 * 60 * 60 * 1_000 + 1;
+    app.completeRunForScout({ scoutId: scout.id, outcome: "completed" });
+    const revalidationRun = app.launchScoutRun({
+      scoutId: scout.id,
+      idempotencyKey: "x-read-material-revalidation-run",
+    }).value;
+
+    await app.revalidateXSignal({ runId: revalidationRun.id, signalId: original.id });
+
+    const signals = app.listSignals();
+    expect(signals).toHaveLength(2);
+    expect(signals.find((signal) => signal.id !== original.id)?.supersededSignalId).toBe(
+      original.id,
+    );
+    expect(signals.some((signal) => signal.evidence.content === "A materially edited post")).toBe(
+      true,
+    );
+  });
+
+  test("purges proven-unavailable Bird evidence into a safe tombstone and preserves transient failures", async () => {
+    let now = Date.parse("2026-08-23T16:00:00Z");
+    const provider = new DeterministicXProvider({
+      read: [
+        { status: 200, body: JSON.stringify(responseBody) },
+        { status: 503, body: "", failureCategory: "provider_failure" },
+        { status: 200, body: JSON.stringify({ error: "not found" }) },
+        { status: 200, body: JSON.stringify(responseBody) },
+        { status: 200, body: JSON.stringify(responseBody) },
+      ],
+    });
+    const { app, scout } = fixture(provider, "/private/bird", () => now);
+    const first = await app.xRead({ scoutId: scout.id, target: postId });
+    app.recordSignalForScout({ scoutId: scout.id, evidenceReference: first.evidenceReference });
+    const original = app.listSignals()[0];
+    if (!original) throw new Error("expected recorded Signal");
+    now += 24 * 60 * 60 * 1_000 + 1;
+    app.completeRunForScout({ scoutId: scout.id, outcome: "completed" });
+    const revalidationRun = app.launchScoutRun({
+      scoutId: scout.id,
+      idempotencyKey: "x-read-unavailable-revalidation-run",
+    }).value;
+
+    const transient = await app.revalidateXSignal({
+      runId: revalidationRun.id,
+      signalId: original.id,
+    });
+    expect(transient.outcome).toBe("transient_failure");
+    expect(app.listSignals()).toHaveLength(1);
+
+    const unavailable = await app.revalidateXSignal({
+      runId: revalidationRun.id,
+      signalId: original.id,
+    });
+    expect(unavailable.outcome).toBe("rejected");
+    expect(app.listSignals()).toHaveLength(0);
+    const tombstone = app.inspectEvidence({
+      scope: { kind: "item", sourceItemId: original.sourceItemId },
+    });
+    expect(tombstone.items).toHaveLength(0);
+
+    // An ordinary refresh cannot resurrect an unchanged deleted post.
+    await app.readSource({
+      runId: revalidationRun.id,
+      sourceId: revalidationRun.sourceIds[0] as string,
+      readPostId: postId,
+      persistItems: true,
+    });
+    expect(app.listSignals()).toHaveLength(0);
+
+    // An explicit Candidate revalidation can observe the same identity again.
+    await app.revalidateXSignal({ runId: revalidationRun.id, sourceItemId: original.sourceItemId });
+    expect(app.listSignals()).toHaveLength(1);
+  });
+
+  test("an authorized XRead purges a proven-unavailable Signal without persisting success", async () => {
+    const provider = new DeterministicXProvider({
+      read: [
+        { status: 200, body: JSON.stringify(responseBody) },
+        { status: 404, body: "" },
+      ],
+    });
+    const { app, scout } = fixture(provider);
+    const first = await app.xRead({ scoutId: scout.id, target: postId });
+    app.recordSignalForScout({ scoutId: scout.id, evidenceReference: first.evidenceReference });
+    const signal = app.listSignals()[0];
+    if (!signal) throw new Error("expected recorded Signal");
+
+    await expect(app.xRead({ scoutId: scout.id, target: postId })).rejects.toThrow(
+      /deleted|unavailable/i,
+    );
+    expect(app.listSignals()).toHaveLength(0);
+    expect(
+      app.inspectEvidence({ scope: { kind: "item", sourceItemId: signal.sourceItemId } }).items,
+    ).toHaveLength(0);
+  });
+
+  test("preserves a Lead supported by another Signal when one X post is unavailable", async () => {
+    const secondPost = {
+      ...responseBody,
+      id: "1900000000000000043",
+      text: "A second independently supporting post",
+    };
+    const provider = new DeterministicXProvider({
+      read: [
+        { status: 200, body: JSON.stringify(responseBody) },
+        { status: 200, body: JSON.stringify(secondPost) },
+        { status: 200, body: JSON.stringify({ error: "not found" }) },
+      ],
+    });
+    const { app, scout, run } = fixture(provider);
+    const firstRead = await app.xRead({ scoutId: scout.id, target: postId });
+    app.recordSignalForScout({ scoutId: scout.id, evidenceReference: firstRead.evidenceReference });
+    const secondRead = await app.xRead({ scoutId: scout.id, target: secondPost.id });
+    app.recordSignalForScout({
+      scoutId: scout.id,
+      evidenceReference: secondRead.evidenceReference,
+    });
+    const first = app.listSignals().find((signal) => signal.providerIdentity === postId);
+    const second = app.listSignals().find((signal) => signal.providerIdentity === secondPost.id);
+    const lead = app.listLeads().find((candidate) => candidate.signalIds.includes(first?.id ?? ""));
+    if (!first || !second || !lead) throw new Error("expected independently supported evidence");
+    app.linkSignalToLead({
+      leadId: lead.id,
+      signalId: second.id,
+      expectedRevision: lead.revision,
+      idempotencyKey: "x-read-independent-support",
+    });
+    expect(app.getLead(lead.id)?.signalIds).toEqual(expect.arrayContaining([first.id, second.id]));
+    const evaluation = app.createFitEvaluation({
+      leadId: lead.id,
+      profileVersionId: run.profileVersionId as string,
+      runId: run.id,
+      hardConstraints: [
+        {
+          key: "role",
+          result: "unknown",
+          explanation: "Pending review",
+          signalIds: [first.id],
+        },
+      ],
+      preferences: [],
+      evidence: [{ signalId: first.id, claim: "Public role evidence", kind: "fact" }],
+      idempotencyKey: "x-read-independent-fit",
+    });
+    const investigation = app.createInvestigation({
+      leadId: lead.id,
+      question: "Is the role still available?",
+      idempotencyKey: "x-read-independent-investigation",
+    });
+    const attempt = app.recordInvestigationAttempt({
+      investigationId: investigation.value.id,
+      scoutId: scout.id,
+      runId: run.id,
+      profileVersionId: run.profileVersionId as string,
+      evidence: [{ signalId: first.id, claim: "The role is public", kind: "fact" }],
+      conclusion: "The role is available.",
+      outcome: "succeeded",
+      idempotencyKey: "x-read-independent-attempt",
+    });
+    const decision = app.recordCandidateDecision({
+      leadId: lead.id,
+      kind: "review_outcome",
+      evidenceSignalIds: [first.id],
+      detail: { note: "Reviewed" },
+      expectedRevision: app.getLead(lead.id)?.revision ?? 0,
+      idempotencyKey: "x-read-independent-decision",
+    });
+    const opportunity = app.promoteLead({
+      leadId: lead.id,
+      expectedRevision: app.getLead(lead.id)?.revision,
+      idempotencyKey: "x-read-independent-opportunity",
+    });
+
+    await app.revalidateXSignal({ runId: run.id, signalId: first.id });
+
+    expect(app.listSignals().map((signal) => signal.id)).toEqual([second.id]);
+    expect(app.getLead(lead.id)?.signalIds).toEqual([second.id]);
+    expect(app.getLead(lead.id)?.summary).toBe(secondPost.text);
+    expect(app.getFitEvaluation(evaluation.id)).toMatchObject({
+      freshness: "stale",
+      staleReason: "evidence_deleted",
+      evidence: [],
+    });
+    expect(app.getInvestigationAttempt(attempt.value.id)).toMatchObject({
+      freshness: "stale",
+      outcome: "unknown",
+      evidence: [],
+    });
+    expect(app.getCandidateDecision(decision.value.id)?.detail.evidenceSignalIds).toEqual([]);
+    expect(app.getOpportunity(opportunity.value.id)?.state).toBe("active");
   });
 
   test("accepts one ID or canonical X post URL and rejects other target shapes", () => {

@@ -6,7 +6,7 @@ import {
   FitEvidenceCitation,
   type OpportunitySummary,
 } from "@shared/recruiting";
-import { and, asc, desc, eq, inArray, sql } from "drizzle-orm";
+import { and, asc, desc, eq, inArray, lte, sql } from "drizzle-orm";
 import type { Db } from "../../db/client";
 import {
   commandReceipts,
@@ -169,8 +169,16 @@ export class FitEvaluationApplication {
           `Signal ${unattributed} has no attributable Scout Run evidence`,
         );
       }
+      const at = this.now();
+      const expiredSignalIds = new Set(
+        citedSignals
+          .filter((signal) => signal.retentionUntil !== null && signal.retentionUntil <= at)
+          .map((signal) => signal.id),
+      );
       const staleEvidence = new Set(
-        evidence.filter((item) => item.freshness === "stale").map((item) => item.signalId),
+        evidence
+          .filter((item) => item.freshness === "stale" || expiredSignalIds.has(item.signalId))
+          .map((item) => item.signalId),
       );
       for (const [category, conclusions] of [
         ["Hard Constraint", hardConstraints],
@@ -193,7 +201,7 @@ export class FitEvaluationApplication {
           item.result === "satisfied" &&
           (command.freshness === "stale" ||
             item.evidenceFreshness === "stale" ||
-            item.signalIds.some((id) => staleEvidence.has(id)))
+            item.signalIds.some((id) => staleEvidence.has(id) || expiredSignalIds.has(id)))
         ) {
           throw new RecruitingError(
             "VALIDATION",
@@ -202,14 +210,28 @@ export class FitEvaluationApplication {
         }
       }
 
-      const at = this.now();
+      const effectiveHardConstraints = hardConstraints.map((item) =>
+        item.signalIds.some((id) => expiredSignalIds.has(id))
+          ? { ...item, evidenceFreshness: "stale" as const }
+          : item,
+      );
+      const effectivePreferences = preferences.map((item) =>
+        item.signalIds.some((id) => expiredSignalIds.has(id))
+          ? { ...item, evidenceFreshness: "stale" as const }
+          : item,
+      );
+      const effectiveEvidence = evidence.map((item) =>
+        expiredSignalIds.has(item.signalId) ? { ...item, freshness: "stale" as const } : item,
+      );
+      const evaluationFreshness =
+        command.freshness === "stale" || expiredSignalIds.size > 0 ? "stale" : "fresh";
       const detail = {
-        hardConstraints,
-        preferences,
-        evidence: evidence.map((item) => withAttribution(tx, item, citedSignals)),
+        hardConstraints: effectiveHardConstraints,
+        preferences: effectivePreferences,
+        evidence: effectiveEvidence.map((item) => withAttribution(tx, item, citedSignals)),
         conflicts: uniqueStrings(command.conflicts ?? []),
         unknowns: uniqueStrings(command.unknowns ?? []),
-        freshness: command.freshness ?? "fresh",
+        freshness: evaluationFreshness,
         nextReconsiderationAt: command.nextReconsiderationAt ?? null,
         strategyMaterial: run.strategySnapshot ?? "",
         policyMaterial: run.policySnapshot ?? "",
@@ -229,8 +251,8 @@ export class FitEvaluationApplication {
           policyHash,
           detail: JSON.stringify(detail),
           freshness: detail.freshness,
-          staleReason: null,
-          staleAt: null,
+          staleReason: evaluationFreshness === "stale" ? "evidence_stale" : null,
+          staleAt: evaluationFreshness === "stale" ? at : null,
           createdAt: at,
         })
         .run();
@@ -279,12 +301,12 @@ export class FitEvaluationApplication {
       .all();
     if (subjectId)
       rows = rows.filter((row) => row.leadId === subjectId || row.opportunityId === subjectId);
-    return rows.map((row) => toFitSummary(row));
+    return rows.map((row) => toFitSummary(row, this.db, this.now()));
   }
 
   getFitEvaluation(id: string): FitEvaluationSummary | null {
     const row = this.db.select().from(fitEvaluations).where(eq(fitEvaluations.id, id)).get();
-    return row ? toFitSummary(row) : null;
+    return row ? toFitSummary(row, this.db, this.now()) : null;
   }
 
   listOpportunities(leadId?: string): OpportunitySummary[] {
@@ -464,8 +486,35 @@ function withAttribution(
   };
 }
 
-function toFitSummary(row: FitRow): FitEvaluationSummary {
+function toFitSummary(row: FitRow, db?: FitDb, at = Date.now()): FitEvaluationSummary {
   const detail = parseDetail(row.detail);
+  const expiredSignalIds = db
+    ? new Set(
+        db
+          .select({ signalId: fitEvaluationSignalLinks.signalId })
+          .from(fitEvaluationSignalLinks)
+          .innerJoin(signals, eq(signals.id, fitEvaluationSignalLinks.signalId))
+          .where(
+            and(eq(fitEvaluationSignalLinks.evaluationId, row.id), lte(signals.retentionUntil, at)),
+          )
+          .all()
+          .map((item) => item.signalId),
+      )
+    : new Set<string>();
+  const stale = row.freshness === "stale" || expiredSignalIds.size > 0;
+  const hardConstraints = detail.hardConstraints.map((item) =>
+    item.signalIds.some((id) => expiredSignalIds.has(id))
+      ? { ...item, evidenceFreshness: "stale" as const }
+      : item,
+  );
+  const preferences = detail.preferences.map((item) =>
+    item.signalIds.some((id) => expiredSignalIds.has(id))
+      ? { ...item, evidenceFreshness: "stale" as const }
+      : item,
+  );
+  const evidence = detail.evidence.map((item) =>
+    expiredSignalIds.has(item.signalId) ? { ...item, freshness: "stale" as const } : item,
+  );
   return {
     id: row.id,
     leadId: row.leadId,
@@ -476,14 +525,14 @@ function toFitSummary(row: FitRow): FitEvaluationSummary {
     policyHash: row.policyHash,
     strategyMaterial: detail.strategyMaterial,
     policyMaterial: detail.policyMaterial,
-    hardConstraints: detail.hardConstraints,
-    preferences: detail.preferences,
-    evidence: detail.evidence,
+    hardConstraints,
+    preferences,
+    evidence,
     conflicts: detail.conflicts,
     unknowns: detail.unknowns,
-    freshness: row.freshness === "stale" ? "stale" : detail.freshness,
-    staleReason: row.staleReason,
-    staleAt: row.staleAt,
+    freshness: stale ? "stale" : detail.freshness,
+    staleReason: stale ? (row.staleReason ?? "evidence_stale") : row.staleReason,
+    staleAt: stale ? (row.staleAt ?? at) : row.staleAt,
     currentProfileVersionId: detail.currentProfileVersionId ?? row.profileVersionId,
     nextReconsiderationAt: detail.nextReconsiderationAt,
     createdAt: row.createdAt,

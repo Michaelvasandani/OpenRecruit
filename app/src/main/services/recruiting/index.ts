@@ -82,6 +82,7 @@ import {
   type ReadSourceCommand,
   type RecordSignalCommand,
   type RecordXEvidenceCommand,
+  type RevalidateXSignalCommand,
   ScoutRunApplication,
   type ScoutRunApplicationOptions,
   type SetScoutSourcesCommand,
@@ -204,6 +205,7 @@ export type {
   RecordSignalCommand,
   RecordSourceOutcomeCommand,
   RecordXEvidenceCommand,
+  RevalidateXSignalCommand,
   ScoutRunApplicationOptions,
   SetScoutSourcesCommand,
   SetSourceDisabledCommand,
@@ -506,6 +508,10 @@ export class RecruitingApplication {
 
   xRead(command: XReadCommand) {
     return this.scoutRuns.xRead(command);
+  }
+
+  revalidateXSignal(command: RevalidateXSignalCommand) {
+    return this.scoutRuns.revalidateXSignal(command);
   }
 
   recordXEvidence(command: RecordXEvidenceCommand) {

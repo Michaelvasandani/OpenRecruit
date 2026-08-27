@@ -171,6 +171,8 @@ export const SignalSummary = z.object({
   retrievedAt: z.number().int(),
   evidence: SignalEvidence,
   retentionUntil: z.number().int().nullable(),
+  /** Retention expiry makes provider text stale until an authorized refresh. */
+  freshness: z.enum(["fresh", "stale"]).default("fresh"),
   supersededSignalId: z.string().nullable(),
   canonicalUrl: z.string().nullable(),
   providerIdentity: z.string().nullable(),

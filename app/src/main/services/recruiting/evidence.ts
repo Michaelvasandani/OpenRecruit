@@ -8,7 +8,7 @@ import {
   InvestigationEvidence,
   type SignalEvidence,
 } from "@shared/recruiting";
-import { and, asc, desc, eq, inArray } from "drizzle-orm";
+import { and, asc, desc, eq, inArray, sql } from "drizzle-orm";
 import type { Db } from "../../db/client";
 import {
   candidateDecisions,
@@ -42,7 +42,7 @@ export type DeleteEvidenceCommand = {
   idempotencyKey: string;
 };
 
-type EvidenceDb = Pick<Db, "select" | "insert" | "update" | "delete">;
+export type EvidenceDb = Pick<Db, "select" | "insert" | "update" | "delete">;
 type ReceiptLookup = { result: string | null; payloadHash: string };
 
 /**
@@ -82,7 +82,10 @@ export class EvidenceApplication {
           .where(eq(sourceItems.id, row.sourceItemId))
           .get();
         if (!sourceItem) return [];
+        const expired = row.retentionUntil !== null && row.retentionUntil <= inspectedAt;
         const evidence = parseEvidence(row.evidence);
+        const safeEvidence =
+          expired && row.adapterVersion === "bird" ? { ...evidence, content: "" } : evidence;
         return [
           {
             sourceItemId: row.sourceItemId,
@@ -92,7 +95,7 @@ export class EvidenceApplication {
             canonicalUrl: sourceItem.canonicalUrl,
             providerIdentity: sourceItem.providerIdentity,
             fingerprint: row.fingerprint,
-            evidence,
+            evidence: safeEvidence,
             retentionUntil: row.retentionUntil,
             retentionState:
               row.retentionUntil !== null && row.retentionUntil <= inspectedAt
@@ -406,7 +409,7 @@ function signalsForScope(db: EvidenceDb, scope: EvidenceScope, sourceItemIds: st
   return db.select().from(signals).where(inArray(signals.sourceItemId, sourceItemIds)).all();
 }
 
-function recalculateLead(db: EvidenceDb, leadId: string, at: number): void {
+export function recalculateLead(db: EvidenceDb, leadId: string, at: number): void {
   const row = db.select().from(leads).where(eq(leads.id, leadId)).get();
   if (!row) return;
   const latest = db
@@ -441,6 +444,204 @@ function recalculateLead(db: EvidenceDb, leadId: string, at: number): void {
     })
     .where(eq(leads.id, leadId))
     .run();
+}
+
+/** Purge Signals whose public Source has proven that the post is unavailable.
+ * This shares Candidate evidence-deletion recalculation with provider-driven
+ * revalidation, so dependent conclusions cannot continue to cite removed text.
+ * Source Item identity/tombstone updates are intentionally left to the caller. */
+export function purgeUnavailableSignals(
+  db: EvidenceDb,
+  deletedSignalIds: string[],
+  at: number,
+): {
+  affectedLeadIds: string[];
+  affectedOpportunityIds: string[];
+  affectedInvestigationIds: string[];
+  affectedFitEvaluationIds: string[];
+} {
+  const ids = unique(deletedSignalIds);
+  if (ids.length === 0) {
+    return {
+      affectedLeadIds: [],
+      affectedOpportunityIds: [],
+      affectedInvestigationIds: [],
+      affectedFitEvaluationIds: [],
+    };
+  }
+  const deleted = new Set(ids);
+  const affectedLeadIds = unique(
+    db
+      .select({ leadId: leadSignalLinks.leadId })
+      .from(leadSignalLinks)
+      .where(inArray(leadSignalLinks.signalId, ids))
+      .all()
+      .map((row) => row.leadId),
+  );
+  const affectedOpportunityIds = unique(
+    affectedLeadIds.length
+      ? db
+          .select({ id: opportunities.id })
+          .from(opportunities)
+          .where(inArray(opportunities.leadId, affectedLeadIds))
+          .all()
+          .map((row) => row.id)
+      : [],
+  );
+  const affectedFitEvaluationIds = unique(
+    db
+      .select({ evaluationId: fitEvaluationSignalLinks.evaluationId })
+      .from(fitEvaluationSignalLinks)
+      .where(inArray(fitEvaluationSignalLinks.signalId, ids))
+      .all()
+      .map((row) => row.evaluationId),
+  );
+  const investigationsById = new Map(
+    db
+      .select()
+      .from(investigations)
+      .all()
+      .map((row) => [row.id, row] as const),
+  );
+  const affectedInvestigationIds = unique(
+    db
+      .select()
+      .from(investigationAttempts)
+      .all()
+      .filter((attempt) => {
+        const evidence = parseInvestigationEvidence(attempt.evidence);
+        const investigation = investigationsById.get(attempt.investigationId);
+        return (
+          evidence.some((item) => deleted.has(item.signalId)) ||
+          Boolean(
+            investigation &&
+              ((investigation.leadId && affectedLeadIds.includes(investigation.leadId)) ||
+                (investigation.opportunityId &&
+                  affectedOpportunityIds.includes(investigation.opportunityId))),
+          )
+        );
+      })
+      .map((attempt) => attempt.investigationId),
+  );
+
+  for (const evaluationId of affectedFitEvaluationIds) {
+    const evaluation = db
+      .select()
+      .from(fitEvaluations)
+      .where(eq(fitEvaluations.id, evaluationId))
+      .get();
+    if (!evaluation) continue;
+    db.update(fitEvaluations)
+      .set({
+        detail: JSON.stringify(recalculateFitDetail(evaluation.detail, deleted)),
+        freshness: "stale",
+        staleReason: "evidence_deleted",
+        staleAt: at,
+      })
+      .where(eq(fitEvaluations.id, evaluationId))
+      .run();
+  }
+  for (const attempt of db.select().from(investigationAttempts).all()) {
+    const detail = recalculateInvestigationAttempt(attempt.evidence, attempt.conclusion, deleted);
+    if (!detail.changed) continue;
+    db.update(investigationAttempts)
+      .set({
+        evidence: JSON.stringify(detail.evidence),
+        conclusion: detail.conclusion,
+        uncertainty: detail.uncertainty,
+        outcome: detail.outcome,
+        freshness: "stale",
+      })
+      .where(eq(investigationAttempts.id, attempt.id))
+      .run();
+    db.update(investigations)
+      .set({ revision: sql`${investigations.revision} + 1`, updatedAt: at })
+      .where(eq(investigations.id, attempt.investigationId))
+      .run();
+  }
+  for (const decision of db.select().from(candidateDecisions).all()) {
+    const detail = redactDeletedEvidence(parseObject(decision.detail), deleted);
+    if (JSON.stringify(detail) !== decision.detail) {
+      db.update(candidateDecisions)
+        .set({ detail: JSON.stringify(detail) })
+        .where(eq(candidateDecisions.id, decision.id))
+        .run();
+    }
+  }
+  db.delete(fitEvaluationSignalLinks).where(inArray(fitEvaluationSignalLinks.signalId, ids)).run();
+  db.delete(leadSignalLinks).where(inArray(leadSignalLinks.signalId, ids)).run();
+  db.delete(signalAttributions).where(inArray(signalAttributions.signalId, ids)).run();
+  db.delete(signals).where(inArray(signals.id, ids)).run();
+
+  for (const leadId of affectedLeadIds) recalculateLead(db, leadId, at);
+  // Keep the historical behavior for an unsupported, dependency-free Lead:
+  // an unavailable post should not leave an empty identity in the main list.
+  // When downstream review rows still reference it, retain the recalculated
+  // "Evidence deleted" projection so foreign-key history stays valid.
+  for (const leadId of affectedLeadIds) {
+    const supported = db
+      .select({ signalId: leadSignalLinks.signalId })
+      .from(leadSignalLinks)
+      .where(eq(leadSignalLinks.leadId, leadId))
+      .limit(1)
+      .get();
+    if (supported) continue;
+    const hasDependentHistory =
+      db
+        .select({ id: opportunities.id })
+        .from(opportunities)
+        .where(eq(opportunities.leadId, leadId))
+        .get() ||
+      db
+        .select({ id: fitEvaluations.id })
+        .from(fitEvaluations)
+        .where(eq(fitEvaluations.leadId, leadId))
+        .get() ||
+      db
+        .select({ id: investigations.id })
+        .from(investigations)
+        .where(eq(investigations.leadId, leadId))
+        .get() ||
+      db
+        .select({ id: candidateDecisions.id })
+        .from(candidateDecisions)
+        .where(eq(candidateDecisions.leadId, leadId))
+        .get();
+    if (hasDependentHistory) continue;
+    db.delete(leadAliases).where(eq(leadAliases.leadId, leadId)).run();
+    db.delete(leads).where(eq(leads.id, leadId)).run();
+  }
+  for (const opportunityId of affectedOpportunityIds) {
+    const opportunity = db
+      .select()
+      .from(opportunities)
+      .where(eq(opportunities.id, opportunityId))
+      .get();
+    if (!opportunity) continue;
+    const supported = db
+      .select({ signalId: leadSignalLinks.signalId })
+      .from(leadSignalLinks)
+      .where(eq(leadSignalLinks.leadId, opportunity.leadId))
+      .limit(1)
+      .get();
+    if (!supported) {
+      db.update(opportunities)
+        .set({
+          title: "Evidence deleted",
+          state: "unknown",
+          revision: opportunity.revision + 1,
+          updatedAt: at,
+        })
+        .where(eq(opportunities.id, opportunityId))
+        .run();
+    }
+  }
+  return {
+    affectedLeadIds,
+    affectedOpportunityIds,
+    affectedInvestigationIds,
+    affectedFitEvaluationIds,
+  };
 }
 
 function recalculateFitDetail(value: string, deleted: Set<string>): Record<string, unknown> {

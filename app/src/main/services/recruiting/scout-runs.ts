@@ -51,6 +51,7 @@ import type { BirdAccess } from "../settings";
 import { BIRD_SUPPORTED_VERSION } from "../settings/bird";
 import { assertSafeMaterial } from "./contract";
 import { RecruitingError, type RecruitingFailureCategory } from "./errors";
+import { purgeUnavailableSignals } from "./evidence";
 import {
   type FeedItem,
   type FeedProvider,
@@ -66,6 +67,7 @@ import {
   normalizeBirdReadResponse,
   normalizeBirdResponse,
   normalizeXResponse,
+  unavailableXItem,
   XApiError,
   type XApiResponse,
   type XProvider,
@@ -187,6 +189,21 @@ export type ReadSourceCommand = {
   readCanonicalUrl?: string;
   signal?: AbortSignal;
   persistItems?: boolean;
+  /** Persist only proven-unavailable markers when an agent XRead is otherwise
+   * intentionally non-persisting. Successful XRead evidence still waits for
+   * an explicit RecordSignal. */
+  purgeUnavailable?: boolean;
+  /** Host-only lifecycle marker used when a stale Bird Signal is explicitly
+   * revalidated. Ordinary Source refreshes cannot resurrect a tombstone. */
+  revalidation?: { signalId: string; allowTombstoneReappearance?: boolean };
+};
+
+export type RevalidateXSignalCommand = {
+  runId: string;
+  /** Existing Signal ID, or the retained Source Item ID after a purge. */
+  signalId?: string;
+  sourceItemId?: string;
+  signal?: AbortSignal;
 };
 
 export type SourceAttemptResult = SourceAttemptSummaryValue & {
@@ -916,6 +933,12 @@ export class ScoutRunApplication {
             requestedCanonicalUrl: command.readCanonicalUrl ?? null,
           }
         : {}),
+      ...(command.revalidation
+        ? {
+            revalidation: true,
+            revalidatedSignalId: command.revalidation.signalId,
+          }
+        : {}),
       maxItems: budget.maxItems,
       maxPages: budget.maxPages,
       maxWallClockMs: budget.maxWallClockMs,
@@ -1021,7 +1044,10 @@ export class ScoutRunApplication {
             .where(eq(sourceAttempts.id, attemptId))
             .run();
         }
-        if (command.persistItems !== false) {
+        if (
+          command.persistItems !== false ||
+          (command.purgeUnavailable && items.some(isUnavailableItem))
+        ) {
           persistSignals(tx, {
             run,
             source,
@@ -1029,6 +1055,9 @@ export class ScoutRunApplication {
             attemptId,
             items,
             observedAt: completedAt,
+            allowTombstoneReappearance:
+              command.revalidation !== undefined &&
+              command.revalidation.allowTombstoneReappearance !== false,
           });
         }
         return toSourceAttemptSummary(
@@ -1798,6 +1827,9 @@ export class ScoutRunApplication {
       ) {
         return finish("rejected", {
           pageCount,
+          items: [
+            unavailableXItem(input.readPostId, "deleted_or_unavailable", retentionUntil, "bird"),
+          ],
           safeFailure: "The requested X post was deleted or is unavailable",
           accessPatch: {
             readiness: "ready",
@@ -1915,6 +1947,9 @@ export class ScoutRunApplication {
       ) {
         return finish("rejected", {
           pageCount,
+          items: [
+            unavailableXItem(input.readPostId, "deleted_or_unavailable", retentionUntil, "bird"),
+          ],
           safeFailure: "The requested X post was deleted or is unavailable",
           accessPatch: {
             readiness: "ready",
@@ -1977,6 +2012,18 @@ export class ScoutRunApplication {
             : "malformed_content",
           {
             pageCount,
+            ...(readContentError?.category === "deleted_or_unavailable" && input.readPostId
+              ? {
+                  items: [
+                    unavailableXItem(
+                      input.readPostId,
+                      "deleted_or_unavailable",
+                      retentionUntil,
+                      config.provider,
+                    ),
+                  ],
+                }
+              : {}),
             safeFailure:
               error instanceof XApiError ? error.message : "X returned malformed content",
             accessPatch: {
@@ -2235,6 +2282,7 @@ export class ScoutRunApplication {
       readCanonicalUrl: target.canonicalUrl,
       signal: command.signal,
       persistItems: false,
+      purgeUnavailable: true,
       budget: { maxItems: 1, maxPages: 1 },
     });
     if (attempt.outcome !== "succeeded_with_items") {
@@ -2289,6 +2337,73 @@ export class ScoutRunApplication {
       expiresAt: retrievedAt + X_EVIDENCE_TTL_MS,
     });
     return result;
+  }
+
+  /** Revalidate one recorded Bird Signal inside an already-authorized Scout
+   * Run. The read is still the ordinary bounded XRead path; this method only
+   * resolves the Signal's public identity and enables an explicit Candidate
+   * refresh to restore a tombstoned post. */
+  async revalidateXSignal(command: RevalidateXSignalCommand): Promise<SourceAttemptResult> {
+    const run = requireRun(this.db, command.runId);
+    if (!(ACTIVE_RUN_STATUSES as readonly string[]).includes(run.status)) {
+      throw new RecruitingError(
+        "CONFLICT",
+        `Run ${run.id} is ${run.status}; it cannot revalidate evidence`,
+      );
+    }
+    if (!command.signalId && !command.sourceItemId) {
+      throw new RecruitingError("VALIDATION", "A Signal or Source Item identity is required");
+    }
+    const signal = command.signalId
+      ? this.db.select().from(signals).where(eq(signals.id, command.signalId)).get()
+      : undefined;
+    if (command.signalId && !signal) {
+      throw new RecruitingError("NOT_FOUND", `Signal ${command.signalId} was not found`);
+    }
+    if (signal && command.sourceItemId && signal.sourceItemId !== command.sourceItemId) {
+      throw new RecruitingError(
+        "VALIDATION",
+        "Signal and Source Item identities must refer to the same public post",
+      );
+    }
+    const sourceItemId = signal?.sourceItemId ?? command.sourceItemId;
+    const sourceItem = sourceItemId
+      ? this.db.select().from(sourceItems).where(eq(sourceItems.id, sourceItemId)).get()
+      : undefined;
+    const sourceId = signal?.sourceId ?? sourceItem?.sourceId;
+    const selectedSourceIds =
+      snapshotSourceIds(run.overrideSnapshot) ?? this.selectedSourceIds(run.scoutId);
+    if (!sourceId || !selectedSourceIds.includes(sourceId)) {
+      throw new RecruitingError(
+        "CONFLICT",
+        "The Signal is not available to this authorized Scout Run",
+      );
+    }
+    const source = sourceId
+      ? this.db.select().from(sources).where(eq(sources.id, sourceId)).get()
+      : undefined;
+    if (
+      !source ||
+      source.kind !== "x" ||
+      xProviderFromConfig(source.config) !== "bird" ||
+      !sourceItem?.providerIdentity ||
+      !/^\d{1,30}$/.test(sourceItem.providerIdentity)
+    ) {
+      throw new RecruitingError("CONFLICT", "Only Bird-backed public X Signals can be revalidated");
+    }
+    return this.readSource({
+      runId: run.id,
+      sourceId: source.id,
+      readPostId: sourceItem.providerIdentity,
+      readCanonicalUrl: sourceItem.canonicalUrl ?? undefined,
+      signal: command.signal,
+      persistItems: true,
+      revalidation: {
+        signalId: signal?.id ?? command.sourceItemId ?? "unknown",
+        allowTombstoneReappearance: true,
+      },
+      budget: { maxItems: 1, maxPages: 1 },
+    });
   }
 
   /** Persist one reference returned by a prior XSearch or XRead. The
@@ -2448,12 +2563,12 @@ export class ScoutRunApplication {
       .all();
     if (filter.runId) rows = rows.filter((row) => row.runId === filter.runId);
     if (filter.sourceId) rows = rows.filter((row) => row.sourceId === filter.sourceId);
-    return rows.map((row) => toSignalSummary(this.db, row));
+    return rows.map((row) => toSignalSummary(this.db, row, this.now()));
   }
 
   getSignal(id: string): SignalSummaryValue | null {
     const row = this.db.select().from(signals).where(eq(signals.id, id)).get();
-    return row ? toSignalSummary(this.db, row) : null;
+    return row ? toSignalSummary(this.db, row, this.now()) : null;
   }
 
   /** Leads are durable employment-path identities, never Source Item aliases. */
@@ -2464,14 +2579,14 @@ export class ScoutRunApplication {
       .orderBy(desc(leads.updatedAt), asc(leads.id))
       .all()
       .filter((row) => row.mergedInto === null)
-      .map((row) => toLeadSummary(this.db, row));
+      .map((row) => toLeadSummary(this.db, row, this.now()));
   }
 
   getLead(id: string): LeadSummaryValue | null {
     const row = this.db.select().from(leads).where(eq(leads.id, id)).get();
     if (!row) return null;
     const canonical = resolveLead(this.db, row);
-    return toLeadSummary(this.db, canonical);
+    return toLeadSummary(this.db, canonical, this.now());
   }
 
   getLeadContext(id: string): LeadContextValue | null {
@@ -2586,6 +2701,7 @@ export class ScoutRunApplication {
       const value = toLeadSummary(
         tx,
         tx.select().from(leads).where(eq(leads.id, lead.id)).get() ?? lead,
+        this.now(),
       );
       const result = { value, revision, replayed: false };
       writeReceipt(
@@ -2658,7 +2774,7 @@ export class ScoutRunApplication {
             `Lead ${target.id} is at revision ${target.revision}; expected ${command.expectedRevision}`,
           );
         }
-        const value = toLeadSummary(tx, target);
+        const value = toLeadSummary(tx, target, this.now());
         const result = { value, revision: currentRevision(tx), replayed: false };
         writeReceipt(
           tx,
@@ -2767,6 +2883,7 @@ export class ScoutRunApplication {
       const value = toLeadSummary(
         tx,
         tx.select().from(leads).where(eq(leads.id, target.id)).get() ?? target,
+        this.now(),
       );
       const result = { value, revision, replayed: false };
       writeReceipt(
@@ -3488,6 +3605,7 @@ type SignalPersistenceInput = {
   attemptId: string;
   items: FeedItem[];
   observedAt: number;
+  allowTombstoneReappearance?: boolean;
 };
 
 function isAttributableItem(item: FeedItem): boolean {
@@ -3551,44 +3669,29 @@ function persistSignals(db: RecruitingDb, input: SignalPersistenceInput): boolea
 
     if (isUnavailableItem(item)) {
       const oldSignals = db
-        .select({ id: signals.id })
+        .select()
         .from(signals)
         .where(eq(signals.sourceItemId, sourceItem.id))
         .all();
-      const oldLeadIds = db
-        .select({ leadId: leadSignalLinks.leadId })
-        .from(leadSignalLinks)
-        .where(
-          inArray(
-            leadSignalLinks.signalId,
-            oldSignals.length ? oldSignals.map((signal) => signal.id) : [""],
-          ),
-        )
-        .all()
-        .map((link) => link.leadId);
-      for (const oldSignal of oldSignals) {
-        db.delete(leadSignalLinks).where(eq(leadSignalLinks.signalId, oldSignal.id)).run();
-        db.delete(signalAttributions).where(eq(signalAttributions.signalId, oldSignal.id)).run();
-        db.delete(signals).where(eq(signals.id, oldSignal.id)).run();
+      const oldFingerprint =
+        sourceItem.latestFingerprint ??
+        oldSignals.sort((left, right) => right.observedAt - left.observedAt)[0]?.fingerprint ??
+        null;
+      if (oldSignals.length > 0) {
+        purgeUnavailableSignals(
+          db,
+          oldSignals.map((signal) => signal.id),
+          input.observedAt,
+        );
         changed = true;
-      }
-      for (const leadId of new Set(oldLeadIds)) {
-        const remaining = db
-          .select({ signalId: leadSignalLinks.signalId })
-          .from(leadSignalLinks)
-          .where(eq(leadSignalLinks.leadId, leadId))
-          .limit(1)
-          .get();
-        if (!remaining) {
-          db.delete(leadAliases).where(eq(leadAliases.leadId, leadId)).run();
-          db.delete(leads).where(eq(leads.id, leadId)).run();
-        }
       }
       db.update(sourceItems)
         .set({
           canonicalUrl: sourceItem.canonicalUrl,
           providerIdentity: item.providerIdentity ?? sourceItem.providerIdentity,
-          latestFingerprint: null,
+          // Keep only the previous safe fingerprint as a tombstone marker.
+          // The unavailable response itself never becomes retained evidence.
+          latestFingerprint: oldFingerprint,
           latestSignalId: null,
           deletionMarkerAt: input.observedAt,
           updatedAt: input.observedAt,
@@ -3604,7 +3707,8 @@ function persistSignals(db: RecruitingDb, input: SignalPersistenceInput): boolea
     // same Signal; a material content change explicitly clears the marker and
     // is allowed to return as a new immutable observation.
     if (sourceItem.deletionMarkerAt !== null) {
-      if (sourceItem.latestFingerprint === fingerprint) continue;
+      if (sourceItem.latestFingerprint === fingerprint && !input.allowTombstoneReappearance)
+        continue;
       db.update(sourceItems)
         .set({ deletionMarkerAt: null, latestSignalId: null, updatedAt: input.observedAt })
         .where(eq(sourceItems.id, sourceItem.id))
@@ -3681,6 +3785,29 @@ function persistSignals(db: RecruitingDb, input: SignalPersistenceInput): boolea
           supersededSignalId: previousSignalId,
           createdAt: input.observedAt,
         })
+        .run();
+      changed = true;
+    } else if (
+      existing.observedAt !== input.observedAt ||
+      existing.retrievedAt !== input.observedAt ||
+      existing.retentionUntil !==
+        Math.min(
+          item.retentionUntil ?? item.metadata?.retentionUntil ?? input.observedAt + 30 * DAY_MS,
+          sourceRetentionDeadline(input.source.config, input.observedAt),
+        )
+    ) {
+      // Content and provenance remain immutable, while a successful unchanged
+      // observation refreshes only safe observation/retention metadata.
+      db.update(signals)
+        .set({
+          observedAt: input.observedAt,
+          retrievedAt: input.observedAt,
+          retentionUntil: Math.min(
+            item.retentionUntil ?? item.metadata?.retentionUntil ?? input.observedAt + 30 * DAY_MS,
+            sourceRetentionDeadline(input.source.config, input.observedAt),
+          ),
+        })
+        .where(eq(signals.id, existing.id))
         .run();
       changed = true;
     }
@@ -3940,7 +4067,11 @@ function strategyMaterialFromSnapshot(snapshot: string | null): string {
     : "";
 }
 
-function toSignalSummary(db: RecruitingDb, row: typeof signals.$inferSelect): SignalSummaryValue {
+function toSignalSummary(
+  db: RecruitingDb,
+  row: typeof signals.$inferSelect,
+  at = Date.now(),
+): SignalSummaryValue {
   const item = db.select().from(sourceItems).where(eq(sourceItems.id, row.sourceItemId)).get();
   const attributions = db
     .select()
@@ -3951,6 +4082,7 @@ function toSignalSummary(db: RecruitingDb, row: typeof signals.$inferSelect): Si
   const attribution = attributions[0];
   const run = db.select().from(scoutRuns).where(eq(scoutRuns.id, row.runId)).get();
   const evidence = parseJson(row.evidence);
+  const stale = row.retentionUntil !== null && row.retentionUntil <= at;
   const provenance = parseJson(row.provenance);
   const provenanceRecord =
     provenance && typeof provenance === "object" ? (provenance as Record<string, unknown>) : null;
@@ -3977,8 +4109,12 @@ function toSignalSummary(db: RecruitingDb, row: typeof signals.$inferSelect): Si
     publicationAt: row.publicationAt,
     observedAt: row.observedAt,
     retrievedAt: row.retrievedAt,
-    evidence,
+    evidence:
+      stale && row.adapterVersion === "bird" && evidence && typeof evidence === "object"
+        ? { ...(evidence as Record<string, unknown>), content: "" }
+        : evidence,
     retentionUntil: row.retentionUntil,
+    freshness: stale ? "stale" : "fresh",
     supersededSignalId: row.supersededSignalId,
     canonicalUrl: item?.canonicalUrl ?? null,
     providerIdentity: item?.providerIdentity ?? null,
@@ -4003,7 +4139,11 @@ function toSignalSummary(db: RecruitingDb, row: typeof signals.$inferSelect): Si
   });
 }
 
-function toLeadSummary(db: RecruitingDb, row: typeof leads.$inferSelect): LeadSummaryValue {
+function toLeadSummary(
+  db: RecruitingDb,
+  row: typeof leads.$inferSelect,
+  at = Date.now(),
+): LeadSummaryValue {
   const links = db
     .select({ signalId: leadSignalLinks.signalId })
     .from(leadSignalLinks)
@@ -4015,6 +4155,21 @@ function toLeadSummary(db: RecruitingDb, row: typeof leads.$inferSelect): LeadSu
     ? db.select().from(signals).where(inArray(signals.id, signalIds)).all()
     : [];
   const sourceIds = [...new Set(signalRows.map((signal) => signal.sourceId))].sort();
+  const currentSignal = signalRows
+    .filter(
+      (signal) =>
+        signal.retentionUntil === null ||
+        signal.retentionUntil > at ||
+        signal.adapterVersion !== "bird",
+    )
+    .sort(
+      (left, right) => right.observedAt - left.observedAt || right.id.localeCompare(left.id),
+    )[0];
+  const currentEvidence = currentSignal ? parseJson(currentSignal.evidence) : null;
+  const currentEvidenceRecord =
+    currentEvidence && typeof currentEvidence === "object"
+      ? (currentEvidence as Record<string, unknown>)
+      : null;
   const scoutIds = [
     ...new Set(
       db
@@ -4036,7 +4191,14 @@ function toLeadSummary(db: RecruitingDb, row: typeof leads.$inferSelect): LeadSu
     canonicalKey: row.canonicalKey,
     canonicalUrl,
     title: row.title,
-    summary: row.summary,
+    summary:
+      currentEvidenceRecord && typeof currentEvidenceRecord.content === "string"
+        ? currentEvidenceRecord.content || null
+        : currentSignal
+          ? row.summary
+          : signalRows.length > 0
+            ? null
+            : row.summary,
     identityState: row.identityState === "conflicted" ? "conflicted" : "settled",
     conflict: row.conflict,
     conflicts: leadConflicts(row.conflict),
