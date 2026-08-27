@@ -19,6 +19,26 @@ export const settingsRouter = router({
 
   clearFirecrawlApiKey: publicProcedure.mutation(({ ctx }) => ctx.settings.clearFirecrawlApiKey()),
 
+  /** Bird is a local host-owned executable. These operations expose only safe
+   * readiness/consent metadata; executable output and browser-session material
+   * never cross the router. Inputs are deliberately path-only. */
+  setBirdPath: publicProcedure
+    .input(z.object({ path: z.string().trim().min(1).max(4096) }).strict())
+    .mutation(({ ctx, input }) => ctx.settings.setBirdPath(input.path)),
+
+  testBird: publicProcedure
+    .input(
+      z
+        .object({ path: z.string().max(4096).optional() })
+        .strict()
+        .optional(),
+    )
+    .mutation(({ ctx, input }) => ctx.settings.testBird(input)),
+
+  confirmBirdConsent: publicProcedure.mutation(({ ctx }) => ctx.settings.confirmBirdConsent()),
+
+  clearBird: publicProcedure.mutation(({ ctx }) => ctx.settings.clearBird()),
+
   update: publicProcedure.input(SettingsUpdate).mutation(({ ctx, input }) => {
     const wasEnabled = ctx.settings.get().headlessTurnLimitEnabled;
     const next = ctx.settings.update(input);

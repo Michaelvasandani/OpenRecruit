@@ -110,6 +110,7 @@ function GeneralPanel() {
         </SettingsRow>
       </SettingsSection>
       <FirecrawlSourcePanel />
+      <BirdSourcePanel />
       {window.__opentradeShell && (
         <SettingsSection title="Runtime">
           <SettingsRow
@@ -204,6 +205,133 @@ function FirecrawlSourcePanel() {
             )}
           </div>
           {feedback && <p className="text-xs text-muted-foreground">{feedback}</p>}
+        </div>
+      </SettingsRow>
+    </SettingsSection>
+  );
+}
+
+function BirdSourcePanel() {
+  const settings = useSettings();
+  const status = settings.data?.bird;
+  const [draft, setDraft] = useState("");
+  const [feedback, setFeedback] = useState<string | null>(null);
+  const setPath = trpc.settings.setBirdPath.useMutation({
+    onSuccess: (result) => {
+      setDraft(result.configuredPath ?? "");
+      setFeedback("Bird path saved. Test the executable before confirming consent.");
+    },
+    onError: (error) => setFeedback(error.message || "The Bird path could not be saved."),
+  });
+  const testBird = trpc.settings.testBird.useMutation({
+    onSuccess: (result) =>
+      setFeedback(
+        result.safeFailure ??
+          (result.consentCurrent
+            ? "Bird is ready."
+            : "Bird is ready to review. Confirm consent to enable it for a Source."),
+      ),
+    onError: (error) => setFeedback(error.message || "Bird could not be tested."),
+  });
+  const confirm = trpc.settings.confirmBirdConsent.useMutation({
+    onSuccess: () => setFeedback("Bird consent confirmed for this executable and account."),
+    onError: (error) => setFeedback(error.message || "Bird consent could not be confirmed."),
+  });
+  const clear = trpc.settings.clearBird.useMutation({
+    onSuccess: () => {
+      setDraft("");
+      setFeedback("Bird was cleared. Historical Source Attempts and Signals were kept.");
+    },
+    onError: (error) => setFeedback(error.message || "Bird could not be cleared."),
+  });
+
+  if (!status) return null;
+  const path = draft || status.configuredPath || "";
+  const draftDiffers = draft.trim().length > 0 && draft.trim() !== status.configuredPath?.trim();
+  const identity = status.accountIdentity;
+  const account = identity
+    ? [identity.displayName, identity.username ? `@${identity.username}` : identity.id]
+        .filter(Boolean)
+        .join(" ")
+    : "Not detected";
+  return (
+    <SettingsSection
+      title="X Source — Bird"
+      description="Use a trusted local Bird 0.8.0 executable for bounded, read-only X discovery. OpenRecruit never stores Bird cookies or authentication tokens."
+    >
+      <SettingsRow
+        label="Bird executable path"
+        hint="Enter an absolute path. Bird is invoked during setup only for --version, check, and whoami."
+      >
+        <div className="flex max-w-sm flex-col items-end gap-2">
+          <Input
+            type="text"
+            autoComplete="off"
+            value={path}
+            onChange={(event) => setDraft(event.target.value)}
+            placeholder="/absolute/path/to/bird"
+            aria-label="Bird executable path"
+          />
+          <div className="flex flex-wrap justify-end gap-2">
+            <Button
+              type="button"
+              variant="outline"
+              disabled={!draft.trim() || setPath.isPending}
+              onClick={() => setPath.mutate({ path: draft })}
+            >
+              Save path
+            </Button>
+            <Button
+              type="button"
+              variant="outline"
+              disabled={testBird.isPending || !path.trim()}
+              onClick={() =>
+                testBird.mutate(
+                  draft.trim() && draft.trim() !== status.configuredPath?.trim()
+                    ? { path }
+                    : undefined,
+                )
+              }
+            >
+              Test
+            </Button>
+            <Button
+              type="button"
+              variant="outline"
+              disabled={
+                confirm.isPending ||
+                draftDiffers ||
+                !status.configured ||
+                status.readiness !== "ready"
+              }
+              onClick={() => confirm.mutate()}
+            >
+              Confirm consent
+            </Button>
+            {status.configured && (
+              <Button
+                type="button"
+                variant="outline"
+                disabled={clear.isPending}
+                onClick={() => clear.mutate()}
+              >
+                Clear
+              </Button>
+            )}
+          </div>
+          <div className="w-full space-y-1 text-right text-xs text-muted-foreground">
+            <p>
+              Status: {status.readiness.replaceAll("_", " ")} · consent:{" "}
+              {status.consentCurrent ? "current" : "not confirmed"}
+            </p>
+            <p>Detected version: {status.detectedVersion ?? "Not detected"}</p>
+            <p>Fingerprint: {status.fingerprintSummary ?? "Not detected"}</p>
+            <p>Authenticated X account: {account}</p>
+            {status.safeFailure && <p>{status.safeFailure}</p>}
+            <p>{status.invalidSignatureWarning}</p>
+            <p>{status.cookieAccessWarning}</p>
+            {feedback && <p>{feedback}</p>}
+          </div>
         </div>
       </SettingsRow>
     </SettingsSection>

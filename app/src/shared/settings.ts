@@ -26,6 +26,49 @@ export const FirecrawlSettings = z.object({
 });
 export type FirecrawlSettings = z.infer<typeof FirecrawlSettings>;
 
+/** Safe readiness states for the locally installed Bird executable. Raw Bird
+ * output, cookies, cookie locations, and authentication material never belong
+ * in this projection. */
+export const BirdReadiness = z.enum([
+  "not_configured",
+  "ready",
+  "invalid_path",
+  "not_executable",
+  "unsupported",
+  "reauthentication_required",
+  "degraded",
+]);
+export type BirdReadiness = z.infer<typeof BirdReadiness>;
+
+export const BirdAccountIdentity = z.object({
+  id: z.string().nullable(),
+  username: z.string().nullable(),
+  displayName: z.string().nullable(),
+});
+export type BirdAccountIdentity = z.infer<typeof BirdAccountIdentity>;
+
+/** Candidate-facing Bird settings. The executable path is configuration, not
+ * a credential; all process output and browser-session material stay host-only. */
+export const BirdSettings = z.object({
+  configured: z.boolean(),
+  configuredPath: z.string().nullable(),
+  readiness: BirdReadiness,
+  safeFailure: z.string().nullable(),
+  detectedVersion: z.string().nullable(),
+  fingerprintSummary: z.string().nullable(),
+  accountIdentity: BirdAccountIdentity.nullable(),
+  consentCurrent: z.boolean(),
+  consentedAt: z.number().int().nullable(),
+  invalidSignatureWarning: z.string(),
+  cookieAccessWarning: z.string(),
+});
+export type BirdSettings = z.infer<typeof BirdSettings>;
+
+export const BIRD_INVALID_SIGNATURE_WARNING =
+  "Bird has an invalid developer signature; confirm only an executable you trust.";
+export const BIRD_COOKIE_ACCESS_WARNING =
+  "Bird can access browser cookies for its authenticated X session. OpenRecruit never stores or displays those cookies.";
+
 /**
  * Global app settings (the `settings` kv table, distinct from per-agent config
  * and from the encrypted OAuth/token rows). This is the single source of truth
@@ -75,12 +118,15 @@ export const AppSettings = z.object({
   showInMenuBar: z.boolean(),
   /** Safe Firecrawl Source readiness. The API key is never part of this value. */
   firecrawl: FirecrawlSettings,
+  /** Safe local Bird readiness and consent. Bird credentials and process output
+   * are never part of this value. */
+  bird: BirdSettings,
 });
 export type AppSettings = z.infer<typeof AppSettings>;
 
 /** Settings that may be changed through the generic settings patch. Secret-backed
  * provider state has explicit operations below and cannot be smuggled into a patch. */
-export const EditableAppSettings = AppSettings.omit({ firecrawl: true });
+export const EditableAppSettings = AppSettings.omit({ firecrawl: true, bird: true });
 export type EditableAppSettings = z.infer<typeof EditableAppSettings>;
 
 export const DEFAULT_SETTINGS: AppSettings = {
@@ -99,6 +145,19 @@ export const DEFAULT_SETTINGS: AppSettings = {
     configured: false,
     readiness: "not_configured",
     safeFailure: null,
+  },
+  bird: {
+    configured: false,
+    configuredPath: null,
+    readiness: "not_configured",
+    safeFailure: null,
+    detectedVersion: null,
+    fingerprintSummary: null,
+    accountIdentity: null,
+    consentCurrent: false,
+    consentedAt: null,
+    invalidSignatureWarning: BIRD_INVALID_SIGNATURE_WARNING,
+    cookieAccessWarning: BIRD_COOKIE_ACCESS_WARNING,
   },
 };
 
