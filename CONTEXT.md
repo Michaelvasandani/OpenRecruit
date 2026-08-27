@@ -40,6 +40,18 @@ _Avoid_: connector, scraper
 The permission state that allows OpenRecruit to read a Source, either publicly or through authorization completed by the Candidate.
 _Avoid_: credentials, scraping access
 
+**X Source**:
+A Source of public posts and public account information from X used to discover recruiting Signals. Its retrieval provider does not expand what Scouts are allowed to read.
+_Avoid_: Bird Source, Twitter Source
+
+**Public Source Access**:
+Source Access limited to evidence publicly visible on the Source. Candidate authorization may enable retrieval but does not grant Scouts access to private account surfaces.
+_Avoid_: logged-in access, cookie access
+
+**Source Attempt**:
+A bounded record of one effort to read a Source, including its scope, outcome, and safe provenance. A Source Attempt may return no candidate-relevant Signals.
+_Avoid_: Signal, search result
+
 **Investigation**:
 A reusable record of a scout's question, evidence, conclusions, and check time for a lead or opportunity. A new signal, stale revisit plan, changed Candidate Profile, or unanswered question may justify another investigation.
 _Avoid_: Finding, agent memory

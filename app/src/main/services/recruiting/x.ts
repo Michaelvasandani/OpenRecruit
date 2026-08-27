@@ -1,4 +1,11 @@
+import {
+  XSourceProvider as XSourceProviderSchema,
+  type XSourceProvider as XSourceProviderValue,
+} from "@shared/recruiting";
 import type { FeedItem, FeedItemMetadata } from "./source";
+
+export const XSourceProvider = XSourceProviderSchema;
+export type XSourceProvider = XSourceProviderValue;
 
 export const X_API_BASE_URL = "https://api.x.com";
 
@@ -112,6 +119,8 @@ export class DeterministicXProvider implements XProvider {
 export const XApiProvider = HttpXProvider;
 
 export type XSourceConfig = {
+  /** Immutable retrieval provider for this X Source. Legacy config defaults to X API v2. */
+  provider: XSourceProviderValue;
   query: string | null;
   postIds: string[];
   windowHours: number;
@@ -146,6 +155,16 @@ export function xConfigFromSource(config: string): XSourceConfig {
   if (!value || typeof value !== "object")
     throw new XApiError("X Source configuration is malformed", "malformed_config");
   const record = value as Record<string, unknown>;
+  const providerValue = record.provider;
+  const provider =
+    providerValue === undefined
+      ? "x-api-v2"
+      : XSourceProviderSchema.safeParse(providerValue).success
+        ? (providerValue as XSourceProviderValue)
+        : null;
+  if (!provider) {
+    throw new XApiError("X Source provider must be X API v2 or Bird", "malformed_config");
+  }
   const queryValue = record.query ?? record.searchQuery;
   const query = typeof queryValue === "string" && queryValue.trim() ? queryValue.trim() : null;
   const idsValue = record.postIds ?? record.ids;
@@ -189,7 +208,16 @@ export function xConfigFromSource(config: string): XSourceConfig {
     1,
     100,
   );
-  return { query, postIds, windowHours, maxPages, maxItems, maxSpendCents, maxRequestsPerRun };
+  return {
+    provider,
+    query,
+    postIds,
+    windowHours,
+    maxPages,
+    maxItems,
+    maxSpendCents,
+    maxRequestsPerRun,
+  };
 }
 
 export function xRequestForSearch(

@@ -129,6 +129,7 @@ export const recruitingRouter = router({
     .input(
       z.object({
         name: z.string().trim().min(1).max(160),
+        provider: z.enum(["x-api-v2", "bird"]).optional(),
         query: z.string().trim().min(1).max(512).optional(),
         postIds: z
           .array(z.string().regex(/^\d{1,30}$/))

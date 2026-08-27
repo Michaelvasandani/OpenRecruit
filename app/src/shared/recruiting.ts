@@ -43,6 +43,11 @@ export type SourceReadiness = z.infer<typeof SourceReadiness>;
 export const SourceAccessReadiness = SourceReadiness;
 export type SourceAccessReadiness = z.infer<typeof SourceAccessReadiness>;
 
+/** Retrieval providers available beneath an X Source. The provider is part of
+ * the Source identity and is never selected by a Scout at read time. */
+export const XSourceProvider = z.enum(["x-api-v2", "bird"]);
+export type XSourceProvider = z.infer<typeof XSourceProvider>;
+
 /** Outcomes are deliberately exhaustive and safe to render. Raw provider errors
  * and payloads never cross the Source boundary. */
 export const SourceAttemptOutcome = z.enum([
@@ -84,6 +89,8 @@ export const SourceSummary = z.object({
   id: z.string().min(1),
   kind: z.string().min(1),
   name: z.string().min(1),
+  /** Null for Source kinds that do not have an X retrieval provider. */
+  provider: XSourceProvider.nullable(),
   readiness: SourceReadiness,
   safeFailure: z.string().nullable(),
   safeReason: z.string().nullable(),
@@ -149,6 +156,8 @@ export const SignalSummary = z.object({
   id: z.string().min(1),
   sourceItemId: z.string().min(1),
   sourceId: z.string().min(1),
+  /** X provider identity, when this Signal came from an X Source. */
+  provider: XSourceProvider.nullable(),
   sourceAttemptId: z.string().min(1),
   runId: z.string().min(1),
   scoutId: z.string().min(1),
@@ -497,6 +506,8 @@ export const ScoutRunSummary = z.object({
   policySnapshot: z.string().nullable(),
   overrideSnapshot: z.string().nullable(),
   sourceIds: z.array(z.string()),
+  /** Provider identity pinned for every selected X Source at preflight. */
+  sourceProviders: z.record(z.string(), XSourceProvider.nullable()).default({}),
   signalIds: z.array(z.string()).default([]),
   leadIds: z.array(z.string()).default([]),
   checkpoint: z.string().nullable(),

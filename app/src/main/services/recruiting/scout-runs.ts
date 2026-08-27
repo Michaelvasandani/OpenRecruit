@@ -23,6 +23,7 @@ import {
   SourceReadiness,
   SourceSummary,
   type SourceSummary as SourceSummaryValue,
+  type XSourceProvider,
 } from "@shared/recruiting";
 import { and, asc, desc, eq, inArray, sql } from "drizzle-orm";
 import type { Db } from "../../db/client";
@@ -100,6 +101,8 @@ export type CreateRssSourceCommand = {
 
 export type CreateXSourceCommand = {
   name: string;
+  /** Retrieval provider is fixed when the X Source is created. */
+  provider?: XSourceProvider;
   query?: string;
   postIds?: string[];
   windowHours?: number;
@@ -294,6 +297,21 @@ export class ScoutRunApplication {
       );
     }
     const config = sanitizeSourceConfig(command.config ?? {});
+    if (kind === "x") {
+      let parsed: ReturnType<typeof xConfigFromSource>;
+      try {
+        parsed = xConfigFromSource(JSON.stringify(config));
+      } catch (error) {
+        throw new RecruitingError(
+          "VALIDATION",
+          error instanceof XApiError ? error.message : "X Source configuration is malformed",
+        );
+      }
+      // Store the default explicitly for newly-created X Sources. This is a
+      // forward-only normalization: legacy rows without this key remain
+      // untouched and xConfigFromSource interprets them as X API v2.
+      config.provider = parsed.provider;
+    }
     if (kind === "rss" || kind === "atom") {
       const configuredUrl = config.feedUrl ?? config.url;
       if (configuredUrl !== undefined) {
@@ -384,6 +402,7 @@ export class ScoutRunApplication {
 
   createXSource(command: CreateXSourceCommand) {
     const config: Record<string, unknown> = {
+      provider: command.provider,
       query: command.query,
       postIds: command.postIds,
       windowHours: command.windowHours,
@@ -616,6 +635,21 @@ export class ScoutRunApplication {
       );
       return toSourceAccessSummary(requireSourceAccess(this.db, source.id));
     }
+    if (config.provider === "bird") {
+      const checkedAt = this.now();
+      this.persistSourceReadiness(
+        source.id,
+        {
+          readiness: "degraded",
+          safeFailure: "The Bird X Source provider is not available yet",
+          nextAction: "Configure Bird support before checking this Source",
+          retryAt: null,
+          sourceIdentity: "bird",
+        },
+        checkedAt,
+      );
+      return toSourceAccessSummary(requireSourceAccess(this.db, source.id));
+    }
     const access = requireSourceAccess(this.db, source.id);
     const request = config.postIds.length
       ? xRequestForLookup(config)
@@ -710,12 +744,29 @@ export class ScoutRunApplication {
         `Source ${source.id} is not selected for Run ${run.id}; named Sources are never replaced`,
       );
     }
+    const pinnedProviders = snapshotSourceProviders(run.overrideSnapshot);
+    const pinnedProvider = pinnedProviders?.[source.id];
+    const configuredProvider = source.kind === "x" ? xProviderFromConfig(source.config) : null;
+    if (
+      source.kind === "x" &&
+      pinnedProvider !== undefined &&
+      configuredProvider !== null &&
+      configuredProvider !== pinnedProvider
+    ) {
+      throw new RecruitingError(
+        "CONFLICT",
+        `X Source ${source.id} provider changed after Run preflight; create a new Source`,
+      );
+    }
     const budget = normalizeBudget(command.budget ?? storedBudget(run.budget));
     const requestedScope = JSON.stringify({
       maxItems: budget.maxItems,
       maxPages: budget.maxPages,
       maxWallClockMs: budget.maxWallClockMs,
       maxSpendCents: budget.maxSpendCents,
+      ...((pinnedProvider ?? configuredProvider)
+        ? { provider: pinnedProvider ?? configuredProvider }
+        : {}),
     });
     const startedAt = this.now();
     const attemptId = randomUUID();
@@ -791,7 +842,11 @@ export class ScoutRunApplication {
           items,
           observedAt: completedAt,
         });
-        return toSourceAttemptSummary(requireSourceAttempt(tx, attemptId), items);
+        return toSourceAttemptSummary(
+          requireSourceAttempt(tx, attemptId),
+          items,
+          pinnedProvider ?? configuredProvider,
+        );
       });
       const revision = this.db.transaction((tx) => advanceRevision(tx));
       emitChange(revision, "source", [source.id], "source_attempt_recorded", completedAt);
@@ -844,6 +899,7 @@ export class ScoutRunApplication {
         budget,
         startedAt,
         provider: command.provider as XProvider | undefined,
+        pinnedProvider,
         retry: command.retry,
         finish,
       });
@@ -1133,6 +1189,7 @@ export class ScoutRunApplication {
     budget: RunBudget;
     startedAt: number;
     provider?: XProvider;
+    pinnedProvider?: XSourceProvider | null;
     retry?: ReadSourceCommand["retry"];
     finish: SourceAttemptFinish;
   }): Promise<SourceAttemptResult> {
@@ -1152,6 +1209,30 @@ export class ScoutRunApplication {
             "Configure bounded recent-search terms from the Discovery Strategy or public Post IDs",
           retryAt: null,
           sourceIdentity: "x-api-v2",
+        },
+      });
+    }
+    if (input.pinnedProvider !== undefined && config.provider !== input.pinnedProvider) {
+      return finish("unsupported", {
+        safeFailure: "The X Source provider changed after Run preflight; create a new Source",
+        accessPatch: {
+          readiness: "degraded",
+          safeFailure: "The X Source provider changed after Run preflight; create a new Source",
+          nextAction: "Create a new X Source to choose a different provider",
+          retryAt: null,
+          sourceIdentity: config.provider,
+        },
+      });
+    }
+    if (config.provider === "bird") {
+      return finish("unsupported", {
+        safeFailure: "The Bird X Source provider is not available yet",
+        accessPatch: {
+          readiness: "degraded",
+          safeFailure: "The Bird X Source provider is not available yet",
+          nextAction: "Configure Bird support before reading this Source",
+          retryAt: null,
+          sourceIdentity: "bird",
         },
       });
     }
@@ -1707,12 +1788,16 @@ export class ScoutRunApplication {
           .from(sourceAttempts)
           .orderBy(desc(sourceAttempts.startedAt), desc(sourceAttempts.id))
           .all();
-    return rows.map((row) => toSourceAttemptSummary(row).summary);
+    return rows.map(
+      (row) => toSourceAttemptSummary(row, [], xProviderForAttempt(this.db, row.sourceId)).summary,
+    );
   }
 
   getSourceAttempt(id: string): SourceAttemptSummaryValue | null {
     const row = this.db.select().from(sourceAttempts).where(eq(sourceAttempts.id, id)).get();
-    return row ? toSourceAttemptSummary(row).summary : null;
+    return row
+      ? toSourceAttemptSummary(row, [], xProviderForAttempt(this.db, row.sourceId)).summary
+      : null;
   }
 
   listSources(): SourceSummaryValue[] {
@@ -1940,6 +2025,28 @@ export class ScoutRunApplication {
         );
       }
       assertSourceIdsExist(tx, selectedSources);
+      const sourceProviders = selectedSources.reduce<Record<string, XSourceProvider | null>>(
+        (result, sourceId) => {
+          const source = tx.select().from(sources).where(eq(sources.id, sourceId)).get();
+          if (!source) return result;
+          if (source.kind !== "x") {
+            result[sourceId] = null;
+            return result;
+          }
+          let config: ReturnType<typeof xConfigFromSource>;
+          try {
+            config = xConfigFromSource(source.config);
+          } catch (error) {
+            throw new RecruitingError(
+              "VALIDATION",
+              error instanceof XApiError ? error.message : "X Source configuration is malformed",
+            );
+          }
+          result[sourceId] = config.provider;
+          return result;
+        },
+        {},
+      );
       const profileId = command.profileOverrideId?.trim() || scout.defaultProfileId;
       if (!profileId) {
         throw new RecruitingError(
@@ -1983,6 +2090,7 @@ export class ScoutRunApplication {
         strategyMaterial: command.strategyOverride?.trim() || null,
         policyMaterial: command.policyOverride?.trim() || null,
         sourceIds: selectedSources,
+        sourceProviders,
       });
       tx.insert(scoutRuns)
         .values({
@@ -2301,6 +2409,8 @@ export class ScoutRunApplication {
       .all()
       .map((item) => item.sourceId);
     const sourceIds = snapshotSourceIds(row.overrideSnapshot) ?? currentSourceIds;
+    const sourceProviders =
+      snapshotSourceProviders(row.overrideSnapshot) ?? sourceProvidersForIds(db, sourceIds);
     const runSignalIds = db
       .select({ id: signals.id })
       .from(signals)
@@ -2331,6 +2441,7 @@ export class ScoutRunApplication {
       policySnapshot: row.policySnapshot,
       overrideSnapshot: row.overrideSnapshot,
       sourceIds,
+      sourceProviders,
       signalIds: runSignalIds,
       leadIds: [...new Set(runLeadIds)],
       checkpoint: row.checkpoint,
@@ -2376,6 +2487,8 @@ function isUnavailableItem(item: FeedItem): boolean {
 function persistSignals(db: RecruitingDb, input: SignalPersistenceInput): void {
   const strategyMaterial = strategyMaterialFromSnapshot(input.run.strategySnapshot);
   const strategyKey = digest(strategyMaterial);
+  const sourceProvider =
+    input.source.kind === "x" ? xProviderFromConfig(input.source.config) : null;
   for (const item of input.items) {
     if (!isAttributableItem(item) && !isUnavailableItem(item)) continue;
     const identityKey = stableItemIdentity(item);
@@ -2487,7 +2600,17 @@ function persistSignals(db: RecruitingDb, input: SignalPersistenceInput): void {
         ...(item.metadata?.withheld ? { withheld: item.metadata.withheld } : {}),
         ...(item.metadata?.protected !== undefined ? { protected: item.metadata.protected } : {}),
       };
-      const isX = item.metadata?.provider === "x-api-v2";
+      const candidateProvider = sourceProvider ?? item.metadata?.provider ?? null;
+      const provider =
+        candidateProvider === "x-api-v2" || candidateProvider === "bird" ? candidateProvider : null;
+      const isX = provider !== null;
+      const adapterVersion = provider === "bird" ? "bird" : isX ? "x-api-v2" : "rss-atom-v1";
+      const processor =
+        provider === "bird"
+          ? "openrecruit-bird"
+          : isX
+            ? "openrecruit-x-api"
+            : "openrecruit-rss-atom";
       db.insert(signals)
         .values({
           id: signalId,
@@ -2504,8 +2627,9 @@ function persistSignals(db: RecruitingDb, input: SignalPersistenceInput): void {
             scoutId: input.run.scoutId,
             sourceIdentity: input.sourceAccess.sourceIdentity,
             accessMode: "public",
-            adapterVersion: isX ? "x-api-v2" : "rss-atom-v1",
-            processor: isX ? "openrecruit-x-api" : "openrecruit-rss-atom",
+            ...(provider ? { provider } : {}),
+            adapterVersion,
+            processor,
             ...(isX && item.metadata?.author ? { author: item.metadata.author } : {}),
             ...(isX ? { authMode: "app_only", editHistory: item.metadata?.editHistory ?? [] } : {}),
             strategyKey,
@@ -2515,8 +2639,8 @@ function persistSignals(db: RecruitingDb, input: SignalPersistenceInput): void {
           retrievedAt: input.observedAt,
           evidence: JSON.stringify(evidence),
           accessMode: "public",
-          adapterVersion: isX ? "x-api-v2" : "rss-atom-v1",
-          processor: isX ? "openrecruit-x-api" : "openrecruit-rss-atom",
+          adapterVersion,
+          processor,
           retentionUntil: Math.min(
             item.retentionUntil ?? item.metadata?.retentionUntil ?? input.observedAt + 30 * DAY_MS,
             sourceRetentionDeadline(input.source.config, input.observedAt),
@@ -2775,15 +2899,28 @@ function toSignalSummary(db: RecruitingDb, row: typeof signals.$inferSelect): Si
   const run = db.select().from(scoutRuns).where(eq(scoutRuns.id, row.runId)).get();
   const evidence = parseJson(row.evidence);
   const provenance = parseJson(row.provenance);
+  const provenanceRecord =
+    provenance && typeof provenance === "object" ? (provenance as Record<string, unknown>) : null;
+  const provider =
+    provenanceRecord && typeof provenanceRecord.provider === "string"
+      ? provenanceRecord.provider
+      : row.adapterVersion === "x-api-v2" || row.adapterVersion === "bird"
+        ? row.adapterVersion
+        : null;
   return SignalSummary.parse({
     id: row.id,
     sourceItemId: row.sourceItemId,
     sourceId: row.sourceId ?? item?.sourceId ?? "unknown-source",
+    provider,
     sourceAttemptId: row.sourceAttemptId,
     runId: row.runId,
     scoutId: attribution?.scoutId ?? run?.scoutId ?? "unknown",
     fingerprint: row.fingerprint,
-    provenance: provenance && typeof provenance === "object" ? provenance : {},
+    provenance: provenanceRecord
+      ? { ...provenanceRecord, ...(provider ? { provider } : {}) }
+      : provider
+        ? { provider }
+        : {},
     publicationAt: row.publicationAt,
     observedAt: row.observedAt,
     retrievedAt: row.retrievedAt,
@@ -2872,6 +3009,29 @@ function snapshotSourceIds(value: string | null): string[] | null {
   }
 }
 
+function snapshotSourceProviders(
+  value: string | null,
+): Record<string, XSourceProvider | null> | null {
+  if (!value) return null;
+  try {
+    const parsed = JSON.parse(value) as { sourceProviders?: unknown };
+    if (!parsed.sourceProviders || typeof parsed.sourceProviders !== "object") return null;
+    const result: Record<string, XSourceProvider | null> = {};
+    for (const [sourceId, provider] of Object.entries(
+      parsed.sourceProviders as Record<string, unknown>,
+    )) {
+      if (provider === null) {
+        result[sourceId] = null;
+      } else if (provider === "x-api-v2" || provider === "bird") {
+        result[sourceId] = provider;
+      } else return null;
+    }
+    return result;
+  } catch {
+    return null;
+  }
+}
+
 function toSourceSummary(
   row: SourceRow,
   access: SourceAccessSummaryValue | null = null,
@@ -2880,6 +3040,7 @@ function toSourceSummary(
     id: row.id,
     kind: row.kind,
     name: row.name,
+    provider: row.kind === "x" ? xProviderFromConfig(row.config) : null,
     readiness: SourceReadiness.safeParse(row.readiness).success ? row.readiness : "not_configured",
     safeFailure: row.safeFailure,
     safeReason: row.safeFailure,
@@ -2914,6 +3075,39 @@ function toSourceAccessSummary(row: SourceAccessRow): SourceAccessSummaryValue {
 function safeSourceReadiness(value: string): SourceReadinessValue {
   const parsed = SourceReadiness.safeParse(value);
   return parsed.success ? parsed.data : "degraded";
+}
+
+/** Resolve the provider discriminator without rewriting a Source row. A
+ * missing discriminator is the legacy X API v2 interpretation; malformed
+ * stored configuration remains an unavailable provider rather than silently
+ * selecting an adapter. */
+function xProviderFromConfig(config: string): XSourceProvider | null {
+  try {
+    return xConfigFromSource(config).provider;
+  } catch {
+    return null;
+  }
+}
+
+function xProviderForAttempt(db: RecruitingDb, sourceId: string): XSourceProvider | null {
+  const source = db.select().from(sources).where(eq(sources.id, sourceId)).get();
+  // The audit field takes precedence for all new Attempts. For legacy rows
+  // that predate the discriminator, the only truthful historical meaning is
+  // the shipped official X API v2 adapter, even if a malformed row is later
+  // inspected alongside changed raw configuration.
+  return source?.kind === "x" ? "x-api-v2" : null;
+}
+
+function sourceProvidersForIds(
+  db: RecruitingDb,
+  sourceIds: string[],
+): Record<string, XSourceProvider | null> {
+  const result: Record<string, XSourceProvider | null> = {};
+  for (const sourceId of sourceIds) {
+    const source = db.select().from(sources).where(eq(sources.id, sourceId)).get();
+    result[sourceId] = source?.kind === "x" ? xProviderFromConfig(source.config) : null;
+  }
+  return result;
 }
 
 function sanitizeSourceConfig(value: Record<string, unknown>): Record<string, unknown> {
@@ -3092,6 +3286,7 @@ function requireSourceAttempt(db: RecruitingDb, id: string): SourceAttemptRow {
 function toSourceAttemptSummary(
   row: SourceAttemptRow,
   items: FeedItem[] = [],
+  fallbackProvider: XSourceProvider | null = null,
 ): { summary: SourceAttemptSummaryValue; items: FeedItem[] } {
   const audit = parseSourceAttemptAudit(row.requestedScope);
   return {
@@ -3109,7 +3304,9 @@ function toSourceAttemptSummary(
       pageCount: row.pageCount,
       retryAt: row.retryAt,
       safeFailure: row.safeFailure,
-      provider: audit.provider,
+      // Older attempts did not carry a provider in requestedScope. Derive it
+      // from their immutable X Source while preserving explicit audit data.
+      provider: audit.provider ?? fallbackProvider,
       retryDisposition: audit.retryDisposition,
       errorCategory: audit.errorCategory,
       attemptCount: audit.attemptCount,

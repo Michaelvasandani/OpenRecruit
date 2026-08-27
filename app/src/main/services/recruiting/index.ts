@@ -263,6 +263,7 @@ export {
   type XApiResponse,
   type XProvider,
   type XSourceConfig,
+  XSourceProvider,
   xConfigFromSource,
 } from "./x";
 
@@ -496,6 +497,7 @@ export class RecruitingApplication {
       strategy: parseSafeJson(run.strategySnapshot),
       policy: parseSafeJson(run.policySnapshot),
       sourceIds: run.sourceIds,
+      sourceProviders: run.sourceProviders,
     };
   }
 

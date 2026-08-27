@@ -73,6 +73,106 @@ const successfulSearch: XApiResponse = {
 };
 
 describe("official X API v2 Source", () => {
+  test("records an explicit provider while interpreting legacy X configuration as X API v2", async () => {
+    expect(xConfigFromSource(JSON.stringify({ query: "hiring" })).provider).toBe("x-api-v2");
+    expect(() =>
+      xConfigFromSource(JSON.stringify({ query: "hiring", provider: "unknown" })),
+    ).toThrow("X Source provider must be X API v2 or Bird");
+
+    const db = makeDb();
+    const app = new RecruitingApplication(db, () => Date.parse("2026-08-23T16:00:00Z"));
+    expect(() =>
+      app.createSource({
+        kind: "x",
+        name: "Unknown provider",
+        config: { query: "hiring", provider: "unknown" },
+        idempotencyKey: "x-provider-unknown",
+      }),
+    ).toThrow("X Source provider must be X API v2 or Bird");
+    const explicit = app.createXSource({
+      name: "Explicit X API",
+      query: "hiring",
+      provider: "x-api-v2",
+      idempotencyKey: "x-provider-explicit",
+    });
+    const stored = db
+      .select({ config: schema.sources.config })
+      .from(schema.sources)
+      .where(eq(schema.sources.id, explicit.value.id))
+      .get();
+    expect(stored?.config).toContain('"provider":"x-api-v2"');
+    expect(explicit.value.provider).toBe("x-api-v2");
+
+    db.update(schema.sources)
+      .set({ config: JSON.stringify({ query: "legacy" }) })
+      .where(eq(schema.sources.id, explicit.value.id))
+      .run();
+    expect(app.getSource(explicit.value.id)?.provider).toBe("x-api-v2");
+    const readinessProvider = new DeterministicXProvider({
+      readiness: { status: 200, body: JSON.stringify({ data: [], meta: { result_count: 0 } }) },
+    });
+    expect(
+      (
+        await app.checkSourceReadiness({
+          sourceId: explicit.value.id,
+          provider: readinessProvider,
+        })
+      ).readiness,
+    ).toBe("ready");
+    expect(readinessProvider.requests[0]?.operation).toBe("search_recent");
+  });
+
+  test("does not route a Bird Source through the official X API provider", async () => {
+    const app = new RecruitingApplication(makeDb(), () => Date.parse("2026-08-23T16:00:00Z"));
+    const source = app.createXSource({
+      name: "Bird X",
+      query: "hiring",
+      provider: "bird",
+      idempotencyKey: "x-provider-bird",
+    });
+    const provider = new DeterministicXProvider({
+      readiness: { status: 200, body: JSON.stringify({ data: [], meta: { result_count: 0 } }) },
+    });
+
+    const access = await app.checkSourceReadiness({ sourceId: source.value.id, provider });
+
+    expect(provider.requests).toHaveLength(0);
+    expect(access.readiness).toBe("degraded");
+    expect(access.safeFailure).toBe("The Bird X Source provider is not available yet");
+
+    const profile = app.importProfile({
+      name: "Candidate",
+      roleTarget: "Staff engineer",
+      careerInterests: "Developer tools",
+      idempotencyKey: "x-provider-bird-profile",
+    });
+    const confirmed = app.confirmProfile({
+      profileId: profile.id,
+      expectedRevision: profile.revision,
+      idempotencyKey: "x-provider-bird-confirm",
+    });
+    const scout = app.createScout({
+      name: "Bird Scout",
+      harness: "claude",
+      instructionPath: "agents/bird",
+      defaultProfileId: confirmed.id,
+      sourceIds: [source.value.id],
+      idempotencyKey: "x-provider-bird-scout",
+    });
+    const run = app.launchScoutRun({
+      scoutId: scout.value.id,
+      idempotencyKey: "x-provider-bird-run",
+    });
+    const attempt = await app.readSource({
+      runId: run.value.id,
+      sourceId: source.value.id,
+      provider,
+    });
+    expect(attempt.outcome).toBe("unsupported");
+    expect(attempt.provider).toBe("bird");
+    expect(provider.requests).toHaveLength(0);
+  });
+
   test("uses Discovery Strategy terminology in Candidate-facing configuration guidance", async () => {
     expect(() => xConfigFromSource("{}")).toThrow(
       "X Source requires recent-search terms derived from the Discovery Strategy or public Post IDs",
@@ -135,6 +235,7 @@ describe("official X API v2 Source", () => {
       sourceId: source.id,
       runId: run.id,
       scoutId: scout.id,
+      provider: "x-api-v2",
       providerIdentity: "1900000000000000001",
       canonicalUrl: "https://x.com/openrecruit/status/1900000000000000001",
       accessMode: "public",
@@ -150,9 +251,12 @@ describe("official X API v2 Source", () => {
     });
     expect(signal?.provenance).toMatchObject({
       sourceKind: "x",
+      provider: "x-api-v2",
       accessMode: "public",
       authMode: "app_only",
     });
+    expect(attempt.provider).toBe("x-api-v2");
+    expect(run.sourceProviders[source.id]).toBe("x-api-v2");
   });
 
   test("deduplicates unchanged public Posts despite a new compliance retention deadline", async () => {
