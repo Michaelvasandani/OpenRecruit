@@ -124,6 +124,9 @@ export const SourceAttemptSummary = z.object({
     .optional(),
   errorCategory: z.string().nullable().optional(),
   attemptCount: z.number().int().nonnegative().optional(),
+  /** Safe wall-clock instrumentation for provider operations. */
+  queueWaitMs: z.number().int().nonnegative().optional(),
+  executionMs: z.number().int().nonnegative().optional(),
   startedAt: z.number().int(),
   completedAt: z.number().int().nullable(),
 });

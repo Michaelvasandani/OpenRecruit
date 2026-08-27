@@ -244,6 +244,46 @@ describe("Bird XSearch", () => {
     expect(provider.requests).toHaveLength(0);
   });
 
+  test("maps Bird search failures to safe categories without retries", async () => {
+    const cases = [
+      {
+        response: { status: 503, body: "", failureCategory: "authentication" as const },
+        outcome: "blocked",
+        errorCategory: "authentication",
+      },
+      {
+        response: { status: 429, body: "" },
+        outcome: "rate_limited",
+        errorCategory: "rate_limited",
+      },
+      {
+        response: { status: 504, body: "" },
+        outcome: "timed_out",
+        errorCategory: "timed_out",
+      },
+      {
+        response: { status: 426, body: "", failureCategory: "unsupported_version" as const },
+        outcome: "unsupported",
+        errorCategory: "unsupported_version",
+      },
+      {
+        response: { status: 200, body: "not-json" },
+        outcome: "malformed_content",
+        errorCategory: "malformed_content",
+      },
+    ] as const;
+    for (const testCase of cases) {
+      const provider = new DeterministicXProvider({ search: testCase.response });
+      const { app, scout } = fixture(provider);
+      await expect(app.xSearch({ scoutId: scout.id, query: "hiring" })).rejects.toThrow();
+      expect(provider.requests).toHaveLength(1);
+      expect(app.listSourceAttempts()[0]).toMatchObject({
+        outcome: testCase.outcome,
+        errorCategory: testCase.errorCategory,
+      });
+    }
+  });
+
   test("routes through authenticated localhost and advertises the same MCP XSearch tool", async () => {
     const provider = new DeterministicXProvider({ search: birdResponse });
     const { app, scout } = fixture(provider);

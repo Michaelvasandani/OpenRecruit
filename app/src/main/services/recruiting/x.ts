@@ -6,6 +6,9 @@ import type { BirdAccess } from "../settings";
 import {
   BIRD_OUTPUT_LIMIT_BYTES,
   BIRD_SUPPORTED_VERSION,
+  BirdOperationCancelledError,
+  birdAccountQueueKey,
+  enqueueBirdOperation,
   executeBirdRead,
   executeBirdSearch,
 } from "../settings/bird";
@@ -30,10 +33,16 @@ export type XOperation = "search_recent" | "lookup" | "read";
 
 /** Safe provider failure labels. Raw Bird diagnostics never cross this seam. */
 export type XProviderFailureCategory =
+  | "missing_configuration"
+  | "stale_consent"
   | "authentication"
+  | "reauthentication_required"
   | "rate_limited"
   | "deleted_or_unavailable"
   | "unsupported_version"
+  | "timed_out"
+  | "cancelled"
+  | "malformed_content"
   | "provider_failure";
 
 /** Request metadata deliberately contains no Authorization header or secret. */
@@ -49,6 +58,8 @@ export type XApiRequest = {
   expansions: readonly string[];
   userFields: readonly string[];
   signal?: AbortSignal;
+  /** Host-only deadline for the single Bird subprocess. */
+  timeoutMs?: number;
 };
 
 export type XApiResponse = {
@@ -57,6 +68,9 @@ export type XApiResponse = {
   retryAfterMs?: number | null;
   costCents?: number;
   failureCategory?: XProviderFailureCategory;
+  /** Safe operational timing; never includes provider payloads. */
+  queueWaitMs?: number;
+  executionMs?: number;
 };
 
 export type XSearchEvidence = {
@@ -176,21 +190,53 @@ export class BirdXProvider implements XProvider {
         return { status: 400, body: "" };
       }
       const access = this.access();
-      if (!access || !access.resolvedPath) return { status: 401, body: "" };
+      if (!access || !access.resolvedPath)
+        return { status: 401, body: "", failureCategory: "reauthentication_required" };
       if (access.version !== BIRD_SUPPORTED_VERSION) {
         return { status: 426, body: "", failureCategory: "unsupported_version" };
       }
-      const execution = await executeBirdRead(access.resolvedPath, postId, request.signal);
-      if (execution.timedOut) return { status: 504, body: "" };
-      if (execution.outputExceededLimit) return { status: 413, body: "" };
+      const queued = await this.enqueue(access, request, async () => {
+        if (!sameBirdConsent(access, this.access())) return unavailableBirdExecution();
+        const executionStartedAt = Date.now();
+        const result = await executeBirdRead(
+          access.resolvedPath,
+          postId,
+          request.signal,
+          request.timeoutMs,
+        );
+        return { ...result, executionMs: Math.max(0, Date.now() - executionStartedAt) };
+      });
+      const execution = queued.value;
+      const queueWaitMs = queued.queueWaitMs;
+      const executionMs = execution.executionMs;
+      if (execution.timedOut)
+        return {
+          status: 504,
+          body: "",
+          failureCategory: "timed_out",
+          queueWaitMs,
+          executionMs,
+        };
+      if (execution.cancelled)
+        return { status: 499, body: "", failureCategory: "cancelled", queueWaitMs, executionMs };
+      if (execution.outputExceededLimit)
+        return {
+          status: 413,
+          body: "",
+          failureCategory: "malformed_content",
+          queueWaitMs,
+          executionMs,
+        };
       if (execution.spawnError || execution.exitCode !== 0) {
         return {
           status: execution.failureCategory === "rate_limited" ? 429 : 503,
           body: "",
           failureCategory: execution.failureCategory ?? "provider_failure",
+          queueWaitMs,
+          executionMs,
         };
       }
-      return { status: 200, body: execution.stdout };
+      return { status: 200, body: execution.stdout, queueWaitMs, executionMs };
     }
     if (
       request.operation !== "search_recent" ||
@@ -204,26 +250,120 @@ export class BirdXProvider implements XProvider {
       return { status: 400, body: "" };
     }
     const access = this.access();
-    if (!access || access.version !== BIRD_SUPPORTED_VERSION || !access.resolvedPath) {
-      return { status: 401, body: "" };
+    if (!access || !access.resolvedPath) {
+      return { status: 401, body: "", failureCategory: "reauthentication_required" };
     }
-    const execution = await executeBirdSearch(
-      access.resolvedPath,
-      request.query.trim(),
-      limit,
-      request.signal,
-    );
-    if (execution.timedOut) return { status: 504, body: "" };
-    if (execution.outputExceededLimit) return { status: 413, body: "" };
+    if (access.version !== BIRD_SUPPORTED_VERSION) {
+      return { status: 426, body: "", failureCategory: "unsupported_version" };
+    }
+    const queued = await this.enqueue(access, request, async () => {
+      if (!sameBirdConsent(access, this.access())) return unavailableBirdExecution();
+      const executionStartedAt = Date.now();
+      const result = await executeBirdSearch(
+        access.resolvedPath,
+        request.query?.trim() ?? "",
+        limit,
+        request.signal,
+        request.timeoutMs,
+      );
+      return { ...result, executionMs: Math.max(0, Date.now() - executionStartedAt) };
+    });
+    const execution = queued.value;
+    const queueWaitMs = queued.queueWaitMs;
+    const executionMs = execution.executionMs;
+    if (execution.timedOut)
+      return {
+        status: 504,
+        body: "",
+        failureCategory: "timed_out",
+        queueWaitMs,
+        executionMs,
+      };
+    if (execution.cancelled)
+      return { status: 499, body: "", failureCategory: "cancelled", queueWaitMs, executionMs };
+    if (execution.outputExceededLimit)
+      return {
+        status: 413,
+        body: "",
+        failureCategory: "malformed_content",
+        queueWaitMs,
+        executionMs,
+      };
     if (execution.spawnError || execution.exitCode !== 0) {
       return {
         status: execution.failureCategory === "rate_limited" ? 429 : 503,
         body: "",
         failureCategory: execution.failureCategory ?? "provider_failure",
+        queueWaitMs,
+        executionMs,
       };
     }
-    return { status: 200, body: execution.stdout };
+    return { status: 200, body: execution.stdout, queueWaitMs, executionMs };
   }
+
+  private async enqueue<T extends { failureCategory: string | null }>(
+    access: BirdAccess,
+    request: XApiRequest,
+    operation: () => Promise<T>,
+  ): Promise<{ value: T; queueWaitMs: number }> {
+    try {
+      return await enqueueBirdOperation(
+        birdAccountQueueKey({
+          accountIdentity: access.accountIdentity,
+          fingerprint: access.fingerprint,
+        }),
+        request.signal,
+        operation,
+      );
+    } catch (error) {
+      if (error instanceof BirdOperationCancelledError) {
+        return {
+          value: {
+            failureCategory: "cancelled",
+            cancelled: true,
+            timedOut: false,
+            outputExceededLimit: false,
+            spawnError: false,
+            exitCode: null,
+            stdout: "",
+            executionMs: 0,
+          } as unknown as T,
+          queueWaitMs: error.queueWaitMs,
+        };
+      }
+      throw error;
+    }
+  }
+}
+
+function sameBirdConsent(expected: BirdAccess, current: BirdAccess | null): boolean {
+  return Boolean(
+    current &&
+      current.version === expected.version &&
+      current.fingerprint === expected.fingerprint &&
+      current.resolvedPath === expected.resolvedPath &&
+      birdAccountQueueKey({
+        accountIdentity: current.accountIdentity,
+        fingerprint: current.fingerprint,
+      }) ===
+        birdAccountQueueKey({
+          accountIdentity: expected.accountIdentity,
+          fingerprint: expected.fingerprint,
+        }),
+  );
+}
+
+function unavailableBirdExecution() {
+  return {
+    exitCode: null,
+    stdout: "",
+    outputExceededLimit: false,
+    timedOut: false,
+    cancelled: false,
+    spawnError: false,
+    failureCategory: "reauthentication_required" as const,
+    executionMs: 0,
+  };
 }
 
 /** Official X API v2 public-read client. The token is process configuration,

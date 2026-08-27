@@ -8,7 +8,12 @@ import { drizzle } from "drizzle-orm/bun-sqlite";
 import type { Db } from "../../db/client";
 import * as schema from "../../db/schema";
 import { bus } from "../event-bus";
-import { probeBirdExecutable } from "./bird";
+import {
+  BirdOperationCancelledError,
+  enqueueBirdOperation,
+  executeBirdSearch,
+  probeBirdExecutable,
+} from "./bird";
 import { type BirdProbe, SettingsService } from "./index";
 
 function memDb(): Db {
@@ -38,6 +43,39 @@ function probe(path: string, account = "candidate") {
 }
 
 describe("Bird settings", () => {
+  test("serializes one authenticated account lane and removes queued cancellation", async () => {
+    const order: string[] = [];
+    const controller = new AbortController();
+    const first = enqueueBirdOperation("test-account", undefined, async () => {
+      order.push("first:start");
+      await Bun.sleep(30);
+      order.push("first:end");
+      return "first";
+    });
+    const second = enqueueBirdOperation("test-account", controller.signal, async () => {
+      order.push("second:start");
+      return "second";
+    });
+    setTimeout(() => controller.abort(), 5);
+    const results = await Promise.allSettled([first, second]);
+    expect(results[0]).toMatchObject({ status: "fulfilled", value: { value: "first" } });
+    expect(results[1]).toMatchObject({ status: "rejected" });
+    expect((results[1] as PromiseRejectedResult).reason).toBeInstanceOf(
+      BirdOperationCancelledError,
+    );
+    expect(order).toEqual(["first:start", "first:end"]);
+  });
+
+  test("bounds a Bird operation below the global twenty-second timeout", async () => {
+    const executable = join(tmpdir(), `openrecruit-bird-timeout-${crypto.randomUUID()}`);
+    writeFileSync(executable, "#!/bin/sh\nsleep 1\nprintf '%s' 'should-not-return'");
+    chmodSync(executable, 0o755);
+    const result = await executeBirdSearch(executable, "hiring", 1, undefined, 10);
+    expect(result.timedOut).toBe(true);
+    expect(result.failureCategory).toBe("timed_out");
+    expect(result.stdout).toBe("");
+  });
+
   test("defaults to an unconfigured safe projection", () => {
     expect(new SettingsService(memDb()).get().bird).toMatchObject({
       configured: false,

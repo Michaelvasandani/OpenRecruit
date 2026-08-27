@@ -21,6 +21,111 @@ export const BIRD_SUPPORTED_VERSION = "0.8.0";
 export const BIRD_PROCESS_TIMEOUT_MS = 20_000;
 export const BIRD_OUTPUT_LIMIT_BYTES = 2_000_000;
 
+/** A queued operation that was cancelled before its subprocess was started. */
+export class BirdOperationCancelledError extends Error {
+  constructor(readonly queueWaitMs = 0) {
+    super("Bird operation was cancelled");
+    this.name = "BirdOperationCancelledError";
+  }
+}
+
+export type BirdQueueResult<T> = { value: T; queueWaitMs: number };
+
+type BirdQueueEntry<T> = {
+  started: boolean;
+  signal?: AbortSignal;
+  onAbort?: () => void;
+  run: () => Promise<T>;
+  resolve: (result: BirdQueueResult<T>) => void;
+  reject: (error: unknown) => void;
+  enqueuedAt: number;
+};
+
+/** One FIFO lane per authenticated public X account. The map is process-local,
+ * matching the host-owned Bird subprocess boundary; no provider payload or
+ * authentication material is retained by the queue. */
+class BirdAccountQueue {
+  private readonly pending: BirdQueueEntry<unknown>[] = [];
+  private active = false;
+
+  enqueue<T>(signal: AbortSignal | undefined, run: () => Promise<T>): Promise<BirdQueueResult<T>> {
+    return new Promise((resolve, reject) => {
+      const entry: BirdQueueEntry<T> = {
+        started: false,
+        signal,
+        run,
+        resolve,
+        reject,
+        enqueuedAt: Date.now(),
+      };
+      entry.onAbort = () => {
+        if (entry.started) return;
+        const index = this.pending.indexOf(entry as BirdQueueEntry<unknown>);
+        if (index >= 0) this.pending.splice(index, 1);
+        reject(new BirdOperationCancelledError(Math.max(0, Date.now() - entry.enqueuedAt)));
+      };
+      if (signal?.aborted) {
+        reject(new BirdOperationCancelledError());
+        return;
+      }
+      signal?.addEventListener("abort", entry.onAbort, { once: true });
+      this.pending.push(entry as BirdQueueEntry<unknown>);
+      void this.pump();
+    });
+  }
+
+  private async pump(): Promise<void> {
+    if (this.active) return;
+    const entry = this.pending.shift();
+    if (!entry) return;
+    if (entry.signal?.aborted) {
+      entry.onAbort?.();
+      return void this.pump();
+    }
+    this.active = true;
+    entry.started = true;
+    const startedAt = Date.now();
+    entry.signal?.removeEventListener("abort", entry.onAbort as () => void);
+    try {
+      const value = await entry.run();
+      entry.resolve({ value, queueWaitMs: Math.max(0, startedAt - entry.enqueuedAt) });
+    } catch (error) {
+      entry.reject(error);
+    } finally {
+      this.active = false;
+      void this.pump();
+    }
+  }
+}
+
+const birdAccountQueues = new Map<string, BirdAccountQueue>();
+
+/** Stable non-secret lane identity. Account ID takes precedence over the
+ * display handle; a consent fingerprint is only a last-resort test/dev key. */
+export function birdAccountQueueKey(input: {
+  accountIdentity: BirdAccountIdentity;
+  fingerprint?: string;
+}): string {
+  const id = input.accountIdentity.id?.trim();
+  if (id) return `bird-account:${id}`;
+  const username = input.accountIdentity.username?.trim().toLowerCase();
+  if (username) return `bird-account:@${username}`;
+  return `bird-account:fingerprint:${input.fingerprint?.trim() || "unknown"}`;
+}
+
+export function enqueueBirdOperation<T>(
+  accountKey: string,
+  signal: AbortSignal | undefined,
+  run: () => Promise<T>,
+): Promise<BirdQueueResult<T>> {
+  let queue = birdAccountQueues.get(accountKey);
+  if (!queue) {
+    queue = new BirdAccountQueue();
+    birdAccountQueues.set(accountKey, queue);
+  }
+  return queue.enqueue(signal, run);
+}
+
 const BIRD_WORKING_DIRECTORY = process.env.OPENTRADE_HOME?.trim() || join(homedir(), ".opentrade");
 // Bird reads the authenticated browser session itself. Never let a process
 // inherited from the host accidentally select an API token or cookie-backed
@@ -77,6 +182,7 @@ type BirdCommandResult = {
   stderr: string;
   outputExceededLimit: boolean;
   timedOut: boolean;
+  cancelled: boolean;
   spawnError: boolean;
 };
 
@@ -84,16 +190,21 @@ type BirdCommandResult = {
  * stdout remain inside this module and are never returned to the caller. */
 export type BirdExecutionFailureCategory =
   | "authentication"
+  | "reauthentication_required"
+  | "stale_consent"
   | "rate_limited"
   | "deleted_or_unavailable"
   | "unsupported_version"
+  | "timed_out"
+  | "cancelled"
+  | "malformed_content"
   | "provider_failure";
 
 /** Safe projection of one bounded Bird process. The stderr transcript is
  * intentionally not returned across the settings/provider seam. */
 export type BirdExecution = Pick<
   BirdCommandResult,
-  "exitCode" | "stdout" | "outputExceededLimit" | "timedOut" | "spawnError"
+  "exitCode" | "stdout" | "outputExceededLimit" | "timedOut" | "cancelled" | "spawnError"
 > & { failureCategory: BirdExecutionFailureCategory | null };
 /** @deprecated Use BirdExecution; retained for callers of the search adapter. */
 export type BirdSearchExecution = BirdExecution;
@@ -307,6 +418,7 @@ async function runBirdCommand(
   executable: string,
   args: readonly string[],
   signal?: AbortSignal,
+  timeoutMs = BIRD_PROCESS_TIMEOUT_MS,
 ): Promise<BirdCommandResult> {
   mkdirSync(BIRD_WORKING_DIRECTORY, { recursive: true });
   const env = { ...process.env };
@@ -317,6 +429,7 @@ async function runBirdCommand(
     let stderr = "";
     let outputExceededLimit = false;
     let timedOut = false;
+    let cancelled = false;
     let settled = false;
     const child = spawn(executable, [...args], {
       cwd: BIRD_WORKING_DIRECTORY,
@@ -325,6 +438,7 @@ async function runBirdCommand(
       windowsHide: true,
       stdio: ["ignore", "pipe", "pipe"],
     });
+    const boundedTimeoutMs = Math.max(0, Math.min(BIRD_PROCESS_TIMEOUT_MS, timeoutMs));
     const timer = setTimeout(() => {
       if (settled) return;
       timedOut = true;
@@ -335,12 +449,14 @@ async function runBirdCommand(
         stderr: "",
         outputExceededLimit,
         timedOut,
+        cancelled,
         spawnError: false,
       });
-    }, BIRD_PROCESS_TIMEOUT_MS);
+    }, boundedTimeoutMs);
 
     const onAbort = () => {
       if (settled) return;
+      cancelled = true;
       child.kill("SIGTERM");
       resolveOnce({
         exitCode: null,
@@ -348,6 +464,7 @@ async function runBirdCommand(
         stderr: "",
         outputExceededLimit,
         timedOut: false,
+        cancelled,
         spawnError: false,
       });
     };
@@ -377,6 +494,7 @@ async function runBirdCommand(
         stderr: "",
         outputExceededLimit,
         timedOut,
+        cancelled,
         spawnError: true,
       });
     });
@@ -387,6 +505,7 @@ async function runBirdCommand(
         stderr,
         outputExceededLimit,
         timedOut,
+        cancelled,
         spawnError: false,
       });
     });
@@ -409,20 +528,32 @@ export async function executeBirdSearch(
   query: string,
   limit: number,
   signal?: AbortSignal,
+  timeoutMs?: number,
 ): Promise<BirdExecution> {
   const result = await runBirdCommand(
     resolvedExecutablePath,
     ["search", query, "-n", String(limit), "--json"],
     signal,
+    timeoutMs,
   );
   return {
     exitCode: result.exitCode,
-    stdout: result.stdout,
+    // Provider diagnostics are deliberately discarded on every failure; only
+    // successful JSON is allowed to cross the settings/provider seam.
+    stdout: result.exitCode === 0 ? result.stdout : "",
     outputExceededLimit: result.outputExceededLimit,
     timedOut: result.timedOut,
+    cancelled: result.cancelled,
     spawnError: result.spawnError,
-    failureCategory:
-      result.exitCode === 0 ? null : classifyBirdFailure(result.stdout, result.stderr),
+    failureCategory: result.cancelled
+      ? "cancelled"
+      : result.timedOut
+        ? "timed_out"
+        : result.outputExceededLimit
+          ? "malformed_content"
+          : result.exitCode === 0
+            ? null
+            : classifyBirdFailure(result.stdout, result.stderr),
   };
 }
 
@@ -432,16 +563,30 @@ export async function executeBirdRead(
   resolvedExecutablePath: string,
   postId: string,
   signal?: AbortSignal,
+  timeoutMs?: number,
 ): Promise<BirdExecution> {
-  const result = await runBirdCommand(resolvedExecutablePath, ["read", postId, "--json"], signal);
+  const result = await runBirdCommand(
+    resolvedExecutablePath,
+    ["read", postId, "--json"],
+    signal,
+    timeoutMs,
+  );
   return {
     exitCode: result.exitCode,
-    stdout: result.stdout,
+    stdout: result.exitCode === 0 ? result.stdout : "",
     outputExceededLimit: result.outputExceededLimit,
     timedOut: result.timedOut,
+    cancelled: result.cancelled,
     spawnError: result.spawnError,
-    failureCategory:
-      result.exitCode === 0 ? null : classifyBirdFailure(result.stdout, result.stderr),
+    failureCategory: result.cancelled
+      ? "cancelled"
+      : result.timedOut
+        ? "timed_out"
+        : result.outputExceededLimit
+          ? "malformed_content"
+          : result.exitCode === 0
+            ? null
+            : classifyBirdFailure(result.stdout, result.stderr),
   };
 }
 

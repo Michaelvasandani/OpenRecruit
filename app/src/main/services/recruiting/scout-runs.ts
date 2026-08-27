@@ -48,6 +48,7 @@ import {
 } from "../../db/schema";
 import { bus } from "../event-bus";
 import type { BirdAccess } from "../settings";
+import { BIRD_SUPPORTED_VERSION } from "../settings/bird";
 import { assertSafeMaterial } from "./contract";
 import { RecruitingError, type RecruitingFailureCategory } from "./errors";
 import {
@@ -133,6 +134,8 @@ export type XSearchCommand = {
   scoutId: string;
   query: string;
   limit?: number;
+  /** Host-owned cancellation for a disconnected authenticated request. */
+  signal?: AbortSignal;
 };
 
 export type XReadCommand = {
@@ -335,6 +338,9 @@ export class ScoutRunApplication {
   private readonly webSearchSettings?: () => WebSearchSettingsProjection;
   private readonly birdAccess?: () => BirdAccess | null;
   private readonly pendingXEvidence = new Map<string, PendingXEvidence>();
+  /** Every in-flight Bird operation is tied to its Run so terminal Run
+   * transitions can cancel both queued and active work. */
+  private readonly runOperationControllers = new Map<string, Set<AbortController>>();
 
   constructor(
     private readonly db: Db,
@@ -345,6 +351,31 @@ export class ScoutRunApplication {
     this.birdAccess = options.birdAccess;
     this.birdProvider =
       options.birdProvider ?? new BirdXProvider(options.birdAccess ?? (() => null));
+  }
+
+  private registerRunOperation(runId: string): AbortController {
+    const controller = new AbortController();
+    let operations = this.runOperationControllers.get(runId);
+    if (!operations) {
+      operations = new Set<AbortController>();
+      this.runOperationControllers.set(runId, operations);
+    }
+    operations.add(controller);
+    return controller;
+  }
+
+  private unregisterRunOperation(runId: string, controller: AbortController): void {
+    const operations = this.runOperationControllers.get(runId);
+    if (!operations) return;
+    operations.delete(controller);
+    if (operations.size === 0) this.runOperationControllers.delete(runId);
+  }
+
+  private cancelRunOperations(runId: string): void {
+    const operations = this.runOperationControllers.get(runId);
+    if (!operations) return;
+    for (const controller of operations) controller.abort();
+    this.runOperationControllers.delete(runId);
   }
 
   createSource(command: CreateSourceCommand): {
@@ -713,6 +744,20 @@ export class ScoutRunApplication {
       const checkedAt = this.now();
       const birdAccess = this.birdAccess?.();
       if (birdAccess) {
+        if (birdAccess.version !== BIRD_SUPPORTED_VERSION) {
+          this.persistSourceReadiness(
+            source.id,
+            {
+              readiness: "degraded",
+              safeFailure: "The configured Bird version is unsupported",
+              nextAction: "Upgrade Bird to the supported OpenRecruit version",
+              retryAt: null,
+              sourceIdentity: "bird",
+            },
+            checkedAt,
+          );
+          return toSourceAccessSummary(requireSourceAccess(this.db, source.id));
+        }
         const account = birdAccess.accountIdentity.username
           ? `@${birdAccess.accountIdentity.username}`
           : birdAccess.accountIdentity.id
@@ -852,7 +897,10 @@ export class ScoutRunApplication {
         `X Source ${source.id} provider changed after Run preflight; create a new Source`,
       );
     }
-    const budget = normalizeBudget(command.budget ?? storedBudget(run.budget));
+    // Per-operation bounds may narrow a Run, but never replace its persisted
+    // wall-clock/spend budget. In particular, waiting for an account queue is
+    // charged to the invoking Run rather than receiving a fresh default.
+    const budget = normalizeBudget({ ...storedBudget(run.budget), ...(command.budget ?? {}) });
     const requestedScope = JSON.stringify({
       ...(command.searchQuery
         ? {
@@ -877,6 +925,12 @@ export class ScoutRunApplication {
         : {}),
     });
     const startedAt = this.now();
+    // Once a Run has started, its persisted start is the budget anchor. A
+    // Source operation must not reset the wall-clock allowance when it enters
+    // an account queue; preflight-only test/direct calls use their invocation
+    // time as the anchor.
+    const budgetStartedAt =
+      run.startedAt ?? (run.status === "preflight" ? startedAt : run.createdAt);
     const attemptId = randomUUID();
     const access = requireSourceAccess(this.db, source.id);
     this.db.transaction((tx) => {
@@ -1029,10 +1083,12 @@ export class ScoutRunApplication {
 
     if (source.kind === "x") {
       return this.readXSource({
+        runId: run.id,
         source,
         access,
         budget,
         startedAt,
+        budgetStartedAt,
         provider: command.provider as XProvider | undefined,
         pinnedProvider,
         retry: command.retry,
@@ -1324,10 +1380,12 @@ export class ScoutRunApplication {
   }
 
   private async readXSource(input: {
+    runId: string;
     source: SourceRow;
     access: SourceAccessRow;
     budget: RunBudget;
     startedAt: number;
+    budgetStartedAt: number;
     provider?: XProvider;
     pinnedProvider?: XSourceProvider | null;
     retry?: ReadSourceCommand["retry"];
@@ -1338,7 +1396,7 @@ export class ScoutRunApplication {
     signal?: AbortSignal;
     finish: SourceAttemptFinish;
   }): Promise<SourceAttemptResult> {
-    const { source, access, budget, startedAt, finish } = input;
+    const { runId, source, access, budget, startedAt, budgetStartedAt, finish } = input;
     let config: ReturnType<typeof xConfigFromSource>;
     try {
       config = xConfigFromSource(source.config);
@@ -1355,6 +1413,7 @@ export class ScoutRunApplication {
           retryAt: null,
           sourceIdentity: "x-api-v2",
         },
+        audit: { errorCategory: "missing_configuration" },
       });
     }
     if (input.pinnedProvider !== undefined && config.provider !== input.pinnedProvider) {
@@ -1398,6 +1457,7 @@ export class ScoutRunApplication {
           retryAt: null,
           sourceIdentity: "bird",
         },
+        audit: { errorCategory: "stale_consent" },
       });
     }
     const maxPages = Math.min(
@@ -1445,6 +1505,14 @@ export class ScoutRunApplication {
     let partialFailure: string | null = null;
     let retryAt: number | null = null;
     let resultCount = 0;
+    let queueWaitMs: number | undefined;
+    let executionMs: number | undefined;
+    let finalFailureCategory: string | undefined;
+    const operationAudit = (extra: Record<string, unknown> = {}) => ({
+      ...extra,
+      ...(queueWaitMs === undefined ? {} : { queueWaitMs }),
+      ...(executionMs === undefined ? {} : { executionMs }),
+    });
     // An explicit XSearch query is always a search, even if the selected
     // Source also retains post IDs for the separate X API lookup operation.
     // XRead is a separate one-post operation and never falls back to lookup.
@@ -1462,12 +1530,26 @@ export class ScoutRunApplication {
             retryAt: null,
             sourceIdentity: config.provider,
           },
-          audit: { errorCategory: "cancelled" },
+          audit: operationAudit({ errorCategory: "cancelled", queueWaitMs: 0, executionMs: 0 }),
         });
       }
-      if (this.now() - startedAt > budget.maxWallClockMs) {
-        partialFailure = "The X Source read exceeded its wall-clock budget";
-        break;
+      const remainingWallClockMs = Math.max(
+        0,
+        budgetStartedAt + budget.maxWallClockMs - this.now(),
+      );
+      if (remainingWallClockMs <= 0) {
+        return finish("timed_out", {
+          pageCount,
+          safeFailure: "The X Source read exceeded its wall-clock budget",
+          accessPatch: {
+            readiness: "degraded",
+            safeFailure: "The X Source read timed out",
+            nextAction: "Retry with a bounded Run",
+            retryAt: null,
+            sourceIdentity: config.provider,
+          },
+          audit: operationAudit({ errorCategory: "timed_out" }),
+        });
       }
       const request = lookup
         ? xRequestForLookup(config)
@@ -1479,35 +1561,172 @@ export class ScoutRunApplication {
               nextCursor,
               input.searchLimit ?? Math.min(100, Math.max(10, maxItems)),
             );
-      if (input.readPostId && input.signal) request.signal = input.signal;
+      const runController = config.provider === "bird" ? this.registerRunOperation(runId) : null;
+      const wallClockController = config.provider === "bird" ? new AbortController() : null;
+      let wallClockExpired = false;
+      const wallClockTimer =
+        wallClockController && remainingWallClockMs > 0
+          ? setTimeout(() => {
+              wallClockExpired = true;
+              wallClockController.abort();
+            }, remainingWallClockMs)
+          : null;
+      const composed = composeAbortSignals([
+        input.signal,
+        runController?.signal,
+        wallClockController?.signal,
+      ]);
+      if (composed.signal) request.signal = composed.signal;
+      if (config.provider === "bird") request.timeoutMs = remainingWallClockMs;
       let response: XApiResponse = { status: 503, body: "" };
       let attempts = 0;
-      while (attempts < attemptsAllowed) {
-        attempts++;
-        try {
-          response = await provider.request(request);
-        } catch {
-          response = { status: 503, body: "" };
+      try {
+        while (attempts < attemptsAllowed) {
+          attempts++;
+          try {
+            response = await provider.request(request);
+          } catch {
+            response = {
+              status: composed.signal?.aborted ? 499 : 503,
+              body: "",
+              ...(composed.signal?.aborted ? { failureCategory: "cancelled" as const } : {}),
+            };
+          }
+          if (
+            ![408, 425, 500, 502, 503, 504].includes(response.status) ||
+            attempts >= attemptsAllowed
+          )
+            break;
         }
-        if (
-          ![408, 425, 500, 502, 503, 504].includes(response.status) ||
-          attempts >= attemptsAllowed
-        )
-          break;
+      } finally {
+        if (wallClockTimer) clearTimeout(wallClockTimer);
+        composed.dispose();
+        if (runController) this.unregisterRunOperation(runId, runController);
       }
+      queueWaitMs = response.queueWaitMs ?? queueWaitMs;
+      executionMs = response.executionMs ?? executionMs;
+      finalFailureCategory = response.failureCategory ?? finalFailureCategory;
       pageCount++;
-      if (input.readPostId && input.signal?.aborted) {
-        return finish("cancelled", {
+      if (response.status === 499 || response.failureCategory === "cancelled") {
+        const runAfterAbort = this.db.select().from(scoutRuns).where(eq(scoutRuns.id, runId)).get();
+        const timedOut =
+          wallClockExpired ||
+          (!input.signal?.aborted &&
+            !(
+              runAfterAbort &&
+              (TERMINAL_RUN_STATUSES as readonly string[]).includes(runAfterAbort.status)
+            ) &&
+            this.now() >= budgetStartedAt + budget.maxWallClockMs);
+        return finish(timedOut ? "timed_out" : "cancelled", {
           pageCount,
-          safeFailure: "The XRead request was cancelled",
+          safeFailure: timedOut
+            ? "The X Source read exceeded its wall-clock budget"
+            : "The X request was cancelled",
           accessPatch: {
             readiness: access.readiness as SourceReadinessValue,
-            safeFailure: null,
-            nextAction: "Read the public X post again when ready",
+            safeFailure: timedOut ? "The X Source read timed out" : null,
+            nextAction: timedOut
+              ? "Retry with a bounded Run"
+              : "Run the X operation again when ready",
             retryAt: null,
             sourceIdentity: config.provider,
           },
-          audit: { errorCategory: "cancelled" },
+          audit: operationAudit({ errorCategory: timedOut ? "timed_out" : "cancelled" }),
+        });
+      }
+      if (
+        config.provider === "bird" &&
+        input.searchQuery &&
+        (response.status === 401 ||
+          response.failureCategory === "authentication" ||
+          response.failureCategory === "reauthentication_required" ||
+          response.failureCategory === "stale_consent")
+      ) {
+        return finish("blocked", {
+          pageCount,
+          safeFailure: "Bird could not access the Candidate-approved X session",
+          accessPatch: {
+            readiness: "reauthentication_required",
+            safeFailure: "Bird could not access the Candidate-approved X session",
+            nextAction: "Test and confirm the configured Bird executable and account",
+            retryAt: null,
+            sourceIdentity: "bird",
+          },
+          audit: operationAudit({
+            errorCategory: response.failureCategory ?? "reauthentication_required",
+          }),
+        });
+      }
+      if (
+        config.provider === "bird" &&
+        input.searchQuery &&
+        (response.status === 426 || response.failureCategory === "unsupported_version")
+      ) {
+        return finish("unsupported", {
+          pageCount,
+          safeFailure: "The configured Bird version is unsupported for XSearch",
+          accessPatch: {
+            readiness: "degraded",
+            safeFailure: "The configured Bird version is unsupported for XSearch",
+            nextAction: "Upgrade Bird to the supported OpenRecruit version",
+            retryAt: null,
+            sourceIdentity: "bird",
+          },
+          audit: operationAudit({ errorCategory: "unsupported_version" }),
+        });
+      }
+      if (
+        config.provider === "bird" &&
+        input.searchQuery &&
+        (response.status === 504 || response.failureCategory === "timed_out")
+      ) {
+        return finish("timed_out", {
+          pageCount,
+          safeFailure: "Bird XSearch timed out",
+          accessPatch: {
+            readiness: "degraded",
+            safeFailure: "Bird XSearch timed out",
+            nextAction: "Retry XSearch with a bounded Run",
+            retryAt: null,
+            sourceIdentity: "bird",
+          },
+          audit: operationAudit({ errorCategory: "timed_out" }),
+        });
+      }
+      if (
+        config.provider === "bird" &&
+        input.searchQuery &&
+        (response.status === 413 || response.failureCategory === "malformed_content")
+      ) {
+        return finish("malformed_content", {
+          pageCount,
+          safeFailure: "Bird XSearch output exceeded the bounded parser limit",
+          accessPatch: {
+            readiness: "degraded",
+            safeFailure: "Bird XSearch output exceeded the bounded parser limit",
+            nextAction: "Verify the Bird executable output and retry XSearch",
+            retryAt: null,
+            sourceIdentity: "bird",
+          },
+          audit: operationAudit({ errorCategory: "malformed_content" }),
+        });
+      }
+      if (
+        config.provider === "bird" &&
+        input.searchQuery &&
+        response.failureCategory === "deleted_or_unavailable"
+      ) {
+        return finish("rejected", {
+          pageCount,
+          safeFailure: "Bird could not find an available public X result",
+          accessPatch: {
+            readiness: "ready",
+            safeFailure: null,
+            nextAction: "Run XSearch again with another bounded query",
+            retryAt: null,
+            sourceIdentity: "bird",
+          },
+          audit: operationAudit({ errorCategory: "deleted_or_unavailable" }),
         });
       }
       spentCents += response.costCents ?? 0;
@@ -1524,7 +1743,14 @@ export class ScoutRunApplication {
           },
         });
       }
-      if (response.status === 401) {
+      if (
+        response.status === 401 ||
+        (config.provider === "bird" &&
+          input.readPostId &&
+          (response.failureCategory === "authentication" ||
+            response.failureCategory === "reauthentication_required" ||
+            response.failureCategory === "stale_consent"))
+      ) {
         return finish("blocked", {
           pageCount,
           safeFailure:
@@ -1544,9 +1770,9 @@ export class ScoutRunApplication {
             retryAt: null,
             sourceIdentity: config.provider,
           },
-          audit: input.readPostId
-            ? { errorCategory: response.failureCategory ?? "authentication" }
-            : undefined,
+          audit: operationAudit(
+            input.readPostId ? { errorCategory: response.failureCategory ?? "authentication" } : {},
+          ),
         });
       }
       if (config.provider === "bird" && input.readPostId && response.status === 426) {
@@ -1560,7 +1786,9 @@ export class ScoutRunApplication {
             retryAt: null,
             sourceIdentity: "bird",
           },
-          audit: { errorCategory: response.failureCategory ?? "unsupported_version" },
+          audit: operationAudit({
+            errorCategory: response.failureCategory ?? "unsupported_version",
+          }),
         });
       }
       if (
@@ -1578,25 +1806,7 @@ export class ScoutRunApplication {
             retryAt: null,
             sourceIdentity: "bird",
           },
-          audit: { errorCategory: "deleted_or_unavailable" },
-        });
-      }
-      if (
-        config.provider === "bird" &&
-        input.readPostId &&
-        response.failureCategory === "authentication"
-      ) {
-        return finish("blocked", {
-          pageCount,
-          safeFailure: "Bird could not access the Candidate-approved X session",
-          accessPatch: {
-            readiness: "reauthentication_required",
-            safeFailure: "Bird could not access the Candidate-approved X session",
-            nextAction: "Test and confirm the configured Bird executable and account",
-            retryAt: null,
-            sourceIdentity: "bird",
-          },
-          audit: { errorCategory: "authentication" },
+          audit: operationAudit({ errorCategory: "deleted_or_unavailable" }),
         });
       }
       if (
@@ -1614,7 +1824,7 @@ export class ScoutRunApplication {
             retryAt: null,
             sourceIdentity: "bird",
           },
-          audit: { errorCategory: "unsupported_version" },
+          audit: operationAudit({ errorCategory: "unsupported_version" }),
         });
       }
       if (response.status === 403) {
@@ -1628,15 +1838,18 @@ export class ScoutRunApplication {
             retryAt: null,
             sourceIdentity: config.provider,
           },
-          audit: input.readPostId ? { errorCategory: "provider_failure" } : undefined,
+          audit: operationAudit(input.readPostId ? { errorCategory: "provider_failure" } : {}),
         });
       }
-      if (response.status === 429) {
+      if (response.status === 429 || response.failureCategory === "rate_limited") {
         retryAt = startedAt + Math.max(0, response.retryAfterMs ?? 60_000);
         return finish("rate_limited", {
           pageCount,
           retryAt,
-          safeFailure: "X asked OpenRecruit to retry after the documented rate limit window",
+          safeFailure:
+            config.provider === "bird"
+              ? "Bird asked OpenRecruit to retry after the documented rate limit window"
+              : "X asked OpenRecruit to retry after the documented rate limit window",
           accessPatch: {
             readiness: "rate_limited",
             safeFailure: "X asked OpenRecruit to retry after the documented rate limit window",
@@ -1644,30 +1857,14 @@ export class ScoutRunApplication {
             retryAt,
             sourceIdentity: config.provider,
           },
-          audit: input.readPostId ? { errorCategory: "rate_limited" } : undefined,
+          audit: operationAudit({ errorCategory: "rate_limited" }),
         });
       }
       if (
         config.provider === "bird" &&
         input.readPostId &&
-        response.failureCategory === "rate_limited"
+        (response.status === 504 || response.failureCategory === "timed_out")
       ) {
-        retryAt = startedAt + Math.max(0, response.retryAfterMs ?? 60_000);
-        return finish("rate_limited", {
-          pageCount,
-          retryAt,
-          safeFailure: "Bird asked OpenRecruit to retry after the documented rate limit window",
-          accessPatch: {
-            readiness: "rate_limited",
-            safeFailure: "Bird asked OpenRecruit to retry after the documented rate limit window",
-            nextAction: "Retry XRead after the indicated time",
-            retryAt,
-            sourceIdentity: "bird",
-          },
-          audit: { errorCategory: "rate_limited" },
-        });
-      }
-      if (config.provider === "bird" && input.readPostId && response.status === 504) {
         return finish("timed_out", {
           pageCount,
           retryAt: startedAt + baseDelayMs,
@@ -1679,7 +1876,7 @@ export class ScoutRunApplication {
             retryAt: startedAt + baseDelayMs,
             sourceIdentity: "bird",
           },
-          audit: { errorCategory: "timed_out" },
+          audit: operationAudit({ errorCategory: "timed_out" }),
         });
       }
       if ([408, 425, 500, 502, 503, 504].includes(response.status)) {
@@ -1708,7 +1905,7 @@ export class ScoutRunApplication {
             retryAt: null,
             sourceIdentity: "bird",
           },
-          audit: input.readPostId ? { errorCategory: "malformed_content" } : undefined,
+          audit: operationAudit(input.readPostId ? { errorCategory: "malformed_content" } : {}),
         });
       }
       if (
@@ -1726,7 +1923,7 @@ export class ScoutRunApplication {
             retryAt: null,
             sourceIdentity: "bird",
           },
-          audit: { errorCategory: "deleted_or_unavailable" },
+          audit: operationAudit({ errorCategory: "deleted_or_unavailable" }),
         });
       }
       if (response.status < 200 || response.status >= 300) {
@@ -1802,12 +1999,13 @@ export class ScoutRunApplication {
               retryAt: null,
               sourceIdentity: config.provider,
             },
-            audit:
+            audit: operationAudit(
               input.readPostId && readContentError
                 ? { errorCategory: readContentError.category }
                 : input.readPostId
                   ? { errorCategory: "malformed_content" }
-                  : undefined,
+                  : {},
+            ),
           },
         );
       }
@@ -1836,9 +2034,18 @@ export class ScoutRunApplication {
       pageCount,
       retryAt,
       ...(input.searchQuery
-        ? { audit: { resultCount } }
+        ? {
+            audit: operationAudit({
+              resultCount,
+              ...(partialFailure
+                ? { errorCategory: finalFailureCategory ?? "provider_failure" }
+                : {}),
+            }),
+          }
         : input.readPostId
-          ? { audit: { errorCategory: partialFailure ? "provider_failure" : undefined } }
+          ? {
+              audit: operationAudit(partialFailure ? { errorCategory: "provider_failure" } : {}),
+            }
           : {}),
       safeFailure:
         partialFailure ?? (exhausted ? "The X Source item or page budget was exhausted" : null),
@@ -1923,13 +2130,22 @@ export class ScoutRunApplication {
       provider: this.birdProvider,
       searchQuery: query,
       searchLimit: limit,
+      signal: command.signal,
       persistItems: false,
       budget: { maxItems: limit, maxPages: 1 },
     });
     if (attempt.outcome !== "succeeded_with_items" && attempt.outcome !== "succeeded_empty") {
+      const details = parseJson(attempt.requestedScope);
+      const rawCategory =
+        details &&
+        typeof details === "object" &&
+        typeof (details as Record<string, unknown>).errorCategory === "string"
+          ? String((details as Record<string, unknown>).errorCategory)
+          : attempt.outcome;
       throw new RecruitingError(
         "CONFLICT",
         attempt.safeFailure ?? "Bird could not complete the bounded XSearch",
+        xReadFailureCategory(rawCategory),
       );
     }
     const retrievedAt = attempt.completedAt ?? this.now();
@@ -3021,6 +3237,7 @@ export class ScoutRunApplication {
       return { value, revision, replayed: false };
     });
     if ((TERMINAL_RUN_STATUSES as readonly string[]).includes(command.status)) {
+      this.cancelRunOperations(command.runId);
       this.invalidatePendingXEvidence(command.runId);
     }
     if (notification)
@@ -3991,8 +4208,13 @@ export function validateXReadTarget(value: unknown): XReadTarget {
 
 function xReadFailureCategory(value: string): RecruitingFailureCategory {
   switch (value) {
+    case "missing_configuration":
+      return "missing_configuration";
+    case "stale_consent":
+      return "invalid_authentication";
     case "authentication":
     case "invalid_authentication":
+    case "reauthentication_required":
       return "invalid_authentication";
     case "rate_limited":
       return "rate_limited";
@@ -4224,6 +4446,8 @@ function toSourceAttemptSummary(
       retryDisposition: audit.retryDisposition,
       errorCategory: audit.errorCategory,
       attemptCount: audit.attemptCount,
+      queueWaitMs: audit.queueWaitMs,
+      executionMs: audit.executionMs,
       startedAt: row.startedAt,
       completedAt: row.completedAt,
     }),
@@ -4236,6 +4460,8 @@ function parseSourceAttemptAudit(value: string): {
   retryDisposition: "not_retried" | "recovered" | "exhausted" | "mixed" | null;
   errorCategory: string | null;
   attemptCount: number | undefined;
+  queueWaitMs: number | undefined;
+  executionMs: number | undefined;
 } {
   try {
     const parsed = JSON.parse(value) as Record<string, unknown>;
@@ -4254,10 +4480,47 @@ function parseSourceAttemptAudit(value: string): {
       parsed.attemptCount >= 0
         ? parsed.attemptCount
         : undefined;
-    return { provider, retryDisposition, errorCategory, attemptCount };
+    const queueWaitMs = safeNonNegativeInteger(parsed.queueWaitMs);
+    const executionMs = safeNonNegativeInteger(parsed.executionMs);
+    return { provider, retryDisposition, errorCategory, attemptCount, queueWaitMs, executionMs };
   } catch {
-    return { provider: null, retryDisposition: null, errorCategory: null, attemptCount: undefined };
+    return {
+      provider: null,
+      retryDisposition: null,
+      errorCategory: null,
+      attemptCount: undefined,
+      queueWaitMs: undefined,
+      executionMs: undefined,
+    };
   }
+}
+
+function safeNonNegativeInteger(value: unknown): number | undefined {
+  return typeof value === "number" && Number.isSafeInteger(value) && value >= 0 ? value : undefined;
+}
+
+/** Compose request, Run-lifecycle, and wall-clock cancellation without relying
+ * on AbortSignal.any (which is not present in every Electron/Bun runtime). */
+function composeAbortSignals(signals: Array<AbortSignal | undefined>): {
+  signal: AbortSignal | undefined;
+  dispose: () => void;
+} {
+  const active = signals.filter((signal): signal is AbortSignal => Boolean(signal));
+  if (active.length === 0) return { signal: undefined, dispose: () => {} };
+  if (active.length === 1) return { signal: active[0], dispose: () => {} };
+  const controller = new AbortController();
+  const listeners = active.map((signal) => {
+    const listener = () => controller.abort();
+    if (signal.aborted) controller.abort();
+    else signal.addEventListener("abort", listener, { once: true });
+    return { signal, listener };
+  });
+  return {
+    signal: controller.signal,
+    dispose: () => {
+      for (const { signal, listener } of listeners) signal.removeEventListener("abort", listener);
+    },
+  };
 }
 
 function conditionalHeaders(access: SourceAccessRow): Record<string, string> {

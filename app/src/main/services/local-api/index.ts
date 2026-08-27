@@ -9,7 +9,12 @@ import type { StatusArbiter } from "../status/arbiter";
 type WebAccessBoundary = {
   resolveScoutForAgent(agentId: string): string | null;
   webSearch(input: { scoutId: string; query: string; limit?: number }): Promise<unknown>;
-  xSearch(input: { scoutId: string; query: string; limit?: number }): Promise<unknown>;
+  xSearch(input: {
+    scoutId: string;
+    query: string;
+    limit?: number;
+    signal?: AbortSignal;
+  }): Promise<unknown>;
   xRead(input: { scoutId: string; target: string; signal?: AbortSignal }): Promise<unknown>;
   webFetch(input: { scoutId: string; urls: string[]; contentLimit?: number }): Promise<unknown>;
   readRunContextForScout(scoutId: string): unknown;
@@ -341,19 +346,35 @@ export class LocalApiServer {
     if (!body || typeof body.query !== "string") {
       return json(res, 400, { error: "XSearch query is required", code: "VALIDATION" });
     }
+    const controller = new AbortController();
+    const onAborted = () => controller.abort();
+    req.once("aborted", onAborted);
+    res.once("close", onAborted);
     try {
       recruiting.beginRunForScout(scoutId);
       const result = await recruiting.xSearch({
         scoutId,
         query: body.query,
         limit: body.limit as number | undefined,
+        signal: controller.signal,
       });
       return json(res, 200, result);
     } catch (error) {
       const code =
         error && typeof error === "object" && "code" in error ? String(error.code) : "CONFLICT";
+      const category =
+        error && typeof error === "object" && "category" in error
+          ? String(error.category)
+          : undefined;
       const message = error instanceof Error ? error.message : "XSearch could not complete";
-      return json(res, code === "NOT_FOUND" ? 404 : 400, { error: message, code });
+      return json(res, code === "NOT_FOUND" ? 404 : 400, {
+        error: message,
+        code,
+        ...(category && category !== "null" ? { category } : {}),
+      });
+    } finally {
+      req.off("aborted", onAborted);
+      res.off("close", onAborted);
     }
   }
 
