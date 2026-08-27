@@ -9,6 +9,7 @@ import type { StatusArbiter } from "../status/arbiter";
 type WebAccessBoundary = {
   resolveScoutForAgent(agentId: string): string | null;
   webSearch(input: { scoutId: string; query: string; limit?: number }): Promise<unknown>;
+  xSearch(input: { scoutId: string; query: string; limit?: number }): Promise<unknown>;
   webFetch(input: { scoutId: string; urls: string[]; contentLimit?: number }): Promise<unknown>;
   readRunContextForScout(scoutId: string): unknown;
   listSelectedSourcesForScout(scoutId: string): unknown;
@@ -27,6 +28,11 @@ type WebAccessBoundary = {
     scoutId: string;
     outcome: "completed" | "incomplete" | "failed" | "cancelled";
     safeFailure?: string | null;
+  }): unknown;
+  recordXEvidenceForScout(input: {
+    scoutId: string;
+    sourceAttemptId: string;
+    evidenceReferences: string[];
   }): unknown;
 };
 
@@ -162,6 +168,9 @@ export class LocalApiServer {
     }
     if (req.method === "POST" && url.pathname === "/web-search") {
       return this.handleWebSearch(req, res);
+    }
+    if (req.method === "POST" && url.pathname === "/x-search") {
+      return this.handleXSearch(req, res);
     }
     if (req.method === "POST" && url.pathname === "/web-fetch") {
       return this.handleWebFetch(req, res);
@@ -313,6 +322,36 @@ export class LocalApiServer {
     }
   }
 
+  /** Authenticated agent-facing Bird XSearch boundary. The Scout identity is
+   * derived from the agent header; request bodies cannot select a Source,
+   * provider, executable, or Run. */
+  private async handleXSearch(req: IncomingMessage, res: ServerResponse) {
+    const recruiting = this.recruiting;
+    if (!recruiting) return json(res, 503, { error: "recruiting service not ready" });
+    const agentId = header(req, "x-opentrade-agent");
+    if (!agentId) return json(res, 404, { error: "unknown Scout" });
+    const scoutId = recruiting.resolveScoutForAgent(agentId);
+    if (!scoutId) return json(res, 404, { error: "unknown Scout" });
+    const body = await readJson(req);
+    if (!body || typeof body.query !== "string") {
+      return json(res, 400, { error: "XSearch query is required", code: "VALIDATION" });
+    }
+    try {
+      recruiting.beginRunForScout(scoutId);
+      const result = await recruiting.xSearch({
+        scoutId,
+        query: body.query,
+        limit: body.limit as number | undefined,
+      });
+      return json(res, 200, result);
+    } catch (error) {
+      const code =
+        error && typeof error === "object" && "code" in error ? String(error.code) : "CONFLICT";
+      const message = error instanceof Error ? error.message : "XSearch could not complete";
+      return json(res, code === "NOT_FOUND" ? 404 : 400, { error: message, code });
+    }
+  }
+
   /** Authenticated agent-facing WebFetch boundary. The caller's agent identity
    * selects the Scout; URL and content bounds are enforced by Recruiting before
    * the provider adapter is reached. */
@@ -399,6 +438,27 @@ export class LocalApiServer {
             scoutId,
             sourceAttemptId: body.sourceAttemptId,
             items: body.items as Array<{ canonicalUrl: string }>,
+          }),
+        );
+      }
+      if (req.method === "POST" && url.pathname === "/recruiting/run/x-evidence") {
+        if (
+          !body ||
+          typeof body.sourceAttemptId !== "string" ||
+          !Array.isArray(body.evidenceReferences)
+        ) {
+          return json(res, 400, {
+            error: "sourceAttemptId and evidenceReferences are required",
+            code: "VALIDATION",
+          });
+        }
+        return json(
+          res,
+          200,
+          recruiting.recordXEvidenceForScout({
+            scoutId,
+            sourceAttemptId: body.sourceAttemptId,
+            evidenceReferences: body.evidenceReferences as string[],
           }),
         );
       }

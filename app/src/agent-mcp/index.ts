@@ -121,6 +121,7 @@ interface ToolDef {
   name: string;
   description: string;
   inputSchema: Record<string, unknown>;
+  outputSchema?: Record<string, unknown>;
   run: (args: Record<string, unknown>) => Promise<string>;
 }
 
@@ -193,6 +194,112 @@ const TOOLS: ToolDef[] = [
       const { status, json } = await callHost("POST", "/web-fetch", {
         urls: a.urls,
         ...(a.contentLimit === undefined ? {} : { contentLimit: a.contentLimit }),
+      });
+      if (status !== 200) throw new Error(describeError(json));
+      return JSON.stringify(json, null, 2);
+    },
+  },
+  {
+    name: "XSearch",
+    description:
+      "Search public X through the Candidate-approved Bird provider selected for this Scout Run. " +
+      "Results are bounded, untrusted temporary evidence with host-issued references; searching " +
+      "never creates Signals or Leads automatically.",
+    inputSchema: obj(
+      {
+        query: {
+          type: "string",
+          minLength: 1,
+          description: "A recruiting-relevant public X search query.",
+        },
+        limit: {
+          type: "integer",
+          minimum: 1,
+          maximum: 25,
+          default: 10,
+          description: "Maximum number of public X posts to return (1–25; defaults to 10).",
+        },
+      },
+      ["query"],
+    ),
+    outputSchema: {
+      type: "object",
+      properties: {
+        query: { type: "string" },
+        limit: { type: "integer", minimum: 1, maximum: 25 },
+        sourceAttemptId: { type: "string" },
+        retrievedAt: { type: "integer" },
+        provider: { type: "string", const: "bird" },
+        trust: { type: "string", const: "untrusted_evidence" },
+        trustBoundary: {
+          type: "object",
+          properties: {
+            content: { type: "string", const: "untrusted_evidence" },
+            instructionsAndHostPolicy: { type: "string", const: "immutable" },
+          },
+          required: ["content", "instructionsAndHostPolicy"],
+          additionalProperties: false,
+        },
+        availableCount: { type: "integer", minimum: 0, maximum: 25 },
+        resultCount: { type: "integer", minimum: 0 },
+        results: {
+          type: "array",
+          maxItems: 25,
+          items: {
+            type: "object",
+            properties: {
+              evidenceReference: { type: "string" },
+              sourceAttemptId: { type: "string" },
+              providerIdentity: { type: "string" },
+              canonicalUrl: { type: "string", format: "uri", pattern: "^https://x\\.com/" },
+              text: { type: "string", maxLength: 10_000 },
+              author: { type: ["object", "null"] },
+              createdAt: { type: ["integer", "null"] },
+              retrievedAt: { type: "integer" },
+              available: { type: "boolean", const: true },
+              trust: { type: "string", const: "untrusted_evidence" },
+              provenance: {
+                type: "object",
+                properties: { provider: { type: "string", const: "bird" } },
+                required: ["provider"],
+                additionalProperties: false,
+              },
+            },
+            required: [
+              "evidenceReference",
+              "sourceAttemptId",
+              "providerIdentity",
+              "canonicalUrl",
+              "text",
+              "author",
+              "createdAt",
+              "retrievedAt",
+              "available",
+              "trust",
+              "provenance",
+            ],
+            additionalProperties: false,
+          },
+        },
+      },
+      required: [
+        "query",
+        "limit",
+        "sourceAttemptId",
+        "retrievedAt",
+        "provider",
+        "trust",
+        "trustBoundary",
+        "availableCount",
+        "resultCount",
+        "results",
+      ],
+      additionalProperties: false,
+    },
+    run: async (a) => {
+      const { status, json } = await callHost("POST", "/x-search", {
+        query: a.query,
+        ...(a.limit === undefined ? {} : { limit: a.limit }),
       });
       if (status !== 200) throw new Error(describeError(json));
       return JSON.stringify(json, null, 2);
@@ -278,6 +385,37 @@ const TOOLS: ToolDef[] = [
       const { status, json } = await callHost("POST", "/recruiting/run/source-outcome", {
         sourceAttemptId: a.sourceAttemptId,
         items: a.items,
+      });
+      if (status !== 200) throw new Error(describeError(json));
+      return JSON.stringify(json, null, 2);
+    },
+  },
+  {
+    name: "record_x_evidence",
+    description:
+      "Explicitly promote selected host-issued XSearch evidence references into durable Signals. " +
+      "References must come from the current Scout Run's completed XSearch Attempt.",
+    inputSchema: obj(
+      {
+        sourceAttemptId: {
+          type: "string",
+          minLength: 1,
+          description: "The sourceAttemptId returned by XSearch.",
+        },
+        evidenceReferences: {
+          type: "array",
+          minItems: 1,
+          maxItems: 25,
+          items: { type: "string", minLength: 1 },
+          description: "One to 25 host-issued evidence references returned by XSearch.",
+        },
+      },
+      ["sourceAttemptId", "evidenceReferences"],
+    ),
+    run: async (a) => {
+      const { status, json } = await callHost("POST", "/recruiting/run/x-evidence", {
+        sourceAttemptId: a.sourceAttemptId,
+        evidenceReferences: a.evidenceReferences,
       });
       if (status !== 200) throw new Error(describeError(json));
       return JSON.stringify(json, null, 2);
@@ -492,6 +630,7 @@ async function handle(msg: JsonRpcMessage): Promise<void> {
           name: t.name,
           description: t.description,
           inputSchema: t.inputSchema,
+          ...(t.outputSchema ? { outputSchema: t.outputSchema } : {}),
         })),
       });
       return;

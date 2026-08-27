@@ -52,6 +52,7 @@ async function main() {
   const recruiting = new RecruitingApplication(db, Date.now, {
     webSearchSettings: () => settings.get().firecrawl,
     webSearchApiKey: () => settings.getFirecrawlApiKey(),
+    birdAccess: () => settings.getBirdAccess(),
   });
   // Durable Recent ring buffer for the tray (§12.6). Subscribed HERE, before anything
   // that can emit `notify` — the scheduler's boot catch-up sweep (scheduler.start()

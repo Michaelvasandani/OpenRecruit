@@ -80,12 +80,14 @@ import {
   type LinkSignalToLeadCommand,
   type MergeLeadsCommand,
   type ReadSourceCommand,
+  type RecordXEvidenceCommand,
   ScoutRunApplication,
   type ScoutRunApplicationOptions,
   type SetScoutSourcesCommand,
   type SetSourceDisabledCommand,
   WEB_SEARCH_SOURCE_ID,
   type WebSearchSettingsProjection,
+  type XSearchCommand,
 } from "./scout-runs";
 import {
   WebFetchApplication,
@@ -198,11 +200,13 @@ export type {
   MergeLeadsCommand,
   ReadSourceCommand,
   RecordSourceOutcomeCommand,
+  RecordXEvidenceCommand,
   ScoutRunApplicationOptions,
   SetScoutSourcesCommand,
   SetSourceDisabledCommand,
   SourceAttemptResult,
   WebSearchSettingsProjection,
+  XSearchCommand,
 } from "./scout-runs";
 export {
   DEFAULT_RUN_BUDGET,
@@ -255,13 +259,17 @@ export {
   type WebSearchResponse,
 } from "./web-search";
 export {
+  BirdXProvider,
   DeterministicXProvider,
   HttpXProvider,
+  normalizeBirdResponse,
   normalizeXResponse,
   XApiProvider,
   type XApiRequest,
   type XApiResponse,
   type XProvider,
+  type XSearchEvidence,
+  type XSearchResult,
   type XSourceConfig,
   XSourceProvider,
   xConfigFromSource,
@@ -477,6 +485,14 @@ export class RecruitingApplication {
     return this.scoutRuns.readSource(command);
   }
 
+  xSearch(command: XSearchCommand) {
+    return this.scoutRuns.xSearch(command);
+  }
+
+  recordXEvidence(command: RecordXEvidenceCommand) {
+    return this.scoutRuns.recordXEvidence(command);
+  }
+
   webSearch(command: WebSearchRequest & { scoutId: string }): Promise<WebSearchResponse> {
     return this.webSearchApplication.search(command);
   }
@@ -564,6 +580,19 @@ export class RecruitingApplication {
       runId: run.id,
       sourceAttemptId: input.sourceAttemptId,
       items,
+    });
+  }
+
+  recordXEvidenceForScout(input: {
+    scoutId: string;
+    sourceAttemptId: string;
+    evidenceReferences: string[];
+  }) {
+    const run = this.beginRunForScout(input.scoutId);
+    return this.scoutRuns.recordXEvidence({
+      runId: run.id,
+      sourceAttemptId: input.sourceAttemptId,
+      evidenceReferences: input.evidenceReferences,
     });
   }
 

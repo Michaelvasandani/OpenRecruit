@@ -22,7 +22,39 @@ export const BIRD_PROCESS_TIMEOUT_MS = 20_000;
 export const BIRD_OUTPUT_LIMIT_BYTES = 2_000_000;
 
 const BIRD_WORKING_DIRECTORY = process.env.OPENTRADE_HOME?.trim() || join(homedir(), ".opentrade");
-const STRIPPED_ENV_KEYS = new Set(["AUTH_TOKEN", "CT0", "TWITTER_AUTH_TOKEN", "TWITTER_CT0"]);
+// Bird reads the authenticated browser session itself. Never let a process
+// inherited from the host accidentally select an API token or cookie-backed
+// X identity instead. Keep this explicit: unrelated host credentials must not
+// be stripped from the setup process.
+const STRIPPED_ENV_KEYS = new Set([
+  "AUTH_TOKEN",
+  "CT0",
+  "TWITTER_AUTH_TOKEN",
+  "TWITTER_CT0",
+  "X_AUTH_TOKEN",
+  "X_CT0",
+  "X_TOKEN",
+  "X_ACCESS_TOKEN",
+  "X_API_KEY",
+  "X_API_TOKEN",
+  "X_BEARER",
+  "X_API_BEARER_TOKEN",
+  "BEARER_TOKEN",
+  "X_BEARER_TOKEN",
+  "TWITTER_TOKEN",
+  "TWITTER_ACCESS_TOKEN",
+  "TWITTER_API_KEY",
+  "TWITTER_API_TOKEN",
+  "TWITTER_BEARER",
+  "TWITTER_BEARER_TOKEN",
+  "OPENRECRUIT_X_BEARER_TOKEN",
+  "X_AUTHORIZATION",
+  "TWITTER_AUTHORIZATION",
+  "TWITTER_COOKIE",
+  "TWITTER_COOKIES",
+  "X_COOKIE",
+  "X_COOKIES",
+]);
 
 export type BirdExecutableIdentity = {
   configuredPath: string;
@@ -47,6 +79,13 @@ type BirdCommandResult = {
   timedOut: boolean;
   spawnError: boolean;
 };
+
+/** Safe projection of a bounded Bird search process. The stderr transcript is
+ * intentionally not returned across the settings/provider seam. */
+export type BirdSearchExecution = Pick<
+  BirdCommandResult,
+  "exitCode" | "stdout" | "outputExceededLimit" | "timedOut" | "spawnError"
+>;
 
 /** Resolve and fingerprint a configured executable without invoking Bird. */
 export function inspectBirdExecutable(configuredPath: string): BirdExecutableIdentity {
@@ -255,7 +294,8 @@ function readExecutableBytes(path: string): Buffer {
 
 async function runBirdCommand(
   executable: string,
-  args: readonly ["--version"] | readonly ["check"] | readonly ["whoami"],
+  args: readonly string[],
+  signal?: AbortSignal,
 ): Promise<BirdCommandResult> {
   mkdirSync(BIRD_WORKING_DIRECTORY, { recursive: true });
   const env = { ...process.env };
@@ -287,6 +327,21 @@ async function runBirdCommand(
         spawnError: false,
       });
     }, BIRD_PROCESS_TIMEOUT_MS);
+
+    const onAbort = () => {
+      if (settled) return;
+      child.kill("SIGTERM");
+      resolveOnce({
+        exitCode: null,
+        stdout: "",
+        stderr: "",
+        outputExceededLimit,
+        timedOut: false,
+        spawnError: false,
+      });
+    };
+    if (signal?.aborted) onAbort();
+    else signal?.addEventListener("abort", onAbort, { once: true });
 
     const append = (target: "stdout" | "stderr", chunk: Buffer | string) => {
       const text = String(chunk);
@@ -329,9 +384,33 @@ async function runBirdCommand(
       if (settled) return;
       settled = true;
       clearTimeout(timer);
+      signal?.removeEventListener("abort", onAbort);
       resolve(result);
     }
   });
+}
+
+/** Execute only Bird's bounded, read-only search command. The caller supplies
+ * a consent-bound resolved executable path; no shell, cwd, environment, or
+ * additional command/flag is configurable at this seam. */
+export async function executeBirdSearch(
+  resolvedExecutablePath: string,
+  query: string,
+  limit: number,
+  signal?: AbortSignal,
+): Promise<BirdSearchExecution> {
+  const result = await runBirdCommand(
+    resolvedExecutablePath,
+    ["search", query, "-n", String(limit), "--json"],
+    signal,
+  );
+  return {
+    exitCode: result.exitCode,
+    stdout: result.stdout,
+    outputExceededLimit: result.outputExceededLimit,
+    timedOut: result.timedOut,
+    spawnError: result.spawnError,
+  };
 }
 
 function parseBirdVersion(output: string): string | null {

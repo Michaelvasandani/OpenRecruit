@@ -47,6 +47,7 @@ import {
   sources,
 } from "../../db/schema";
 import { bus } from "../event-bus";
+import type { BirdAccess } from "../settings";
 import { assertSafeMaterial } from "./contract";
 import { RecruitingError } from "./errors";
 import {
@@ -58,12 +59,16 @@ import {
   validateFeedUrl,
 } from "./source";
 import {
+  BirdXProvider,
   HttpXProvider,
   type NormalizedXPage,
+  normalizeBirdResponse,
   normalizeXResponse,
   XApiError,
   type XApiResponse,
   type XProvider,
+  type XSearchEvidence,
+  type XSearchResult,
   xConfigFromSource,
   xRequestForLookup,
   xRequestForSearch,
@@ -91,6 +96,10 @@ export type ScoutRunApplicationOptions = {
   /** Read the safe Firecrawl projection live so key changes affect the next
    * Source projection without copying authentication material into Recruiting. */
   webSearchSettings?: () => WebSearchSettingsProjection;
+  /** Current consent-bound Bird identity; no credentials or output cross this seam. */
+  birdAccess?: () => BirdAccess | null;
+  /** Deterministic adapter seam for tests; production uses birdAccess. */
+  birdProvider?: XProvider;
 };
 
 export type CreateRssSourceCommand = {
@@ -115,6 +124,18 @@ export type CreateXSourceCommand = {
   idempotencyKey: string;
 };
 
+export type XSearchCommand = {
+  scoutId: string;
+  query: string;
+  limit?: number;
+};
+
+export type RecordXEvidenceCommand = {
+  runId: string;
+  sourceAttemptId: string;
+  evidenceReferences: string[];
+};
+
 export type CreateFeedSourceCommand = CreateRssSourceCommand & {
   kind: "rss" | "atom";
 };
@@ -135,6 +156,10 @@ export type ReadSourceCommand = {
   provider?: FeedProvider | XProvider;
   budget?: Partial<RunBudget>;
   retry?: { maxAttempts?: number; baseDelayMs?: number };
+  /** Host-only overrides used by the authenticated agent XSearch operation. */
+  searchQuery?: string;
+  searchLimit?: number;
+  persistItems?: boolean;
 };
 
 export type SourceAttemptResult = SourceAttemptSummaryValue & {
@@ -258,6 +283,7 @@ type SourceAttemptFinish = (
     retryAt?: number | null;
     safeFailure?: string | null;
     accessPatch?: SourceAccessPatch;
+    audit?: Record<string, unknown>;
   },
 ) => Promise<SourceAttemptResult>;
 
@@ -269,7 +295,10 @@ type SourceAttemptFinish = (
 export class ScoutRunApplication {
   private readonly httpProvider = new HttpFeedProvider();
   private readonly httpXProvider = new HttpXProvider();
+  private readonly birdProvider: XProvider;
   private readonly webSearchSettings?: () => WebSearchSettingsProjection;
+  private readonly birdAccess?: () => BirdAccess | null;
+  private readonly pendingXEvidence = new Map<string, Map<string, FeedItem>>();
 
   constructor(
     private readonly db: Db,
@@ -277,6 +306,9 @@ export class ScoutRunApplication {
     options: ScoutRunApplicationOptions = {},
   ) {
     this.webSearchSettings = options.webSearchSettings;
+    this.birdAccess = options.birdAccess;
+    this.birdProvider =
+      options.birdProvider ?? new BirdXProvider(options.birdAccess ?? (() => null));
   }
 
   createSource(command: CreateSourceCommand): {
@@ -305,6 +337,12 @@ export class ScoutRunApplication {
         throw new RecruitingError(
           "VALIDATION",
           error instanceof XApiError ? error.message : "X Source configuration is malformed",
+        );
+      }
+      if (parsed.provider === "bird" && this.birdAccess && !this.birdAccess()) {
+        throw new RecruitingError(
+          "CONFLICT",
+          "Bird X Source is unavailable until the Candidate confirms current Bird consent",
         );
       }
       // Store the default explicitly for newly-created X Sources. This is a
@@ -637,6 +675,26 @@ export class ScoutRunApplication {
     }
     if (config.provider === "bird") {
       const checkedAt = this.now();
+      const birdAccess = this.birdAccess?.();
+      if (birdAccess) {
+        const account = birdAccess.accountIdentity.username
+          ? `@${birdAccess.accountIdentity.username}`
+          : birdAccess.accountIdentity.id
+            ? `account ${birdAccess.accountIdentity.id}`
+            : "the approved account";
+        this.persistSourceReadiness(
+          source.id,
+          {
+            readiness: "ready",
+            safeFailure: null,
+            nextAction: "Run XSearch when this Source is selected",
+            retryAt: null,
+            sourceIdentity: `bird:${account}`,
+          },
+          checkedAt,
+        );
+        return toSourceAccessSummary(requireSourceAccess(this.db, source.id));
+      }
       this.persistSourceReadiness(
         source.id,
         {
@@ -760,6 +818,13 @@ export class ScoutRunApplication {
     }
     const budget = normalizeBudget(command.budget ?? storedBudget(run.budget));
     const requestedScope = JSON.stringify({
+      ...(command.searchQuery
+        ? {
+            operation: "bird_x_search",
+            query: command.searchQuery.trim().slice(0, 512),
+            limit: command.searchLimit ?? 10,
+          }
+        : {}),
       maxItems: budget.maxItems,
       maxPages: budget.maxPages,
       maxWallClockMs: budget.maxWallClockMs,
@@ -834,14 +899,41 @@ export class ScoutRunApplication {
           })
           .where(eq(sourceAttempts.id, attemptId))
           .run();
-        persistSignals(tx, {
-          run,
-          source,
-          sourceAccess: persistedAccess,
-          attemptId,
-          items,
-          observedAt: completedAt,
-        });
+        const audit = parseJson(requestedScope);
+        if (command.searchQuery && audit && typeof audit === "object") {
+          const searchAudit = {
+            ...audit,
+            ...(input.audit ?? {}),
+            retryDisposition: "not_retried",
+            attemptCount: 1,
+            errorCategory:
+              input.audit?.errorCategory ??
+              (outcome === "succeeded_with_items" || outcome === "succeeded_empty"
+                ? null
+                : outcome),
+            returnedIdentities: items
+              .map((item) => item.providerIdentity)
+              .filter((id): id is string => Boolean(id))
+              .slice(0, 100),
+            completedAt,
+          };
+          tx.update(sourceAttempts)
+            .set({
+              requestedScope: JSON.stringify(searchAudit),
+            })
+            .where(eq(sourceAttempts.id, attemptId))
+            .run();
+        }
+        if (command.persistItems !== false) {
+          persistSignals(tx, {
+            run,
+            source,
+            sourceAccess: persistedAccess,
+            attemptId,
+            items,
+            observedAt: completedAt,
+          });
+        }
         return toSourceAttemptSummary(
           requireSourceAttempt(tx, attemptId),
           items,
@@ -901,6 +993,8 @@ export class ScoutRunApplication {
         provider: command.provider as XProvider | undefined,
         pinnedProvider,
         retry: command.retry,
+        searchQuery: command.searchQuery,
+        searchLimit: command.searchLimit,
         finish,
       });
     }
@@ -1191,6 +1285,8 @@ export class ScoutRunApplication {
     provider?: XProvider;
     pinnedProvider?: XSourceProvider | null;
     retry?: ReadSourceCommand["retry"];
+    searchQuery?: string;
+    searchLimit?: number;
     finish: SourceAttemptFinish;
   }): Promise<SourceAttemptResult> {
     const { source, access, budget, startedAt, finish } = input;
@@ -1224,7 +1320,9 @@ export class ScoutRunApplication {
         },
       });
     }
-    if (config.provider === "bird") {
+    // Bird is reachable only through the bounded agent XSearch operation. A
+    // generic Source read must not turn Bird results into automatic Signals.
+    if (config.provider === "bird" && !input.searchQuery) {
       return finish("unsupported", {
         safeFailure: "The Bird X Source provider is not available yet",
         accessPatch: {
@@ -1236,8 +1334,33 @@ export class ScoutRunApplication {
         },
       });
     }
-    const maxPages = Math.min(budget.maxPages, config.maxPages, config.maxRequestsPerRun);
-    const maxItems = Math.min(budget.maxItems, config.maxItems);
+    if (
+      config.provider === "bird" &&
+      input.searchQuery &&
+      (!this.birdAccess || !this.birdAccess())
+    ) {
+      return finish("blocked", {
+        safeFailure: "The Candidate's current Bird consent is unavailable",
+        accessPatch: {
+          readiness: "reauthentication_required",
+          safeFailure: "The Candidate's current Bird consent is unavailable",
+          nextAction: "Test and confirm the configured Bird executable and account",
+          retryAt: null,
+          sourceIdentity: "bird",
+        },
+      });
+    }
+    const maxPages = Math.min(
+      budget.maxPages,
+      config.maxPages,
+      config.maxRequestsPerRun,
+      config.provider === "bird" ? 1 : Number.POSITIVE_INFINITY,
+    );
+    const maxItems = Math.min(
+      budget.maxItems,
+      config.maxItems,
+      input.searchLimit ?? Number.POSITIVE_INFINITY,
+    );
     const maxSpendCents =
       config.maxSpendCents > 0
         ? Math.min(budget.maxSpendCents, config.maxSpendCents)
@@ -1250,12 +1373,19 @@ export class ScoutRunApplication {
           safeFailure: "The X Source Run budget was exhausted before retrieval",
           nextAction: "Increase the bounded X Source Run budget",
           retryAt: null,
-          sourceIdentity: "x-api-v2",
+          sourceIdentity: config.provider,
         },
       });
     }
-    const provider = input.provider ?? this.httpXProvider;
-    const attemptsAllowed = Math.max(1, Math.min(input.retry?.maxAttempts ?? 3, 3));
+    // A Bird Source always uses the host-owned adapter. A caller-supplied
+    // provider can exercise the official X API path in tests, but cannot
+    // replace Bird or introduce a fallback for a Bird Source.
+    const provider =
+      config.provider === "bird" ? this.birdProvider : (input.provider ?? this.httpXProvider);
+    // Bird is a single bounded CLI operation. It has its own process timeout
+    // and must never be retried or silently replaced by X API v2.
+    const attemptsAllowed =
+      config.provider === "bird" ? 1 : Math.max(1, Math.min(input.retry?.maxAttempts ?? 3, 3));
     const baseDelayMs = Math.max(1, Math.min(input.retry?.baseDelayMs ?? 1_000, 60_000));
     const retentionUntil = startedAt + 24 * 60 * 60 * 1_000;
     const allItems: FeedItem[] = [];
@@ -1264,7 +1394,10 @@ export class ScoutRunApplication {
     let spentCents = 0;
     let partialFailure: string | null = null;
     let retryAt: number | null = null;
-    const lookup = config.postIds.length > 0;
+    let resultCount = 0;
+    // An explicit XSearch query is always a search, even if the selected
+    // Source also retains post IDs for the separate X API lookup operation.
+    const lookup = !input.searchQuery && config.postIds.length > 0;
 
     while (pageCount < maxPages && allItems.length < maxItems) {
       if (this.now() - startedAt > budget.maxWallClockMs) {
@@ -1273,7 +1406,12 @@ export class ScoutRunApplication {
       }
       const request = lookup
         ? xRequestForLookup(config)
-        : xRequestForSearch(config, startedAt, nextCursor, Math.min(100, Math.max(10, maxItems)));
+        : xRequestForSearch(
+            input.searchQuery ? { ...config, query: input.searchQuery } : config,
+            startedAt,
+            nextCursor,
+            input.searchLimit ?? Math.min(100, Math.max(10, maxItems)),
+          );
       let response: XApiResponse = { status: 503, body: "" };
       let attempts = 0;
       while (attempts < attemptsAllowed) {
@@ -1300,20 +1438,29 @@ export class ScoutRunApplication {
             safeFailure: "The X Source Run spend budget was exhausted",
             nextAction: "Increase the bounded X Source spend budget",
             retryAt: null,
-            sourceIdentity: "x-api-v2",
+            sourceIdentity: config.provider,
           },
         });
       }
       if (response.status === 401) {
         return finish("blocked", {
           pageCount,
-          safeFailure: "X App-Only Source Access is not configured or was rejected",
+          safeFailure:
+            config.provider === "bird"
+              ? "The Candidate's current Bird consent is unavailable"
+              : "X App-Only Source Access is not configured or was rejected",
           accessPatch: {
             readiness: "reauthentication_required",
-            safeFailure: "X App-Only Source Access is not configured or was rejected",
-            nextAction: "Configure an official X API v2 App-Only Bearer Token",
+            safeFailure:
+              config.provider === "bird"
+                ? "The Candidate's current Bird consent is unavailable"
+                : "X App-Only Source Access is not configured or was rejected",
+            nextAction:
+              config.provider === "bird"
+                ? "Test and confirm the configured Bird executable and account"
+                : "Configure an official X API v2 App-Only Bearer Token",
             retryAt: null,
-            sourceIdentity: "x-api-v2",
+            sourceIdentity: config.provider,
           },
         });
       }
@@ -1326,7 +1473,7 @@ export class ScoutRunApplication {
             safeFailure: "X blocked this public API read or the App plan lacks access",
             nextAction: "Check the official X App permissions and plan",
             retryAt: null,
-            sourceIdentity: "x-api-v2",
+            sourceIdentity: config.provider,
           },
         });
       }
@@ -1341,7 +1488,7 @@ export class ScoutRunApplication {
             safeFailure: "X asked OpenRecruit to retry after the documented rate limit window",
             nextAction: "Retry after X Retry-After",
             retryAt,
-            sourceIdentity: "x-api-v2",
+            sourceIdentity: config.provider,
           },
         });
       }
@@ -1349,6 +1496,19 @@ export class ScoutRunApplication {
         retryAt = startedAt + baseDelayMs;
         partialFailure = "X is temporarily unavailable";
         break;
+      }
+      if (config.provider === "bird" && response.status === 413) {
+        return finish("malformed_content", {
+          pageCount,
+          safeFailure: "Bird search output exceeded the bounded parser limit",
+          accessPatch: {
+            readiness: "degraded",
+            safeFailure: "Bird search output exceeded the bounded parser limit",
+            nextAction: "Retry XSearch after verifying the Bird executable output",
+            retryAt: null,
+            sourceIdentity: "bird",
+          },
+        });
       }
       if (response.status < 200 || response.status >= 300) {
         return finish("blocked", {
@@ -1359,13 +1519,16 @@ export class ScoutRunApplication {
             safeFailure: "X returned an unavailable response",
             nextAction: "Verify the official X API App and Source configuration",
             retryAt: null,
-            sourceIdentity: "x-api-v2",
+            sourceIdentity: config.provider,
           },
         });
       }
       let page: NormalizedXPage;
       try {
-        page = normalizeXResponse(response.body, lookup ? config.postIds : [], retentionUntil);
+        page =
+          config.provider === "bird"
+            ? normalizeBirdResponse(response.body, retentionUntil)
+            : normalizeXResponse(response.body, lookup ? config.postIds : [], retentionUntil);
       } catch (error) {
         return finish("malformed_content", {
           pageCount,
@@ -1376,11 +1539,12 @@ export class ScoutRunApplication {
               error instanceof XApiError ? error.message : "X returned malformed content",
             nextAction: "Verify the official X API response and retry",
             retryAt: null,
-            sourceIdentity: "x-api-v2",
+            sourceIdentity: config.provider,
           },
         });
       }
       allItems.push(...page.items);
+      resultCount = Math.max(resultCount, page.resultCount);
       nextCursor = page.nextCursor;
       if (lookup || !nextCursor) break;
     }
@@ -1403,6 +1567,7 @@ export class ScoutRunApplication {
       cursor,
       pageCount,
       retryAt,
+      ...(input.searchQuery ? { audit: { resultCount } } : {}),
       safeFailure:
         partialFailure ?? (exhausted ? "The X Source item or page budget was exhausted" : null),
       accessPatch: {
@@ -1410,9 +1575,211 @@ export class ScoutRunApplication {
         safeFailure: partialFailure,
         nextAction: partialFailure ? "Retry the X Source later" : "Run the X Source again when due",
         retryAt,
-        sourceIdentity: "x-api-v2",
+        sourceIdentity: config.provider,
       },
     });
+  }
+
+  /** Search the one X provider pinned by Run preflight. Results are kept in a
+   * host-memory evidence buffer until the Scout explicitly records references;
+   * a search itself never creates Signals or Leads. */
+  async xSearch(command: XSearchCommand): Promise<XSearchResult> {
+    if (typeof command.query !== "string") {
+      throw new RecruitingError("VALIDATION", "XSearch query is required");
+    }
+    const query = command.query.trim();
+    if (!query) throw new RecruitingError("VALIDATION", "XSearch query is required");
+    if (query.length > 512)
+      throw new RecruitingError("VALIDATION", "XSearch query must be at most 512 characters");
+    const limit = command.limit ?? 10;
+    if (!Number.isInteger(limit) || limit < 1 || limit > 25) {
+      throw new RecruitingError(
+        "VALIDATION",
+        "XSearch result limit must be an integer between 1 and 25",
+      );
+    }
+    const scout = requireScout(this.db, command.scoutId);
+    if (scout.lifecycleState !== "active") {
+      throw new RecruitingError("CONFLICT", "Archived Scouts cannot use XSearch");
+    }
+    const run = this.db
+      .select()
+      .from(scoutRuns)
+      .where(
+        and(eq(scoutRuns.scoutId, scout.id), inArray(scoutRuns.status, [...ACTIVE_RUN_STATUSES])),
+      )
+      .orderBy(asc(scoutRuns.createdAt), asc(scoutRuns.id))
+      .get();
+    if (!run) throw new RecruitingError("CONFLICT", `Scout ${scout.id} has no active Scout Run`);
+    const sourceIds = snapshotSourceIds(run.overrideSnapshot) ?? this.selectedSourceIds(scout.id);
+    const selectedXSources = sourceIds.flatMap((sourceId) => {
+      const source = this.db.select().from(sources).where(eq(sources.id, sourceId)).get();
+      return source?.kind === "x" ? [source] : [];
+    });
+    const candidates = selectedXSources.flatMap((source) => {
+      const provider = xProviderFromConfig(source.config);
+      return provider ? [{ source, provider }] : [];
+    });
+    if (selectedXSources.length !== 1 || candidates.length !== 1) {
+      throw new RecruitingError(
+        "CONFLICT",
+        candidates.length === 0
+          ? "XSearch requires exactly one selected X provider; select one X Source before searching"
+          : "XSearch requires exactly one selected X provider; select only one X Source before searching",
+      );
+    }
+    const selected = candidates[0];
+    if (selected.provider !== "bird") {
+      throw new RecruitingError(
+        "CONFLICT",
+        "XSearch requires the Candidate-approved Bird provider; select a Bird-backed X Source",
+      );
+    }
+    const attempt = await this.readSource({
+      runId: run.id,
+      sourceId: selected.source.id,
+      provider: this.birdProvider,
+      searchQuery: query,
+      searchLimit: limit,
+      persistItems: false,
+      budget: { maxItems: limit, maxPages: 1 },
+    });
+    if (attempt.outcome !== "succeeded_with_items" && attempt.outcome !== "succeeded_empty") {
+      throw new RecruitingError(
+        "CONFLICT",
+        attempt.safeFailure ?? "Bird could not complete the bounded XSearch",
+      );
+    }
+    const retrievedAt = attempt.completedAt ?? this.now();
+    let resultCount = attempt.items.length;
+    try {
+      const details = JSON.parse(attempt.requestedScope) as { resultCount?: unknown };
+      if (
+        typeof details.resultCount === "number" &&
+        Number.isInteger(details.resultCount) &&
+        details.resultCount >= 0
+      ) {
+        resultCount = Math.max(resultCount, details.resultCount);
+      }
+    } catch {
+      // The safe result count is the number of normalized items.
+    }
+    const pending = new Map<string, FeedItem>();
+    const results: XSearchEvidence[] = attempt.items
+      .filter((item) => isAttributableItem(item))
+      .slice(0, limit)
+      .map((item) => {
+        const evidenceReference = `bird-evidence:${randomUUID()}`;
+        pending.set(evidenceReference, item);
+        const author = item.metadata?.author;
+        return {
+          evidenceReference,
+          sourceAttemptId: attempt.id,
+          providerIdentity: item.providerIdentity ?? "",
+          canonicalUrl: item.canonicalUrl ?? "",
+          text: item.content,
+          author: author ? { id: author.id, username: author.username, name: author.name } : null,
+          createdAt: item.publicationAt,
+          retrievedAt,
+          available: true,
+          trust: "untrusted_evidence" as const,
+          provenance: { provider: "bird" as const },
+        };
+      });
+    this.pendingXEvidence.set(attempt.id, pending);
+    const result: XSearchResult = {
+      query,
+      limit,
+      sourceAttemptId: attempt.id,
+      retrievedAt,
+      provider: "bird",
+      trust: "untrusted_evidence",
+      trustBoundary: { content: "untrusted_evidence", instructionsAndHostPolicy: "immutable" },
+      availableCount: results.length,
+      resultCount,
+      results,
+    };
+    return result;
+  }
+
+  /** Persist only evidence references returned by a prior XSearch. */
+  recordXEvidence(command: RecordXEvidenceCommand): ScoutRunSummaryValue {
+    if (
+      !Array.isArray(command.evidenceReferences) ||
+      command.evidenceReferences.length < 1 ||
+      command.evidenceReferences.length > 25
+    ) {
+      throw new RecruitingError("VALIDATION", "RecordXEvidence accepts 1 to 25 references");
+    }
+    const pending = this.pendingXEvidence.get(command.sourceAttemptId);
+    if (!pending) {
+      throw new RecruitingError(
+        "NOT_FOUND",
+        "The XSearch evidence references are no longer available; run XSearch again",
+      );
+    }
+    const uniqueReferences = [...new Set(command.evidenceReferences)];
+    const items = uniqueReferences.map((reference) => {
+      const item = pending.get(reference);
+      if (!item) {
+        throw new RecruitingError("VALIDATION", "The selected X evidence reference is invalid");
+      }
+      return item;
+    });
+    const outcome = this.db.transaction((tx) => {
+      const run = requireRun(tx, command.runId);
+      if (!(ACTIVE_RUN_STATUSES as readonly string[]).includes(run.status)) {
+        throw new RecruitingError(
+          "CONFLICT",
+          `Run ${run.id} is ${run.status}; it cannot record evidence`,
+        );
+      }
+      const attempt = requireSourceAttempt(tx, command.sourceAttemptId);
+      if (attempt.runId !== run.id || attempt.completedAt === null) {
+        throw new RecruitingError("NOT_FOUND", "XSearch Source Attempt was not found for this Run");
+      }
+      const source = tx.select().from(sources).where(eq(sources.id, attempt.sourceId)).get();
+      const access = tx
+        .select()
+        .from(sourceAccess)
+        .where(
+          and(
+            eq(sourceAccess.sourceId, attempt.sourceId),
+            eq(sourceAccess.accountRef, ""),
+            eq(sourceAccess.scopeKey, "public"),
+          ),
+        )
+        .get();
+      const details = parseJson(attempt.requestedScope);
+      if (
+        !source ||
+        source.kind !== "x" ||
+        xProviderFromConfig(source.config) !== "bird" ||
+        !access ||
+        !details ||
+        typeof details !== "object" ||
+        (details as Record<string, unknown>).operation !== "bird_x_search"
+      ) {
+        throw new RecruitingError(
+          "CONFLICT",
+          "Selected evidence must come from a completed Bird XSearch Attempt",
+        );
+      }
+      const at = this.now();
+      persistSignals(tx, {
+        run,
+        source,
+        sourceAccess: access,
+        attemptId: attempt.id,
+        items,
+        observedAt: at,
+      });
+      return { run: this.toRunSummary(tx, requireRun(tx, run.id)), at };
+    });
+    this.pendingXEvidence.delete(command.sourceAttemptId);
+    const revision = this.db.transaction((tx) => advanceRevision(tx));
+    emitChange(revision, "run", [command.runId], "signals_attributed", outcome.at);
+    return outcome.run;
   }
 
   /** Return immutable evidence projections, optionally scoped to a Run or Source. */
