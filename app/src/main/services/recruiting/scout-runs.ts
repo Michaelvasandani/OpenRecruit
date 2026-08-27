@@ -149,6 +149,13 @@ export type RecordXEvidenceCommand = {
   evidenceReferences: string[];
 };
 
+/** The agent-facing Signal command carries only an opaque host-issued
+ * capability. All Source/Run/evidence fields are recovered from host state. */
+export type RecordSignalCommand = {
+  scoutId: string;
+  evidenceReference: string;
+};
+
 export type CreateFeedSourceCommand = CreateRssSourceCommand & {
   kind: "rss" | "atom";
 };
@@ -274,6 +281,18 @@ type RunRow = typeof scoutRuns.$inferSelect;
 type SourceAccessRow = typeof sourceAccess.$inferSelect;
 type SourceAttemptRow = typeof sourceAttempts.$inferSelect;
 type SourceReadinessValue = SourceAccessSummaryValue["readiness"];
+type PendingXEvidence = {
+  item: FeedItem;
+  scoutId: string;
+  runId: string;
+  sourceId: string;
+  sourceAttemptId: string;
+  contentFingerprint: string;
+  issuedAt: number;
+  expiresAt: number;
+};
+
+const X_EVIDENCE_TTL_MS = 15 * 60_000;
 type SourceAccessPatch = Partial<
   Pick<
     SourceAccessRow,
@@ -315,7 +334,7 @@ export class ScoutRunApplication {
   private readonly birdProvider: XProvider;
   private readonly webSearchSettings?: () => WebSearchSettingsProjection;
   private readonly birdAccess?: () => BirdAccess | null;
-  private readonly pendingXEvidence = new Map<string, Map<string, FeedItem>>();
+  private readonly pendingXEvidence = new Map<string, PendingXEvidence>();
 
   constructor(
     private readonly db: Db,
@@ -1927,13 +1946,22 @@ export class ScoutRunApplication {
     } catch {
       // The safe result count is the number of normalized items.
     }
-    const pending = new Map<string, FeedItem>();
+    this.prunePendingXEvidence(retrievedAt);
     const results: XSearchEvidence[] = attempt.items
       .filter((item) => isAttributableItem(item))
       .slice(0, limit)
       .map((item) => {
         const evidenceReference = `bird-evidence:${randomUUID()}`;
-        pending.set(evidenceReference, item);
+        this.pendingXEvidence.set(evidenceReference, {
+          item,
+          scoutId: scout.id,
+          runId: run.id,
+          sourceId: selected.source.id,
+          sourceAttemptId: attempt.id,
+          contentFingerprint: itemFingerprint(item),
+          issuedAt: retrievedAt,
+          expiresAt: retrievedAt + X_EVIDENCE_TTL_MS,
+        });
         const author = item.metadata?.author;
         return {
           evidenceReference,
@@ -1949,7 +1977,6 @@ export class ScoutRunApplication {
           provenance: { provider: "bird" as const },
         };
       });
-    this.pendingXEvidence.set(attempt.id, pending);
     const result: XSearchResult = {
       query,
       limit,
@@ -2034,13 +2061,130 @@ export class ScoutRunApplication {
       trust: "untrusted_evidence",
       provenance: { provider: "bird" },
     };
-    const pending = new Map<string, FeedItem>();
-    pending.set(evidenceReference, item);
-    this.pendingXEvidence.set(attempt.id, pending);
+    this.prunePendingXEvidence(retrievedAt);
+    this.pendingXEvidence.set(evidenceReference, {
+      item,
+      scoutId: scout.id,
+      runId: run.id,
+      sourceId: selected.source.id,
+      sourceAttemptId: attempt.id,
+      contentFingerprint: itemFingerprint(item),
+      issuedAt: retrievedAt,
+      expiresAt: retrievedAt + X_EVIDENCE_TTL_MS,
+    });
     return result;
   }
 
-  /** Persist only evidence references returned by a prior XSearch or XRead. */
+  /** Persist one reference returned by a prior XSearch or XRead. The
+   * reference is a short-lived host capability; no agent-authored content is
+   * accepted at this seam. */
+  recordSignal(command: RecordSignalCommand): ScoutRunSummaryValue {
+    if (typeof command.evidenceReference !== "string" || !command.evidenceReference.trim()) {
+      throw new RecruitingError("VALIDATION", "RecordSignal requires one evidence reference");
+    }
+    const reference = command.evidenceReference.trim();
+    const pending = this.pendingXEvidence.get(reference);
+    if (!pending) {
+      throw new RecruitingError(
+        "NOT_FOUND",
+        "The X evidence reference is no longer available; run the read again",
+      );
+    }
+    const checkedAt = this.now();
+    if (checkedAt >= pending.expiresAt) {
+      this.pendingXEvidence.delete(reference);
+      throw new RecruitingError(
+        "NOT_FOUND",
+        "The X evidence reference has expired; run the read again",
+      );
+    }
+    if (pending.contentFingerprint !== itemFingerprint(pending.item)) {
+      this.pendingXEvidence.delete(reference);
+      throw new RecruitingError("VALIDATION", "The X evidence reference is invalid");
+    }
+
+    const outcome = this.db.transaction((tx) => {
+      const run = requireRun(tx, pending.runId);
+      if (run.scoutId !== command.scoutId || pending.scoutId !== command.scoutId) {
+        throw new RecruitingError("CONFLICT", "The X evidence reference belongs to another Scout");
+      }
+      if (!(ACTIVE_RUN_STATUSES as readonly string[]).includes(run.status)) {
+        this.pendingXEvidence.delete(reference);
+        throw new RecruitingError(
+          "CONFLICT",
+          `Run ${run.id} is ${run.status}; it cannot record evidence`,
+        );
+      }
+      const attempt = requireSourceAttempt(tx, pending.sourceAttemptId);
+      if (
+        attempt.runId !== run.id ||
+        attempt.sourceId !== pending.sourceId ||
+        attempt.completedAt === null
+      ) {
+        throw new RecruitingError(
+          "NOT_FOUND",
+          "The X evidence reference is not available for this Run",
+        );
+      }
+      const source = tx.select().from(sources).where(eq(sources.id, pending.sourceId)).get();
+      const access = tx
+        .select()
+        .from(sourceAccess)
+        .where(
+          and(
+            eq(sourceAccess.sourceId, pending.sourceId),
+            eq(sourceAccess.accountRef, ""),
+            eq(sourceAccess.scopeKey, "public"),
+          ),
+        )
+        .get();
+      const details = parseJson(attempt.requestedScope);
+      const operation =
+        details && typeof details === "object"
+          ? String((details as Record<string, unknown>).operation ?? "")
+          : "";
+      const detailsRecord =
+        details && typeof details === "object" ? (details as Record<string, unknown>) : null;
+      const returnedIdentities = Array.isArray(detailsRecord?.returnedIdentities)
+        ? detailsRecord.returnedIdentities.filter(
+            (value): value is string => typeof value === "string",
+          )
+        : [];
+      if (
+        !source ||
+        source.kind !== "x" ||
+        xProviderFromConfig(source.config) !== "bird" ||
+        !access ||
+        !["bird_x_search", "bird_x_read"].includes(operation) ||
+        !isAttributableItem(pending.item) ||
+        (pending.item.providerIdentity !== null &&
+          !returnedIdentities.includes(pending.item.providerIdentity))
+      ) {
+        throw new RecruitingError(
+          "CONFLICT",
+          "The evidence reference was not issued by a completed Bird XSearch or XRead Attempt",
+        );
+      }
+      const at = this.now();
+      const changed = persistSignals(tx, {
+        run,
+        source,
+        sourceAccess: access,
+        attemptId: attempt.id,
+        items: [pending.item],
+        observedAt: at,
+      });
+      return { run: this.toRunSummary(tx, requireRun(tx, run.id)), at, changed };
+    });
+    if (outcome.changed) {
+      const revision = this.db.transaction((tx) => advanceRevision(tx));
+      emitChange(revision, "run", [pending.runId], "signals_attributed", outcome.at);
+    }
+    return outcome.run;
+  }
+
+  /** Backward-compatible internal alias for pre-#50 callers. Agent-facing
+   * transport uses RecordSignal and therefore cannot submit this wider shape. */
   recordXEvidence(command: RecordXEvidenceCommand): ScoutRunSummaryValue {
     if (
       !Array.isArray(command.evidenceReferences) ||
@@ -2049,80 +2193,34 @@ export class ScoutRunApplication {
     ) {
       throw new RecruitingError("VALIDATION", "RecordXEvidence accepts 1 to 25 references");
     }
-    const pending = this.pendingXEvidence.get(command.sourceAttemptId);
-    if (!pending) {
-      throw new RecruitingError(
-        "NOT_FOUND",
-        "The XSearch/XRead evidence references are no longer available; run the read again",
-      );
-    }
     const uniqueReferences = [...new Set(command.evidenceReferences)];
-    const items = uniqueReferences.map((reference) => {
-      const item = pending.get(reference);
-      if (!item) {
+    const run = requireRun(this.db, command.runId);
+    for (const reference of uniqueReferences) {
+      const pending = this.pendingXEvidence.get(reference);
+      if (!pending || pending.sourceAttemptId !== command.sourceAttemptId) {
         throw new RecruitingError("VALIDATION", "The selected X evidence reference is invalid");
       }
-      return item;
+    }
+    let result = this.recordSignal({
+      scoutId: run.scoutId,
+      evidenceReference: uniqueReferences[0],
     });
-    const outcome = this.db.transaction((tx) => {
-      const run = requireRun(tx, command.runId);
-      if (!(ACTIVE_RUN_STATUSES as readonly string[]).includes(run.status)) {
-        throw new RecruitingError(
-          "CONFLICT",
-          `Run ${run.id} is ${run.status}; it cannot record evidence`,
-        );
-      }
-      const attempt = requireSourceAttempt(tx, command.sourceAttemptId);
-      if (attempt.runId !== run.id || attempt.completedAt === null) {
-        throw new RecruitingError(
-          "NOT_FOUND",
-          "XSearch/XRead Source Attempt was not found for this Run",
-        );
-      }
-      const source = tx.select().from(sources).where(eq(sources.id, attempt.sourceId)).get();
-      const access = tx
-        .select()
-        .from(sourceAccess)
-        .where(
-          and(
-            eq(sourceAccess.sourceId, attempt.sourceId),
-            eq(sourceAccess.accountRef, ""),
-            eq(sourceAccess.scopeKey, "public"),
-          ),
-        )
-        .get();
-      const details = parseJson(attempt.requestedScope);
-      if (
-        !source ||
-        source.kind !== "x" ||
-        xProviderFromConfig(source.config) !== "bird" ||
-        !access ||
-        !details ||
-        typeof details !== "object" ||
-        !["bird_x_search", "bird_x_read"].includes(
-          String((details as Record<string, unknown>).operation),
-        )
-      ) {
-        throw new RecruitingError(
-          "CONFLICT",
-          "Selected evidence must come from a completed Bird XSearch or XRead Attempt",
-        );
-      }
-      const at = this.now();
-      persistSignals(tx, {
-        run,
-        source,
-        sourceAccess: access,
-        attemptId: attempt.id,
-        items,
-        observedAt: at,
-      });
-      return { run: this.toRunSummary(tx, requireRun(tx, run.id)), at };
-    });
-    this.pendingXEvidence.delete(command.sourceAttemptId);
-    const revision = this.db.transaction((tx) => advanceRevision(tx));
-    emitChange(revision, "run", [command.runId], "signals_attributed", outcome.at);
-    return outcome.run;
+    for (const reference of uniqueReferences.slice(1)) {
+      result = this.recordSignal({ scoutId: run.scoutId, evidenceReference: reference });
+    }
+    return result;
+  }
+
+  private prunePendingXEvidence(at: number): void {
+    for (const [reference, pending] of this.pendingXEvidence) {
+      if (pending.expiresAt <= at) this.pendingXEvidence.delete(reference);
+    }
+  }
+
+  private invalidatePendingXEvidence(runId: string): void {
+    for (const [reference, pending] of this.pendingXEvidence) {
+      if (pending.runId === runId) this.pendingXEvidence.delete(reference);
+    }
   }
 
   /** Return immutable evidence projections, optionally scoped to a Run or Source. */
@@ -2922,6 +3020,9 @@ export class ScoutRunApplication {
       notification = { revision, at };
       return { value, revision, replayed: false };
     });
+    if ((TERMINAL_RUN_STATUSES as readonly string[]).includes(command.status)) {
+      this.invalidatePendingXEvidence(command.runId);
+    }
     if (notification)
       emitChange(notification.revision, "run", [command.runId], "run_changed", notification.at);
     return outcome;
@@ -3194,7 +3295,8 @@ function isUnavailableItem(item: FeedItem): boolean {
   );
 }
 
-function persistSignals(db: RecruitingDb, input: SignalPersistenceInput): void {
+function persistSignals(db: RecruitingDb, input: SignalPersistenceInput): boolean {
+  let changed = false;
   const strategyMaterial = strategyMaterialFromSnapshot(input.run.strategySnapshot);
   const strategyKey = digest(strategyMaterial);
   const sourceProvider =
@@ -3225,6 +3327,7 @@ function persistSignals(db: RecruitingDb, input: SignalPersistenceInput): void {
           updatedAt: input.observedAt,
         })
         .run();
+      changed = true;
       sourceItem = db.select().from(sourceItems).where(eq(sourceItems.id, id)).get();
     }
     if (!sourceItem) continue;
@@ -3250,6 +3353,7 @@ function persistSignals(db: RecruitingDb, input: SignalPersistenceInput): void {
         db.delete(leadSignalLinks).where(eq(leadSignalLinks.signalId, oldSignal.id)).run();
         db.delete(signalAttributions).where(eq(signalAttributions.signalId, oldSignal.id)).run();
         db.delete(signals).where(eq(signals.id, oldSignal.id)).run();
+        changed = true;
       }
       for (const leadId of new Set(oldLeadIds)) {
         const remaining = db
@@ -3274,6 +3378,7 @@ function persistSignals(db: RecruitingDb, input: SignalPersistenceInput): void {
         })
         .where(eq(sourceItems.id, sourceItem.id))
         .run();
+      changed = true;
       continue;
     }
     const fingerprint = itemFingerprint(item);
@@ -3287,6 +3392,7 @@ function persistSignals(db: RecruitingDb, input: SignalPersistenceInput): void {
         .set({ deletionMarkerAt: null, latestSignalId: null, updatedAt: input.observedAt })
         .where(eq(sourceItems.id, sourceItem.id))
         .run();
+      changed = true;
       sourceItem =
         db.select().from(sourceItems).where(eq(sourceItems.id, sourceItem.id)).get() ?? sourceItem;
     }
@@ -3359,18 +3465,29 @@ function persistSignals(db: RecruitingDb, input: SignalPersistenceInput): void {
           createdAt: input.observedAt,
         })
         .run();
+      changed = true;
     }
     if (!signalId) continue;
-    db.update(sourceItems)
-      .set({
-        canonicalUrl: item.canonicalUrl ?? sourceItem.canonicalUrl,
-        providerIdentity: item.providerIdentity ?? sourceItem.providerIdentity,
-        latestFingerprint: fingerprint,
-        latestSignalId: signalId,
-        updatedAt: input.observedAt,
-      })
-      .where(eq(sourceItems.id, sourceItem.id))
-      .run();
+    const nextCanonicalUrl = item.canonicalUrl ?? sourceItem.canonicalUrl;
+    const nextProviderIdentity = item.providerIdentity ?? sourceItem.providerIdentity;
+    if (
+      sourceItem.canonicalUrl !== nextCanonicalUrl ||
+      sourceItem.providerIdentity !== nextProviderIdentity ||
+      sourceItem.latestFingerprint !== fingerprint ||
+      sourceItem.latestSignalId !== signalId
+    ) {
+      db.update(sourceItems)
+        .set({
+          canonicalUrl: nextCanonicalUrl,
+          providerIdentity: nextProviderIdentity,
+          latestFingerprint: fingerprint,
+          latestSignalId: signalId,
+          updatedAt: input.observedAt,
+        })
+        .where(eq(sourceItems.id, sourceItem.id))
+        .run();
+      changed = true;
+    }
 
     const priorLeadId = previousSignalId
       ? db
@@ -3397,12 +3514,14 @@ function persistSignals(db: RecruitingDb, input: SignalPersistenceInput): void {
       .onConflictDoNothing()
       .run();
     if (linkResult.changes > 0 || attributionResult.changes > 0) {
+      changed = true;
       db.update(leads)
         .set({ updatedAt: input.observedAt, revision: sql`${leads.revision} + 1` })
         .where(eq(leads.id, lead.id))
         .run();
     }
   }
+  return changed;
 }
 
 function ensureLead(
@@ -3560,7 +3679,10 @@ function leadConflicts(value: string | null): LeadConflictValue[] {
 }
 
 function stableItemIdentity(item: FeedItem): string {
-  if (item.metadata?.provider === "x-api-v2" && item.providerIdentity)
+  if (
+    (item.metadata?.provider === "x-api-v2" || item.metadata?.provider === "bird") &&
+    item.providerIdentity
+  )
     return `provider:${item.providerIdentity}`;
   if (item.canonicalUrl) return `url:${item.canonicalUrl}`;
   if (item.providerIdentity) return `provider:${item.providerIdentity}`;
@@ -3568,9 +3690,13 @@ function stableItemIdentity(item: FeedItem): string {
 }
 
 function itemFingerprint(item: FeedItem): string {
+  const xEvidence = item.metadata?.provider === "x-api-v2" || item.metadata?.provider === "bird";
   return digest(
     JSON.stringify({
-      canonicalUrl: item.canonicalUrl,
+      // X's canonical URL contains a mutable username/path while provider
+      // identity is the stable public post identity. Keep URL changes from
+      // creating a duplicate Signal when normalized content is unchanged.
+      canonicalUrl: xEvidence ? null : item.canonicalUrl,
       providerIdentity: item.providerIdentity,
       title: item.title,
       content: item.content,

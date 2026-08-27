@@ -318,6 +318,12 @@ describe("Bird XSearch", () => {
       expect(xSearch?.outputSchema?.required).toEqual(
         expect.arrayContaining(["sourceAttemptId", "results", "trust", "trustBoundary"]),
       );
+      const recordSignal = listing.result?.tools?.find((tool) => tool.name === "RecordSignal");
+      expect(recordSignal?.inputSchema).toMatchObject({
+        properties: { evidenceReference: { type: "string", minLength: 1 } },
+        required: ["evidenceReference"],
+        additionalProperties: false,
+      });
     } finally {
       server.stop();
     }

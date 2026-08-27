@@ -17,6 +17,7 @@ describe("provider-neutral Recruiting contract", () => {
       "list_selected_sources",
       "record_checkpoint",
       "record_source_outcome",
+      "record_signal",
       "complete_run",
     ]);
     const instructions = recruitingProviderInstructions({
@@ -26,6 +27,7 @@ describe("provider-neutral Recruiting contract", () => {
     });
     expect(instructions).toContain("OpenRecruit WebSearch and WebFetch");
     expect(instructions).toContain("record_source_outcome");
+    expect(instructions).toContain("RecordSignal");
     expect(instructions).toContain("complete_run");
   });
 

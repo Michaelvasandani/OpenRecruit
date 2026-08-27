@@ -35,6 +35,7 @@ type WebAccessBoundary = {
     sourceAttemptId: string;
     evidenceReferences: string[];
   }): unknown;
+  recordSignalForScout(input: { scoutId: string; evidenceReference: string }): unknown;
 };
 
 /** How long a `/wake-stream` long-poll is held open before returning empty (the
@@ -515,6 +516,26 @@ export class LocalApiServer {
             scoutId,
             sourceAttemptId: body.sourceAttemptId,
             evidenceReferences: body.evidenceReferences as string[],
+          }),
+        );
+      }
+      if (req.method === "POST" && url.pathname === "/recruiting/run/record-signal") {
+        if (
+          !body ||
+          typeof body.evidenceReference !== "string" ||
+          Object.keys(body).some((key) => key !== "evidenceReference")
+        ) {
+          return json(res, 400, {
+            error: "RecordSignal requires exactly one evidenceReference",
+            code: "VALIDATION",
+          });
+        }
+        return json(
+          res,
+          200,
+          recruiting.recordSignalForScout({
+            scoutId,
+            evidenceReference: body.evidenceReference,
           }),
         );
       }

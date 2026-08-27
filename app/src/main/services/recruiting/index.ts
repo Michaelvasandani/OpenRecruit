@@ -80,6 +80,7 @@ import {
   type LinkSignalToLeadCommand,
   type MergeLeadsCommand,
   type ReadSourceCommand,
+  type RecordSignalCommand,
   type RecordXEvidenceCommand,
   ScoutRunApplication,
   type ScoutRunApplicationOptions,
@@ -200,6 +201,7 @@ export type {
   LinkSignalToLeadCommand,
   MergeLeadsCommand,
   ReadSourceCommand,
+  RecordSignalCommand,
   RecordSourceOutcomeCommand,
   RecordXEvidenceCommand,
   ScoutRunApplicationOptions,
@@ -510,6 +512,10 @@ export class RecruitingApplication {
     return this.scoutRuns.recordXEvidence(command);
   }
 
+  recordSignal(command: RecordSignalCommand) {
+    return this.scoutRuns.recordSignal(command);
+  }
+
   webSearch(command: WebSearchRequest & { scoutId: string }): Promise<WebSearchResponse> {
     return this.webSearchApplication.search(command);
   }
@@ -610,6 +616,14 @@ export class RecruitingApplication {
       runId: run.id,
       sourceAttemptId: input.sourceAttemptId,
       evidenceReferences: input.evidenceReferences,
+    });
+  }
+
+  recordSignalForScout(input: { scoutId: string; evidenceReference: string }) {
+    const run = this.beginRunForScout(input.scoutId);
+    return this.scoutRuns.recordSignal({
+      scoutId: run.scoutId,
+      evidenceReference: input.evidenceReference,
     });
   }
 

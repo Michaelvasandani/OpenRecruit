@@ -467,31 +467,26 @@ const TOOLS: ToolDef[] = [
     },
   },
   {
-    name: "record_x_evidence",
+    name: "RecordSignal",
     description:
-      "Explicitly promote selected host-issued XSearch or XRead evidence references into durable Signals. " +
-      "References must come from the current Scout Run's completed XSearch or XRead Attempt.",
-    inputSchema: obj(
-      {
-        sourceAttemptId: {
-          type: "string",
-          minLength: 1,
-          description: "The sourceAttemptId returned by XSearch or XRead.",
+      "Explicitly promote one host-issued XSearch or XRead evidence reference into a durable Signal. " +
+      "The reference must come from the current Scout Run; the host persists its exact normalized evidence.",
+    inputSchema: {
+      ...obj(
+        {
+          evidenceReference: {
+            type: "string",
+            minLength: 1,
+            description: "One opaque host-issued evidence reference returned by XSearch or XRead.",
+          },
         },
-        evidenceReferences: {
-          type: "array",
-          minItems: 1,
-          maxItems: 25,
-          items: { type: "string", minLength: 1 },
-          description: "One to 25 host-issued evidence references returned by XSearch or XRead.",
-        },
-      },
-      ["sourceAttemptId", "evidenceReferences"],
-    ),
+        ["evidenceReference"],
+      ),
+      additionalProperties: false,
+    },
     run: async (a) => {
-      const { status, json } = await callHost("POST", "/recruiting/run/x-evidence", {
-        sourceAttemptId: a.sourceAttemptId,
-        evidenceReferences: a.evidenceReferences,
+      const { status, json } = await callHost("POST", "/recruiting/run/record-signal", {
+        evidenceReference: a.evidenceReference,
       });
       if (status !== 200) throw new Error(describeError(json));
       return JSON.stringify(json, null, 2);

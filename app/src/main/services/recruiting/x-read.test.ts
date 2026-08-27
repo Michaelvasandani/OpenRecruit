@@ -112,6 +112,157 @@ const responseBody = {
 };
 
 describe("Bird XRead", () => {
+  test("RecordSignal accepts one host reference and persists exact host evidence", async () => {
+    const provider = new ReadProvider({ status: 200, body: JSON.stringify(responseBody) });
+    const { app, scout, run } = fixture(provider);
+    const read = await app.xRead({ scoutId: scout.id, target: postId });
+
+    const recorded = app.recordSignalForScout({
+      scoutId: scout.id,
+      evidenceReference: read.evidenceReference,
+    });
+    expect(recorded.signalIds).toHaveLength(1);
+    expect(app.listSignals()[0]?.evidence).toMatchObject({
+      content: responseBody.text,
+      canonicalUrl: responseBody.url,
+      providerIdentity: postId,
+      author: responseBody.author,
+    });
+    expect(app.listSignals()[0]?.runId).toBe(run.id);
+
+    // Replaying the same host reference is idempotent, not a duplicate Signal.
+    const replayed = app.recordSignalForScout({
+      scoutId: scout.id,
+      evidenceReference: read.evidenceReference,
+    });
+    expect(replayed.signalIds).toEqual(recorded.signalIds);
+    expect(app.listSignals()).toHaveLength(1);
+  });
+
+  test("RecordSignal rejects cross-Scout, expired, and terminal-Run references", async () => {
+    let now = Date.parse("2026-08-23T16:00:00Z");
+    const provider = new ReadProvider({ status: 200, body: JSON.stringify(responseBody) });
+    const app = new RecruitingApplication(makeDb(), () => now, {
+      birdAccess: () => ({
+        configuredPath: "/private/bird",
+        resolvedPath: "/private/bird",
+        fingerprint: "fingerprint",
+        version: "0.8.0",
+        accountIdentity: { id: "42", username: "candidate", displayName: "Candidate" },
+      }),
+      birdProvider: provider,
+    });
+    const profile = app.importProfile({
+      name: "Candidate",
+      roleTarget: "Staff engineer",
+      careerInterests: "Developer tools",
+      idempotencyKey: "record-signal-profile",
+    });
+    const confirmed = app.confirmProfile({
+      profileId: profile.id,
+      expectedRevision: profile.revision,
+      idempotencyKey: "record-signal-profile-confirm",
+    });
+    const source = app.createXSource({
+      name: "Bird X",
+      provider: "bird",
+      query: "hiring",
+      idempotencyKey: "record-signal-source",
+    });
+    const first = app.createScout({
+      name: "First Scout",
+      harness: "codex",
+      instructionPath: "agents/first",
+      defaultProfileId: confirmed.id,
+      sourceIds: [source.value.id],
+      idempotencyKey: "record-signal-scout-1",
+    });
+    const second = app.createScout({
+      name: "Second Scout",
+      harness: "claude",
+      instructionPath: "agents/second",
+      defaultProfileId: confirmed.id,
+      sourceIds: [source.value.id],
+      idempotencyKey: "record-signal-scout-2",
+    });
+    const firstRun = app.launchScoutRun({
+      scoutId: first.value.id,
+      idempotencyKey: "record-signal-run-1",
+    });
+    const secondRun = app.launchScoutRun({
+      scoutId: second.value.id,
+      idempotencyKey: "record-signal-run-2",
+    });
+    const read = await app.xRead({ scoutId: first.value.id, target: postId });
+    expect(() =>
+      app.recordSignalForScout({
+        scoutId: second.value.id,
+        evidenceReference: read.evidenceReference,
+      }),
+    ).toThrow();
+    now += 15 * 60_000 + 1;
+    expect(() =>
+      app.recordSignalForScout({
+        scoutId: first.value.id,
+        evidenceReference: read.evidenceReference,
+      }),
+    ).toThrow(/expired|available|reference/i);
+
+    now = Date.parse("2026-08-23T16:00:00Z");
+    const fresh = await app.xRead({ scoutId: first.value.id, target: postId });
+    app.completeRunForScout({ scoutId: first.value.id, outcome: "completed" });
+    expect(() =>
+      app.recordSignalForScout({
+        scoutId: first.value.id,
+        evidenceReference: fresh.evidenceReference,
+      }),
+    ).toThrow(/terminal|cannot record|active/i);
+    expect(app.listSignals({ runId: firstRun.value.id })).toHaveLength(0);
+    expect(app.listSignals({ runId: secondRun.value.id })).toHaveLength(0);
+  });
+
+  test("RecordSignal is idempotent for the same public post despite URL formatting changes", async () => {
+    const provider = new DeterministicXProvider({
+      read: [
+        { status: 200, body: JSON.stringify(responseBody) },
+        {
+          status: 200,
+          body: JSON.stringify({
+            ...responseBody,
+            url: `https://x.com/renamed/status/${postId}`,
+          }),
+        },
+      ],
+    });
+    const { app, scout } = fixture(provider);
+    const first = await app.xRead({ scoutId: scout.id, target: postId });
+    app.recordSignalForScout({ scoutId: scout.id, evidenceReference: first.evidenceReference });
+    const second = await app.xRead({ scoutId: scout.id, target: postId });
+    app.recordSignalForScout({ scoutId: scout.id, evidenceReference: second.evidenceReference });
+    expect(app.listSignals()).toHaveLength(1);
+  });
+
+  test("RecordSignal creates a new observation for materially changed post content", async () => {
+    const provider = new DeterministicXProvider({
+      read: [
+        { status: 200, body: JSON.stringify(responseBody) },
+        {
+          status: 200,
+          body: JSON.stringify({ ...responseBody, text: "A different hiring update" }),
+        },
+      ],
+    });
+    const { app, scout } = fixture(provider);
+    const first = await app.xRead({ scoutId: scout.id, target: postId });
+    app.recordSignalForScout({ scoutId: scout.id, evidenceReference: first.evidenceReference });
+    const second = await app.xRead({ scoutId: scout.id, target: postId });
+    app.recordSignalForScout({ scoutId: scout.id, evidenceReference: second.evidenceReference });
+    expect(app.listSignals()).toHaveLength(2);
+    expect(
+      app.listSignals().some((signal) => signal.evidence.content === "A different hiring update"),
+    ).toBe(true);
+  });
+
   test("accepts one ID or canonical X post URL and rejects other target shapes", () => {
     expect(validateXReadTarget(postId)).toEqual({
       postId,
@@ -310,7 +461,24 @@ describe("Bird XRead", () => {
         body: JSON.stringify({ target: `https://x.com/bird/status/${postId}` }),
       });
       expect(response.status).toBe(200);
-      expect((await response.json()) as { postId: string }).toMatchObject({ postId });
+      const read = (await response.json()) as { postId: string; evidenceReference: string };
+      expect(read).toMatchObject({ postId });
+      const injection = await fetch(
+        `http://127.0.0.1:${server.port}/recruiting/run/record-signal`,
+        {
+          method: "POST",
+          headers,
+          body: JSON.stringify({ evidenceReference: read.evidenceReference, text: "forged" }),
+        },
+      );
+      expect(injection.status).toBe(400);
+      const recorded = await fetch(`http://127.0.0.1:${server.port}/recruiting/run/record-signal`, {
+        method: "POST",
+        headers,
+        body: JSON.stringify({ evidenceReference: read.evidenceReference }),
+      });
+      expect(recorded.status).toBe(200);
+      expect(app.listSignals()).toHaveLength(1);
       const rejected = await fetch(`http://127.0.0.1:${server.port}/x-read`, {
         method: "POST",
         headers,

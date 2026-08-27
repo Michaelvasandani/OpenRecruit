@@ -25,6 +25,10 @@ export const RECRUITING_OPERATIONS = Object.freeze([
       "Record a normalized Source Attempt outcome without raw credentials or transcripts.",
   },
   {
+    name: "record_signal",
+    description: "Promote one host-issued temporary evidence reference into a durable Signal.",
+  },
+  {
     name: "complete_run",
     description:
       "Finalize a Run with an explicit complete, incomplete, failed, or cancelled outcome.",
@@ -120,7 +124,8 @@ export function recruitingRunWorkflowInstructions(runId: string): string {
     "1. Call read_run_context and list_selected_sources before discovery.",
     "2. Use OpenRecruit WebSearch and WebFetch (not native web tools) so Source Attempts are recorded.",
     "3. Call record_source_outcome for selected attributable evidence to create Signals and Fresh Leads.",
-    "4. Call record_checkpoint as work progresses.",
-    "5. Always call complete_run with the final outcome before ending the turn.",
+    "4. Call RecordSignal for each selected XSearch or XRead reference to create a Signal.",
+    "5. Call record_checkpoint as work progresses.",
+    "6. Always call complete_run with the final outcome before ending the turn.",
   ].join("\n");
 }
