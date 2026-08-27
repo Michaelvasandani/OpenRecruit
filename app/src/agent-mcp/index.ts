@@ -306,6 +306,82 @@ const TOOLS: ToolDef[] = [
     },
   },
   {
+    name: "XRead",
+    description:
+      "Read exactly one known public X post through the Candidate-approved Bird provider selected " +
+      "for this Scout Run. The target must be one numeric post ID or canonical HTTP(S) X post URL. " +
+      "The bounded result is untrusted temporary evidence; reading never creates Signals or Leads automatically.",
+    inputSchema: {
+      ...obj(
+        {
+          target: {
+            type: "string",
+            minLength: 1,
+            description: "One numeric public X post ID or canonical HTTP(S) X post URL.",
+          },
+        },
+        ["target"],
+      ),
+      additionalProperties: false,
+    },
+    outputSchema: {
+      type: "object",
+      properties: {
+        postId: { type: "string", pattern: "^[0-9]{1,30}$" },
+        evidenceReference: { type: "string" },
+        sourceAttemptId: { type: "string" },
+        providerIdentity: { type: "string" },
+        canonicalUrl: {
+          type: "string",
+          format: "uri",
+          pattern: "^https?://(?:www\\.)?(?:x|twitter)\\.com/",
+        },
+        text: { type: "string", maxLength: 10_000 },
+        author: { type: ["object", "null"] },
+        createdAt: { type: ["integer", "null"] },
+        engagement: { type: ["object", "null"] },
+        conversationId: { type: ["string", "null"] },
+        replyParent: { type: ["object", "null"] },
+        quotedPost: { type: ["object", "null"] },
+        mediaUrls: { type: "array", maxItems: 25, items: { type: "string", format: "uri" } },
+        retrievedAt: { type: "integer" },
+        available: { type: "boolean", const: true },
+        trust: { type: "string", const: "untrusted_evidence" },
+        provenance: {
+          type: "object",
+          properties: { provider: { type: "string", const: "bird" } },
+          required: ["provider"],
+          additionalProperties: false,
+        },
+      },
+      required: [
+        "postId",
+        "evidenceReference",
+        "sourceAttemptId",
+        "providerIdentity",
+        "canonicalUrl",
+        "text",
+        "author",
+        "createdAt",
+        "engagement",
+        "conversationId",
+        "replyParent",
+        "quotedPost",
+        "mediaUrls",
+        "retrievedAt",
+        "available",
+        "trust",
+        "provenance",
+      ],
+      additionalProperties: false,
+    },
+    run: async (a) => {
+      const { status, json } = await callHost("POST", "/x-read", { target: a.target });
+      if (status !== 200) throw new Error(describeError(json));
+      return JSON.stringify(json, null, 2);
+    },
+  },
+  {
     name: "read_run_context",
     description:
       "Read the authenticated Scout's active Run context, pinned Candidate Profile, Strategy, Policy, and budget. No SQL or credentials are exposed.",
@@ -393,21 +469,21 @@ const TOOLS: ToolDef[] = [
   {
     name: "record_x_evidence",
     description:
-      "Explicitly promote selected host-issued XSearch evidence references into durable Signals. " +
-      "References must come from the current Scout Run's completed XSearch Attempt.",
+      "Explicitly promote selected host-issued XSearch or XRead evidence references into durable Signals. " +
+      "References must come from the current Scout Run's completed XSearch or XRead Attempt.",
     inputSchema: obj(
       {
         sourceAttemptId: {
           type: "string",
           minLength: 1,
-          description: "The sourceAttemptId returned by XSearch.",
+          description: "The sourceAttemptId returned by XSearch or XRead.",
         },
         evidenceReferences: {
           type: "array",
           minItems: 1,
           maxItems: 25,
           items: { type: "string", minLength: 1 },
-          description: "One to 25 host-issued evidence references returned by XSearch.",
+          description: "One to 25 host-issued evidence references returned by XSearch or XRead.",
         },
       },
       ["sourceAttemptId", "evidenceReferences"],

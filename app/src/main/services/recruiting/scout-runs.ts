@@ -49,7 +49,7 @@ import {
 import { bus } from "../event-bus";
 import type { BirdAccess } from "../settings";
 import { assertSafeMaterial } from "./contract";
-import { RecruitingError } from "./errors";
+import { RecruitingError, type RecruitingFailureCategory } from "./errors";
 import {
   type FeedItem,
   type FeedProvider,
@@ -62,15 +62,20 @@ import {
   BirdXProvider,
   HttpXProvider,
   type NormalizedXPage,
+  normalizeBirdReadResponse,
   normalizeBirdResponse,
   normalizeXResponse,
   XApiError,
   type XApiResponse,
   type XProvider,
+  XReadContentError,
+  type XReadEvidence,
+  type XReadResult,
   type XSearchEvidence,
   type XSearchResult,
   xConfigFromSource,
   xRequestForLookup,
+  xRequestForRead,
   xRequestForSearch,
 } from "./x";
 
@@ -130,6 +135,14 @@ export type XSearchCommand = {
   limit?: number;
 };
 
+export type XReadCommand = {
+  scoutId: string;
+  /** Exactly one numeric public post ID or canonical HTTP(S) X post URL. */
+  target: string;
+  /** Host-owned cancellation for a disconnected authenticated request. */
+  signal?: AbortSignal;
+};
+
 export type RecordXEvidenceCommand = {
   runId: string;
   sourceAttemptId: string;
@@ -156,9 +169,13 @@ export type ReadSourceCommand = {
   provider?: FeedProvider | XProvider;
   budget?: Partial<RunBudget>;
   retry?: { maxAttempts?: number; baseDelayMs?: number };
-  /** Host-only overrides used by the authenticated agent XSearch operation. */
+  /** Host-only overrides used by the authenticated agent XSearch/XRead operations. */
   searchQuery?: string;
   searchLimit?: number;
+  /** Host-only XRead identity; callers cannot select a provider or command. */
+  readPostId?: string;
+  readCanonicalUrl?: string;
+  signal?: AbortSignal;
   persistItems?: boolean;
 };
 
@@ -825,6 +842,13 @@ export class ScoutRunApplication {
             limit: command.searchLimit ?? 10,
           }
         : {}),
+      ...(command.readPostId
+        ? {
+            operation: "bird_x_read",
+            requestedPostId: command.readPostId,
+            requestedCanonicalUrl: command.readCanonicalUrl ?? null,
+          }
+        : {}),
       maxItems: budget.maxItems,
       maxPages: budget.maxPages,
       maxWallClockMs: budget.maxWallClockMs,
@@ -900,8 +924,8 @@ export class ScoutRunApplication {
           .where(eq(sourceAttempts.id, attemptId))
           .run();
         const audit = parseJson(requestedScope);
-        if (command.searchQuery && audit && typeof audit === "object") {
-          const searchAudit = {
+        if ((command.searchQuery || command.readPostId) && audit && typeof audit === "object") {
+          const sourceAudit = {
             ...audit,
             ...(input.audit ?? {}),
             retryDisposition: "not_retried",
@@ -919,7 +943,7 @@ export class ScoutRunApplication {
           };
           tx.update(sourceAttempts)
             .set({
-              requestedScope: JSON.stringify(searchAudit),
+              requestedScope: JSON.stringify(sourceAudit),
             })
             .where(eq(sourceAttempts.id, attemptId))
             .run();
@@ -995,6 +1019,9 @@ export class ScoutRunApplication {
         retry: command.retry,
         searchQuery: command.searchQuery,
         searchLimit: command.searchLimit,
+        readPostId: command.readPostId,
+        readCanonicalUrl: command.readCanonicalUrl,
+        signal: command.signal,
         finish,
       });
     }
@@ -1287,6 +1314,9 @@ export class ScoutRunApplication {
     retry?: ReadSourceCommand["retry"];
     searchQuery?: string;
     searchLimit?: number;
+    readPostId?: string;
+    readCanonicalUrl?: string;
+    signal?: AbortSignal;
     finish: SourceAttemptFinish;
   }): Promise<SourceAttemptResult> {
     const { source, access, budget, startedAt, finish } = input;
@@ -1320,9 +1350,10 @@ export class ScoutRunApplication {
         },
       });
     }
-    // Bird is reachable only through the bounded agent XSearch operation. A
-    // generic Source read must not turn Bird results into automatic Signals.
-    if (config.provider === "bird" && !input.searchQuery) {
+    // Bird is reachable only through the bounded agent XSearch/XRead
+    // operations. A generic Source read must not turn Bird results into
+    // automatic Signals.
+    if (config.provider === "bird" && !input.searchQuery && !input.readPostId) {
       return finish("unsupported", {
         safeFailure: "The Bird X Source provider is not available yet",
         accessPatch: {
@@ -1336,7 +1367,7 @@ export class ScoutRunApplication {
     }
     if (
       config.provider === "bird" &&
-      input.searchQuery &&
+      (input.searchQuery || input.readPostId) &&
       (!this.birdAccess || !this.birdAccess())
     ) {
       return finish("blocked", {
@@ -1397,21 +1428,39 @@ export class ScoutRunApplication {
     let resultCount = 0;
     // An explicit XSearch query is always a search, even if the selected
     // Source also retains post IDs for the separate X API lookup operation.
-    const lookup = !input.searchQuery && config.postIds.length > 0;
+    // XRead is a separate one-post operation and never falls back to lookup.
+    const lookup = !input.searchQuery && !input.readPostId && config.postIds.length > 0;
 
     while (pageCount < maxPages && allItems.length < maxItems) {
+      if (input.readPostId && input.signal?.aborted) {
+        return finish("cancelled", {
+          pageCount,
+          safeFailure: "The XRead request was cancelled",
+          accessPatch: {
+            readiness: access.readiness as SourceReadinessValue,
+            safeFailure: null,
+            nextAction: "Read the public X post again when ready",
+            retryAt: null,
+            sourceIdentity: config.provider,
+          },
+          audit: { errorCategory: "cancelled" },
+        });
+      }
       if (this.now() - startedAt > budget.maxWallClockMs) {
         partialFailure = "The X Source read exceeded its wall-clock budget";
         break;
       }
       const request = lookup
         ? xRequestForLookup(config)
-        : xRequestForSearch(
-            input.searchQuery ? { ...config, query: input.searchQuery } : config,
-            startedAt,
-            nextCursor,
-            input.searchLimit ?? Math.min(100, Math.max(10, maxItems)),
-          );
+        : input.readPostId
+          ? xRequestForRead(input.readPostId)
+          : xRequestForSearch(
+              input.searchQuery ? { ...config, query: input.searchQuery } : config,
+              startedAt,
+              nextCursor,
+              input.searchLimit ?? Math.min(100, Math.max(10, maxItems)),
+            );
+      if (input.readPostId && input.signal) request.signal = input.signal;
       let response: XApiResponse = { status: 503, body: "" };
       let attempts = 0;
       while (attempts < attemptsAllowed) {
@@ -1428,6 +1477,20 @@ export class ScoutRunApplication {
           break;
       }
       pageCount++;
+      if (input.readPostId && input.signal?.aborted) {
+        return finish("cancelled", {
+          pageCount,
+          safeFailure: "The XRead request was cancelled",
+          accessPatch: {
+            readiness: access.readiness as SourceReadinessValue,
+            safeFailure: null,
+            nextAction: "Read the public X post again when ready",
+            retryAt: null,
+            sourceIdentity: config.provider,
+          },
+          audit: { errorCategory: "cancelled" },
+        });
+      }
       spentCents += response.costCents ?? 0;
       if (spentCents > maxSpendCents) {
         return finish("budget_exhausted", {
@@ -1462,6 +1525,77 @@ export class ScoutRunApplication {
             retryAt: null,
             sourceIdentity: config.provider,
           },
+          audit: input.readPostId
+            ? { errorCategory: response.failureCategory ?? "authentication" }
+            : undefined,
+        });
+      }
+      if (config.provider === "bird" && input.readPostId && response.status === 426) {
+        return finish("unsupported", {
+          pageCount,
+          safeFailure: "The configured Bird version is unsupported for XRead",
+          accessPatch: {
+            readiness: "degraded",
+            safeFailure: "The configured Bird version is unsupported for XRead",
+            nextAction: "Upgrade Bird to the supported OpenRecruit version",
+            retryAt: null,
+            sourceIdentity: "bird",
+          },
+          audit: { errorCategory: response.failureCategory ?? "unsupported_version" },
+        });
+      }
+      if (
+        config.provider === "bird" &&
+        input.readPostId &&
+        response.failureCategory === "deleted_or_unavailable"
+      ) {
+        return finish("rejected", {
+          pageCount,
+          safeFailure: "The requested X post was deleted or is unavailable",
+          accessPatch: {
+            readiness: "ready",
+            safeFailure: null,
+            nextAction: "Read another public X post",
+            retryAt: null,
+            sourceIdentity: "bird",
+          },
+          audit: { errorCategory: "deleted_or_unavailable" },
+        });
+      }
+      if (
+        config.provider === "bird" &&
+        input.readPostId &&
+        response.failureCategory === "authentication"
+      ) {
+        return finish("blocked", {
+          pageCount,
+          safeFailure: "Bird could not access the Candidate-approved X session",
+          accessPatch: {
+            readiness: "reauthentication_required",
+            safeFailure: "Bird could not access the Candidate-approved X session",
+            nextAction: "Test and confirm the configured Bird executable and account",
+            retryAt: null,
+            sourceIdentity: "bird",
+          },
+          audit: { errorCategory: "authentication" },
+        });
+      }
+      if (
+        config.provider === "bird" &&
+        input.readPostId &&
+        response.failureCategory === "unsupported_version"
+      ) {
+        return finish("unsupported", {
+          pageCount,
+          safeFailure: "The configured Bird version is unsupported for XRead",
+          accessPatch: {
+            readiness: "degraded",
+            safeFailure: "The configured Bird version is unsupported for XRead",
+            nextAction: "Upgrade Bird to the supported OpenRecruit version",
+            retryAt: null,
+            sourceIdentity: "bird",
+          },
+          audit: { errorCategory: "unsupported_version" },
         });
       }
       if (response.status === 403) {
@@ -1475,6 +1609,7 @@ export class ScoutRunApplication {
             retryAt: null,
             sourceIdentity: config.provider,
           },
+          audit: input.readPostId ? { errorCategory: "provider_failure" } : undefined,
         });
       }
       if (response.status === 429) {
@@ -1490,27 +1625,106 @@ export class ScoutRunApplication {
             retryAt,
             sourceIdentity: config.provider,
           },
+          audit: input.readPostId ? { errorCategory: "rate_limited" } : undefined,
+        });
+      }
+      if (
+        config.provider === "bird" &&
+        input.readPostId &&
+        response.failureCategory === "rate_limited"
+      ) {
+        retryAt = startedAt + Math.max(0, response.retryAfterMs ?? 60_000);
+        return finish("rate_limited", {
+          pageCount,
+          retryAt,
+          safeFailure: "Bird asked OpenRecruit to retry after the documented rate limit window",
+          accessPatch: {
+            readiness: "rate_limited",
+            safeFailure: "Bird asked OpenRecruit to retry after the documented rate limit window",
+            nextAction: "Retry XRead after the indicated time",
+            retryAt,
+            sourceIdentity: "bird",
+          },
+          audit: { errorCategory: "rate_limited" },
+        });
+      }
+      if (config.provider === "bird" && input.readPostId && response.status === 504) {
+        return finish("timed_out", {
+          pageCount,
+          retryAt: startedAt + baseDelayMs,
+          safeFailure: "Bird XRead timed out",
+          accessPatch: {
+            readiness: "degraded",
+            safeFailure: "Bird XRead timed out",
+            nextAction: "Retry XRead later",
+            retryAt: startedAt + baseDelayMs,
+            sourceIdentity: "bird",
+          },
+          audit: { errorCategory: "timed_out" },
         });
       }
       if ([408, 425, 500, 502, 503, 504].includes(response.status)) {
+        if (config.provider === "bird" && input.readPostId && response.failureCategory) {
+          partialFailure = "Bird could not complete the requested XRead";
+        } else {
+          partialFailure = "X is temporarily unavailable";
+        }
         retryAt = startedAt + baseDelayMs;
-        partialFailure = "X is temporarily unavailable";
         break;
       }
       if (config.provider === "bird" && response.status === 413) {
         return finish("malformed_content", {
           pageCount,
-          safeFailure: "Bird search output exceeded the bounded parser limit",
+          safeFailure: input.readPostId
+            ? "Bird XRead output exceeded the bounded parser limit"
+            : "Bird search output exceeded the bounded parser limit",
           accessPatch: {
             readiness: "degraded",
-            safeFailure: "Bird search output exceeded the bounded parser limit",
-            nextAction: "Retry XSearch after verifying the Bird executable output",
+            safeFailure: input.readPostId
+              ? "Bird XRead output exceeded the bounded parser limit"
+              : "Bird search output exceeded the bounded parser limit",
+            nextAction: input.readPostId
+              ? "Retry XRead after verifying the Bird executable output"
+              : "Retry XSearch after verifying the Bird executable output",
             retryAt: null,
             sourceIdentity: "bird",
           },
+          audit: input.readPostId ? { errorCategory: "malformed_content" } : undefined,
+        });
+      }
+      if (
+        config.provider === "bird" &&
+        input.readPostId &&
+        (response.status === 404 || response.status === 410)
+      ) {
+        return finish("rejected", {
+          pageCount,
+          safeFailure: "The requested X post was deleted or is unavailable",
+          accessPatch: {
+            readiness: "ready",
+            safeFailure: null,
+            nextAction: "Read another public X post",
+            retryAt: null,
+            sourceIdentity: "bird",
+          },
+          audit: { errorCategory: "deleted_or_unavailable" },
         });
       }
       if (response.status < 200 || response.status >= 300) {
+        if (config.provider === "bird" && input.readPostId) {
+          return finish("transient_failure", {
+            pageCount,
+            safeFailure: "Bird could not complete the requested XRead",
+            accessPatch: {
+              readiness: "degraded",
+              safeFailure: "Bird could not complete the requested XRead",
+              nextAction: "Retry XRead after checking the Bird provider",
+              retryAt: startedAt + baseDelayMs,
+              sourceIdentity: "bird",
+            },
+            audit: { errorCategory: "provider_failure" },
+          });
+        }
         return finish("blocked", {
           pageCount,
           safeFailure: "X returned an unavailable response",
@@ -1525,23 +1739,58 @@ export class ScoutRunApplication {
       }
       let page: NormalizedXPage;
       try {
-        page =
-          config.provider === "bird"
-            ? normalizeBirdResponse(response.body, retentionUntil)
-            : normalizeXResponse(response.body, lookup ? config.postIds : [], retentionUntil);
+        if (config.provider === "bird" && input.readPostId) {
+          const normalized = normalizeBirdReadResponse(
+            response.body,
+            input.readPostId,
+            input.readCanonicalUrl,
+            retentionUntil,
+          );
+          page = { items: [normalized.item], nextCursor: null, resultCount: 1 };
+        } else {
+          page =
+            config.provider === "bird"
+              ? normalizeBirdResponse(response.body, retentionUntil)
+              : normalizeXResponse(response.body, lookup ? config.postIds : [], retentionUntil);
+        }
       } catch (error) {
-        return finish("malformed_content", {
-          pageCount,
-          safeFailure: error instanceof XApiError ? error.message : "X returned malformed content",
-          accessPatch: {
-            readiness: "degraded",
+        const readContentError = error instanceof XReadContentError ? error : null;
+        return finish(
+          readContentError?.category === "deleted_or_unavailable"
+            ? "rejected"
+            : "malformed_content",
+          {
+            pageCount,
             safeFailure:
               error instanceof XApiError ? error.message : "X returned malformed content",
-            nextAction: "Verify the official X API response and retry",
-            retryAt: null,
-            sourceIdentity: config.provider,
+            accessPatch: {
+              readiness:
+                readContentError?.category === "deleted_or_unavailable" ? "ready" : "degraded",
+              safeFailure:
+                readContentError?.category === "deleted_or_unavailable"
+                  ? null
+                  : error instanceof XApiError
+                    ? error.message
+                    : "X returned malformed content",
+              nextAction:
+                readContentError?.category === "deleted_or_unavailable"
+                  ? "Read another public X post"
+                  : config.provider === "bird"
+                    ? input.readPostId
+                      ? "Verify Bird XRead output and retry"
+                      : "Verify Bird output and retry"
+                    : "Verify the official X API response and retry",
+              retryAt: null,
+              sourceIdentity: config.provider,
+            },
+            audit:
+              input.readPostId && readContentError
+                ? { errorCategory: readContentError.category }
+                : input.readPostId
+                  ? { errorCategory: "malformed_content" }
+                  : undefined,
           },
-        });
+        );
       }
       allItems.push(...page.items);
       resultCount = Math.max(resultCount, page.resultCount);
@@ -1567,7 +1816,11 @@ export class ScoutRunApplication {
       cursor,
       pageCount,
       retryAt,
-      ...(input.searchQuery ? { audit: { resultCount } } : {}),
+      ...(input.searchQuery
+        ? { audit: { resultCount } }
+        : input.readPostId
+          ? { audit: { errorCategory: partialFailure ? "provider_failure" : undefined } }
+          : {}),
       safeFailure:
         partialFailure ?? (exhausted ? "The X Source item or page budget was exhausted" : null),
       accessPatch: {
@@ -1578,6 +1831,39 @@ export class ScoutRunApplication {
         sourceIdentity: config.provider,
       },
     });
+  }
+
+  private requireSingleBirdSource(
+    run: RunRow,
+    operation: "XSearch" | "XRead",
+    verb: "searching" | "reading",
+  ): { source: SourceRow; provider: XSourceProvider } {
+    const sourceIds =
+      snapshotSourceIds(run.overrideSnapshot) ?? this.selectedSourceIds(run.scoutId);
+    const selectedXSources = sourceIds.flatMap((sourceId) => {
+      const source = this.db.select().from(sources).where(eq(sources.id, sourceId)).get();
+      return source?.kind === "x" ? [source] : [];
+    });
+    const candidates = selectedXSources.flatMap((source) => {
+      const provider = xProviderFromConfig(source.config);
+      return provider ? [{ source, provider }] : [];
+    });
+    if (selectedXSources.length !== 1 || candidates.length !== 1) {
+      throw new RecruitingError(
+        "CONFLICT",
+        candidates.length === 0
+          ? `${operation} requires exactly one selected X provider; select one X Source before ${verb}`
+          : `${operation} requires exactly one selected X provider; select only one X Source before ${verb}`,
+      );
+    }
+    const selected = candidates[0];
+    if (selected.provider !== "bird") {
+      throw new RecruitingError(
+        "CONFLICT",
+        `${operation} requires the Candidate-approved Bird provider; select a Bird-backed X Source`,
+      );
+    }
+    return selected;
   }
 
   /** Search the one X provider pinned by Run preflight. Results are kept in a
@@ -1611,30 +1897,7 @@ export class ScoutRunApplication {
       .orderBy(asc(scoutRuns.createdAt), asc(scoutRuns.id))
       .get();
     if (!run) throw new RecruitingError("CONFLICT", `Scout ${scout.id} has no active Scout Run`);
-    const sourceIds = snapshotSourceIds(run.overrideSnapshot) ?? this.selectedSourceIds(scout.id);
-    const selectedXSources = sourceIds.flatMap((sourceId) => {
-      const source = this.db.select().from(sources).where(eq(sources.id, sourceId)).get();
-      return source?.kind === "x" ? [source] : [];
-    });
-    const candidates = selectedXSources.flatMap((source) => {
-      const provider = xProviderFromConfig(source.config);
-      return provider ? [{ source, provider }] : [];
-    });
-    if (selectedXSources.length !== 1 || candidates.length !== 1) {
-      throw new RecruitingError(
-        "CONFLICT",
-        candidates.length === 0
-          ? "XSearch requires exactly one selected X provider; select one X Source before searching"
-          : "XSearch requires exactly one selected X provider; select only one X Source before searching",
-      );
-    }
-    const selected = candidates[0];
-    if (selected.provider !== "bird") {
-      throw new RecruitingError(
-        "CONFLICT",
-        "XSearch requires the Candidate-approved Bird provider; select a Bird-backed X Source",
-      );
-    }
+    const selected = this.requireSingleBirdSource(run, "XSearch", "searching");
     const attempt = await this.readSource({
       runId: run.id,
       sourceId: selected.source.id,
@@ -1702,7 +1965,82 @@ export class ScoutRunApplication {
     return result;
   }
 
-  /** Persist only evidence references returned by a prior XSearch. */
+  /** Read exactly one public X post through the selected host-owned Bird
+   * provider. The normalized post stays in the same temporary evidence buffer
+   * as XSearch until a Scout explicitly records its reference. */
+  async xRead(command: XReadCommand): Promise<XReadResult> {
+    const target = validateXReadTarget(command.target);
+    const scout = requireScout(this.db, command.scoutId);
+    if (scout.lifecycleState !== "active") {
+      throw new RecruitingError("CONFLICT", "Archived Scouts cannot use XRead");
+    }
+    const run = this.db
+      .select()
+      .from(scoutRuns)
+      .where(
+        and(eq(scoutRuns.scoutId, scout.id), inArray(scoutRuns.status, [...ACTIVE_RUN_STATUSES])),
+      )
+      .orderBy(asc(scoutRuns.createdAt), asc(scoutRuns.id))
+      .get();
+    if (!run) throw new RecruitingError("CONFLICT", `Scout ${scout.id} has no active Scout Run`);
+    const selected = this.requireSingleBirdSource(run, "XRead", "reading");
+    const attempt = await this.readSource({
+      runId: run.id,
+      sourceId: selected.source.id,
+      provider: this.birdProvider,
+      readPostId: target.postId,
+      readCanonicalUrl: target.canonicalUrl,
+      signal: command.signal,
+      persistItems: false,
+      budget: { maxItems: 1, maxPages: 1 },
+    });
+    if (attempt.outcome !== "succeeded_with_items") {
+      const details = parseJson(attempt.requestedScope);
+      const rawCategory =
+        details &&
+        typeof details === "object" &&
+        typeof (details as Record<string, unknown>).errorCategory === "string"
+          ? String((details as Record<string, unknown>).errorCategory)
+          : attempt.outcome;
+      throw new RecruitingError(
+        "CONFLICT",
+        attempt.safeFailure ?? "Bird could not complete the bounded XRead",
+        xReadFailureCategory(rawCategory),
+      );
+    }
+    const item = attempt.items.find((candidate) => candidate.providerIdentity === target.postId);
+    const detail = item?.metadata?.xRead;
+    if (!item || !detail || typeof detail !== "object") {
+      throw new RecruitingError(
+        "CONFLICT",
+        "Bird XRead returned malformed normalized content",
+        "malformed_content",
+      );
+    }
+    const evidenceReference = `bird-evidence:${randomUUID()}`;
+    const read = detail as Omit<
+      XReadEvidence,
+      "evidenceReference" | "sourceAttemptId" | "retrievedAt"
+    >;
+    const retrievedAt = attempt.completedAt ?? this.now();
+    const result: XReadResult = {
+      ...read,
+      postId: target.postId,
+      providerIdentity: target.postId,
+      evidenceReference,
+      sourceAttemptId: attempt.id,
+      retrievedAt,
+      available: true,
+      trust: "untrusted_evidence",
+      provenance: { provider: "bird" },
+    };
+    const pending = new Map<string, FeedItem>();
+    pending.set(evidenceReference, item);
+    this.pendingXEvidence.set(attempt.id, pending);
+    return result;
+  }
+
+  /** Persist only evidence references returned by a prior XSearch or XRead. */
   recordXEvidence(command: RecordXEvidenceCommand): ScoutRunSummaryValue {
     if (
       !Array.isArray(command.evidenceReferences) ||
@@ -1715,7 +2053,7 @@ export class ScoutRunApplication {
     if (!pending) {
       throw new RecruitingError(
         "NOT_FOUND",
-        "The XSearch evidence references are no longer available; run XSearch again",
+        "The XSearch/XRead evidence references are no longer available; run the read again",
       );
     }
     const uniqueReferences = [...new Set(command.evidenceReferences)];
@@ -1736,7 +2074,10 @@ export class ScoutRunApplication {
       }
       const attempt = requireSourceAttempt(tx, command.sourceAttemptId);
       if (attempt.runId !== run.id || attempt.completedAt === null) {
-        throw new RecruitingError("NOT_FOUND", "XSearch Source Attempt was not found for this Run");
+        throw new RecruitingError(
+          "NOT_FOUND",
+          "XSearch/XRead Source Attempt was not found for this Run",
+        );
       }
       const source = tx.select().from(sources).where(eq(sources.id, attempt.sourceId)).get();
       const access = tx
@@ -1758,11 +2099,13 @@ export class ScoutRunApplication {
         !access ||
         !details ||
         typeof details !== "object" ||
-        (details as Record<string, unknown>).operation !== "bird_x_search"
+        !["bird_x_search", "bird_x_read"].includes(
+          String((details as Record<string, unknown>).operation),
+        )
       ) {
         throw new RecruitingError(
           "CONFLICT",
-          "Selected evidence must come from a completed Bird XSearch Attempt",
+          "Selected evidence must come from a completed Bird XSearch or XRead Attempt",
         );
       }
       const at = this.now();
@@ -3463,6 +3806,84 @@ function xProviderForAttempt(db: RecruitingDb, sourceId: string): XSourceProvide
   // the shipped official X API v2 adapter, even if a malformed row is later
   // inspected alongside changed raw configuration.
   return source?.kind === "x" ? "x-api-v2" : null;
+}
+
+export type XReadTarget = {
+  postId: string;
+  canonicalUrl: string;
+};
+
+/** Validate and canonicalize the only target shape accepted by XRead. */
+export function validateXReadTarget(value: unknown): XReadTarget {
+  if (typeof value !== "string") {
+    throw new RecruitingError(
+      "VALIDATION",
+      "XRead requires exactly one numeric public post ID or canonical X post URL",
+    );
+  }
+  const target = value.trim();
+  if (!target) {
+    throw new RecruitingError(
+      "VALIDATION",
+      "XRead requires exactly one numeric public post ID or canonical X post URL",
+    );
+  }
+  if (/^\d{1,30}$/.test(target)) {
+    return { postId: target, canonicalUrl: `https://x.com/i/web/status/${target}` };
+  }
+  let url: URL;
+  try {
+    url = new URL(target);
+  } catch {
+    throw new RecruitingError(
+      "VALIDATION",
+      "XRead target must be a numeric ID or canonical X post URL",
+    );
+  }
+  const host = url.hostname.toLowerCase();
+  if (
+    (url.protocol !== "http:" && url.protocol !== "https:") ||
+    !["x.com", "www.x.com", "twitter.com", "www.twitter.com"].includes(host) ||
+    url.port ||
+    url.username ||
+    url.password ||
+    url.search ||
+    url.hash
+  ) {
+    throw new RecruitingError("VALIDATION", "XRead target must be a canonical HTTP(S) X post URL");
+  }
+  const path = url.pathname;
+  const match = path.match(/^\/(?:([A-Za-z0-9_]{1,15})\/status|(i\/web)\/status)\/(\d{1,30})\/?$/);
+  if (!match) {
+    throw new RecruitingError("VALIDATION", "XRead target must be a canonical X post URL");
+  }
+  const postId = match[3];
+  url.hash = "";
+  url.pathname = url.pathname.replace(/\/$/, "");
+  return { postId, canonicalUrl: url.toString() };
+}
+
+function xReadFailureCategory(value: string): RecruitingFailureCategory {
+  switch (value) {
+    case "authentication":
+    case "invalid_authentication":
+      return "invalid_authentication";
+    case "rate_limited":
+      return "rate_limited";
+    case "deleted_or_unavailable":
+      return "deleted_or_unavailable";
+    case "unsupported_version":
+    case "unsupported":
+      return "unsupported_version";
+    case "malformed_content":
+      return "malformed_content";
+    case "timed_out":
+      return "timed_out";
+    case "cancelled":
+      return "cancelled";
+    default:
+      return "provider_failure";
+  }
 }
 
 function sourceProvidersForIds(

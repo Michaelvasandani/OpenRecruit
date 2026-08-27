@@ -80,12 +80,23 @@ type BirdCommandResult = {
   spawnError: boolean;
 };
 
-/** Safe projection of a bounded Bird search process. The stderr transcript is
+/** Non-sensitive classification of a failed Bird invocation. Stderr and raw
+ * stdout remain inside this module and are never returned to the caller. */
+export type BirdExecutionFailureCategory =
+  | "authentication"
+  | "rate_limited"
+  | "deleted_or_unavailable"
+  | "unsupported_version"
+  | "provider_failure";
+
+/** Safe projection of one bounded Bird process. The stderr transcript is
  * intentionally not returned across the settings/provider seam. */
-export type BirdSearchExecution = Pick<
+export type BirdExecution = Pick<
   BirdCommandResult,
   "exitCode" | "stdout" | "outputExceededLimit" | "timedOut" | "spawnError"
->;
+> & { failureCategory: BirdExecutionFailureCategory | null };
+/** @deprecated Use BirdExecution; retained for callers of the search adapter. */
+export type BirdSearchExecution = BirdExecution;
 
 /** Resolve and fingerprint a configured executable without invoking Bird. */
 export function inspectBirdExecutable(configuredPath: string): BirdExecutableIdentity {
@@ -398,7 +409,7 @@ export async function executeBirdSearch(
   query: string,
   limit: number,
   signal?: AbortSignal,
-): Promise<BirdSearchExecution> {
+): Promise<BirdExecution> {
   const result = await runBirdCommand(
     resolvedExecutablePath,
     ["search", query, "-n", String(limit), "--json"],
@@ -410,7 +421,47 @@ export async function executeBirdSearch(
     outputExceededLimit: result.outputExceededLimit,
     timedOut: result.timedOut,
     spawnError: result.spawnError,
+    failureCategory:
+      result.exitCode === 0 ? null : classifyBirdFailure(result.stdout, result.stderr),
   };
+}
+
+/** Execute only Bird's bounded, read-only post command. The post identity is
+ * validated by the recruiting boundary before it reaches this adapter. */
+export async function executeBirdRead(
+  resolvedExecutablePath: string,
+  postId: string,
+  signal?: AbortSignal,
+): Promise<BirdExecution> {
+  const result = await runBirdCommand(resolvedExecutablePath, ["read", postId, "--json"], signal);
+  return {
+    exitCode: result.exitCode,
+    stdout: result.stdout,
+    outputExceededLimit: result.outputExceededLimit,
+    timedOut: result.timedOut,
+    spawnError: result.spawnError,
+    failureCategory:
+      result.exitCode === 0 ? null : classifyBirdFailure(result.stdout, result.stderr),
+  };
+}
+
+function classifyBirdFailure(stdout: string, stderr: string): BirdExecutionFailureCategory {
+  const output = `${stdout}\n${stderr}`;
+  if (/(?:rate[ -]?limit|too many requests|429)/i.test(output)) return "rate_limited";
+  if (
+    /(?:not found|does not exist|deleted|unavailable|cannot find|no such post|status 404)/i.test(
+      output,
+    )
+  )
+    return "deleted_or_unavailable";
+  if (/(?:unsupported|requires bird|version)/i.test(output)) return "unsupported_version";
+  if (
+    /(?:not\s+auth|auth(?:entication|orization)?\s+(?:failed|required)|unauthori[sz]ed|login|cookie|session|credential|sign[ -]?in)/i.test(
+      output,
+    )
+  )
+    return "authentication";
+  return "provider_failure";
 }
 
 function parseBirdVersion(output: string): string | null {

@@ -10,7 +10,12 @@ export type RecruitingFailureCategory =
   | "provider_failure"
   | "missing_source_access"
   | "invalid_url"
-  | "not_ready";
+  | "not_ready"
+  | "deleted_or_unavailable"
+  | "unsupported_version"
+  | "malformed_content"
+  | "timed_out"
+  | "cancelled";
 
 export class RecruitingError extends Error {
   readonly code: RecruitingErrorCode;

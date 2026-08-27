@@ -87,6 +87,7 @@ import {
   type SetSourceDisabledCommand,
   WEB_SEARCH_SOURCE_ID,
   type WebSearchSettingsProjection,
+  type XReadCommand,
   type XSearchCommand,
 } from "./scout-runs";
 import {
@@ -206,11 +207,14 @@ export type {
   SetSourceDisabledCommand,
   SourceAttemptResult,
   WebSearchSettingsProjection,
+  XReadCommand,
+  XReadTarget,
   XSearchCommand,
 } from "./scout-runs";
 export {
   DEFAULT_RUN_BUDGET,
   ScoutRunApplication,
+  validateXReadTarget,
   WEB_SEARCH_SOURCE_ID,
   WEB_SEARCH_SOURCE_KIND,
 } from "./scout-runs";
@@ -262,17 +266,26 @@ export {
   BirdXProvider,
   DeterministicXProvider,
   HttpXProvider,
+  normalizeBirdReadResponse,
   normalizeBirdResponse,
   normalizeXResponse,
   XApiProvider,
   type XApiRequest,
   type XApiResponse,
   type XProvider,
+  type XProviderFailureCategory,
+  type XReadAuthor,
+  type XReadEngagement,
+  type XReadEvidence,
+  type XReadQuotedPost,
+  type XReadReplyParent,
+  type XReadResult,
   type XSearchEvidence,
   type XSearchResult,
   type XSourceConfig,
   XSourceProvider,
   xConfigFromSource,
+  xRequestForRead,
 } from "./x";
 
 export type CreateScoutCommand = {
@@ -487,6 +500,10 @@ export class RecruitingApplication {
 
   xSearch(command: XSearchCommand) {
     return this.scoutRuns.xSearch(command);
+  }
+
+  xRead(command: XReadCommand) {
+    return this.scoutRuns.xRead(command);
   }
 
   recordXEvidence(command: RecordXEvidenceCommand) {

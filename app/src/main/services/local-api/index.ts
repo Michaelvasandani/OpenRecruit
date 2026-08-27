@@ -10,6 +10,7 @@ type WebAccessBoundary = {
   resolveScoutForAgent(agentId: string): string | null;
   webSearch(input: { scoutId: string; query: string; limit?: number }): Promise<unknown>;
   xSearch(input: { scoutId: string; query: string; limit?: number }): Promise<unknown>;
+  xRead(input: { scoutId: string; target: string; signal?: AbortSignal }): Promise<unknown>;
   webFetch(input: { scoutId: string; urls: string[]; contentLimit?: number }): Promise<unknown>;
   readRunContextForScout(scoutId: string): unknown;
   listSelectedSourcesForScout(scoutId: string): unknown;
@@ -171,6 +172,9 @@ export class LocalApiServer {
     }
     if (req.method === "POST" && url.pathname === "/x-search") {
       return this.handleXSearch(req, res);
+    }
+    if (req.method === "POST" && url.pathname === "/x-read") {
+      return this.handleXRead(req, res);
     }
     if (req.method === "POST" && url.pathname === "/web-fetch") {
       return this.handleWebFetch(req, res);
@@ -349,6 +353,58 @@ export class LocalApiServer {
         error && typeof error === "object" && "code" in error ? String(error.code) : "CONFLICT";
       const message = error instanceof Error ? error.message : "XSearch could not complete";
       return json(res, code === "NOT_FOUND" ? 404 : 400, { error: message, code });
+    }
+  }
+
+  /** Authenticated agent-facing one-post Bird read boundary. The Scout is
+   * derived from the agent header and the body carries only one target; it
+   * cannot select a Source, provider, executable, command, or Run. */
+  private async handleXRead(req: IncomingMessage, res: ServerResponse) {
+    const recruiting = this.recruiting;
+    if (!recruiting) return json(res, 503, { error: "recruiting service not ready" });
+    const agentId = header(req, "x-opentrade-agent");
+    if (!agentId) return json(res, 404, { error: "unknown Scout" });
+    const scoutId = recruiting.resolveScoutForAgent(agentId);
+    if (!scoutId) return json(res, 404, { error: "unknown Scout" });
+    const body = await readJson(req);
+    if (
+      !body ||
+      typeof body.target !== "string" ||
+      Object.keys(body).some((key) => key !== "target")
+    ) {
+      return json(res, 400, {
+        error: "XRead requires exactly one numeric public post ID or canonical X post URL",
+        code: "VALIDATION",
+      });
+    }
+    const controller = new AbortController();
+    const onAborted = () => controller.abort();
+    req.once("aborted", onAborted);
+    res.once("close", onAborted);
+    try {
+      recruiting.beginRunForScout(scoutId);
+      const result = await recruiting.xRead({
+        scoutId,
+        target: body.target,
+        signal: controller.signal,
+      });
+      return json(res, 200, result);
+    } catch (error) {
+      const code =
+        error && typeof error === "object" && "code" in error ? String(error.code) : "CONFLICT";
+      const category =
+        error && typeof error === "object" && "category" in error
+          ? String(error.category)
+          : undefined;
+      const message = error instanceof Error ? error.message : "XRead could not complete";
+      return json(res, code === "NOT_FOUND" ? 404 : 400, {
+        error: message,
+        code,
+        ...(category && category !== "null" ? { category } : {}),
+      });
+    } finally {
+      req.off("aborted", onAborted);
+      res.off("close", onAborted);
     }
   }
 

@@ -6,6 +6,7 @@ import type { BirdAccess } from "../settings";
 import {
   BIRD_OUTPUT_LIMIT_BYTES,
   BIRD_SUPPORTED_VERSION,
+  executeBirdRead,
   executeBirdSearch,
 } from "../settings/bird";
 import type { FeedItem, FeedItemMetadata } from "./source";
@@ -25,7 +26,15 @@ export class XApiError extends Error {
   }
 }
 
-export type XOperation = "search_recent" | "lookup";
+export type XOperation = "search_recent" | "lookup" | "read";
+
+/** Safe provider failure labels. Raw Bird diagnostics never cross this seam. */
+export type XProviderFailureCategory =
+  | "authentication"
+  | "rate_limited"
+  | "deleted_or_unavailable"
+  | "unsupported_version"
+  | "provider_failure";
 
 /** Request metadata deliberately contains no Authorization header or secret. */
 export type XApiRequest = {
@@ -47,6 +56,7 @@ export type XApiResponse = {
   body: string;
   retryAfterMs?: number | null;
   costCents?: number;
+  failureCategory?: XProviderFailureCategory;
 };
 
 export type XSearchEvidence = {
@@ -83,6 +93,67 @@ export type XSearchResult = {
   results: XSearchEvidence[];
 };
 
+export type XReadAuthor = {
+  id: string;
+  username: string | null;
+  name: string | null;
+};
+
+export type XReadEngagement = {
+  likeCount?: number;
+  replyCount?: number;
+  repostCount?: number;
+  quoteCount?: number;
+  bookmarkCount?: number;
+  viewCount?: number;
+};
+
+export type XReadReplyParent = {
+  postId: string;
+  canonicalUrl: string | null;
+  author: XReadAuthor | null;
+};
+
+export type XReadQuotedPost = {
+  postId: string;
+  canonicalUrl: string | null;
+  text: string;
+  author: XReadAuthor | null;
+  createdAt: number | null;
+  engagement: XReadEngagement | null;
+  conversationId: string | null;
+  replyParent: XReadReplyParent | null;
+  mediaUrls: string[];
+};
+
+export type XReadEvidence = {
+  /** Alias for providerIdentity that makes the public post identity explicit. */
+  postId: string;
+  evidenceReference: string;
+  sourceAttemptId: string;
+  providerIdentity: string;
+  canonicalUrl: string;
+  text: string;
+  author: XReadAuthor | null;
+  createdAt: number | null;
+  engagement: XReadEngagement | null;
+  conversationId: string | null;
+  /** Identity returned passively by Bird; no parent is fetched. */
+  replyParent: XReadReplyParent | null;
+  /** At most one quoted post, with no nested quote. */
+  quotedPost: XReadQuotedPost | null;
+  /** URL metadata only; media is never downloaded. */
+  mediaUrls: string[];
+  retrievedAt: number;
+  available: true;
+  trust: "untrusted_evidence";
+  provenance: { provider: "bird" };
+};
+
+export type XReadResult = XReadEvidence;
+
+export type NormalizedXRead = { item: FeedItem };
+
 export interface XProvider {
   request(request: XApiRequest): Promise<XApiResponse>;
 }
@@ -93,6 +164,34 @@ export class BirdXProvider implements XProvider {
   constructor(private readonly access: () => BirdAccess | null) {}
 
   async request(request: XApiRequest): Promise<XApiResponse> {
+    if (request.operation === "read") {
+      const postId = request.postIds?.length === 1 ? request.postIds[0] : null;
+      if (
+        !postId ||
+        !/^\d{1,30}$/.test(postId) ||
+        request.query !== undefined ||
+        request.paginationToken !== undefined ||
+        request.maxResults !== undefined
+      ) {
+        return { status: 400, body: "" };
+      }
+      const access = this.access();
+      if (!access || !access.resolvedPath) return { status: 401, body: "" };
+      if (access.version !== BIRD_SUPPORTED_VERSION) {
+        return { status: 426, body: "", failureCategory: "unsupported_version" };
+      }
+      const execution = await executeBirdRead(access.resolvedPath, postId, request.signal);
+      if (execution.timedOut) return { status: 504, body: "" };
+      if (execution.outputExceededLimit) return { status: 413, body: "" };
+      if (execution.spawnError || execution.exitCode !== 0) {
+        return {
+          status: execution.failureCategory === "rate_limited" ? 429 : 503,
+          body: "",
+          failureCategory: execution.failureCategory ?? "provider_failure",
+        };
+      }
+      return { status: 200, body: execution.stdout };
+    }
     if (
       request.operation !== "search_recent" ||
       typeof request.query !== "string" ||
@@ -116,7 +215,13 @@ export class BirdXProvider implements XProvider {
     );
     if (execution.timedOut) return { status: 504, body: "" };
     if (execution.outputExceededLimit) return { status: 413, body: "" };
-    if (execution.spawnError || execution.exitCode !== 0) return { status: 503, body: "" };
+    if (execution.spawnError || execution.exitCode !== 0) {
+      return {
+        status: execution.failureCategory === "rate_limited" ? 429 : 503,
+        body: "",
+        failureCategory: execution.failureCategory ?? "provider_failure",
+      };
+    }
     return { status: 200, body: execution.stdout };
   }
 }
@@ -155,15 +260,18 @@ export class DeterministicXProvider implements XProvider {
   readonly requests: XApiRequest[] = [];
   private readonly searchResponses: XApiResponse[];
   private readonly lookupResponses: XApiResponse[];
+  private readonly readResponses: XApiResponse[];
   private readonly readinessResponses: XApiResponse[];
 
   constructor(input: {
     search?: XApiResponse | XApiResponse[];
     lookup?: XApiResponse | XApiResponse[];
+    read?: XApiResponse | XApiResponse[];
     readiness?: XApiResponse | XApiResponse[];
   }) {
     this.searchResponses = asQueue(input.search ?? { status: 404, body: "" });
     this.lookupResponses = asQueue(input.lookup ?? { status: 404, body: "" });
+    this.readResponses = asQueue(input.read ?? input.search ?? { status: 404, body: "" });
     this.readinessResponses = asQueue(input.readiness ?? input.search ?? { status: 404, body: "" });
   }
 
@@ -175,7 +283,13 @@ export class DeterministicXProvider implements XProvider {
       expansions: [...request.expansions],
       userFields: [...request.userFields],
     });
-    return take(request.operation === "lookup" ? this.lookupResponses : this.searchResponses);
+    return take(
+      request.operation === "lookup"
+        ? this.lookupResponses
+        : request.operation === "read"
+          ? this.readResponses
+          : this.searchResponses,
+    );
   }
 
   async readiness(request: XApiRequest): Promise<XApiResponse> {
@@ -323,6 +437,17 @@ export function xRequestForLookup(config: XSourceConfig): XApiRequest {
   };
 }
 
+/** Construct the only Bird read request exposed by the host boundary. */
+export function xRequestForRead(postId: string): XApiRequest {
+  return {
+    operation: "read",
+    postIds: [postId],
+    fields: X_POST_FIELDS,
+    expansions: X_EXPANSIONS,
+    userFields: X_USER_FIELDS,
+  };
+}
+
 export type NormalizedXPage = {
   items: FeedItem[];
   nextCursor: string | null;
@@ -349,6 +474,364 @@ export function normalizeBirdResponse(body: string, retentionUntil?: number): No
   }
   const resultCount = birdResultCount(value) ?? items.length;
   return { items, nextCursor: null, resultCount };
+}
+
+/** Normalize one Bird `read --json` result. This parser accepts only a
+ * provider object for the requested post and never follows related objects.
+ * A missing post is represented as a typed unavailable error so callers can
+ * distinguish it from a successful empty result. */
+export function normalizeBirdReadResponse(
+  body: string,
+  requestedPostId: string,
+  requestedCanonicalUrl?: string,
+  retentionUntil?: number,
+): NormalizedXRead {
+  if (!/^\d{1,30}$/.test(requestedPostId)) {
+    throw new XReadContentError("The requested X post identity is malformed", "malformed_content");
+  }
+  if (Buffer.byteLength(body, "utf8") > BIRD_OUTPUT_LIMIT_BYTES) {
+    throw new XReadContentError(
+      "Bird response exceeded the bounded parser limit",
+      "malformed_content",
+    );
+  }
+  let value: unknown;
+  try {
+    value = JSON.parse(body);
+  } catch {
+    throw new XReadContentError("Bird returned malformed JSON", "malformed_content");
+  }
+  const record = birdReadRecord(value);
+  if (!record) {
+    if (birdUnavailable(value)) {
+      throw new XReadContentError(
+        "Bird could not find the requested public X post",
+        "deleted_or_unavailable",
+      );
+    }
+    throw new XReadContentError("Bird read output is malformed", "malformed_content");
+  }
+  const postId = birdPostId(record);
+  if (!postId || postId !== requestedPostId) {
+    throw new XReadContentError(
+      "Bird read output did not contain the requested public X post",
+      "malformed_content",
+    );
+  }
+  if (birdRecordUnavailable(record)) {
+    throw new XReadContentError(
+      "Bird could not find the requested public X post",
+      "deleted_or_unavailable",
+    );
+  }
+
+  const author = birdReadAuthor(record);
+  const canonicalUrl =
+    birdCanonicalUrl(
+      record.canonical_url ?? record.canonicalUrl ?? record.url ?? record.permalink,
+      postId,
+    ) ??
+    requestedCanonicalUrl ??
+    `https://x.com/i/web/status/${postId}`;
+  const text = stringValue(record.text ?? record.full_text ?? record.content, 10_000) ?? "";
+  const createdAt = normalizeBirdTimestamp(
+    record.created_at ?? record.createdAt ?? record.timestamp,
+  );
+  const engagement = birdEngagement(record);
+  const conversationId = birdPostId(
+    record.conversation_id ?? record.conversationId ?? record.conversation,
+  );
+  const replyParent = birdReplyParent(record);
+  const quotedPost = birdQuotedPost(record);
+  const mediaUrls = birdMediaUrls(record);
+  const metadata: FeedItemMetadata = {
+    provider: "bird",
+    state: "available",
+    trust: "untrusted_evidence",
+    author: author
+      ? {
+          id: author.id,
+          username: author.username,
+          name: author.name,
+          protected: false,
+          withheld: null,
+        }
+      : null,
+    editHistory: [postId],
+    withheld: null,
+    protected: false,
+    retentionUntil: retentionUntil ?? null,
+    xRead: {
+      postId,
+      canonicalUrl,
+      text,
+      author,
+      createdAt,
+      engagement,
+      conversationId,
+      replyParent,
+      quotedPost,
+      mediaUrls,
+    },
+  };
+  const item: FeedItem = {
+    identityKey: `x:${postId}`,
+    providerIdentity: postId,
+    canonicalUrl,
+    title: author?.username ? `@${author.username}` : "X Post",
+    content: text,
+    publicationAt: createdAt,
+    metadata,
+    retentionUntil,
+  };
+  return { item };
+}
+
+/** Structured read parsing failures retain a safe category for Source Attempt
+ * audit while avoiding provider payloads and diagnostics. */
+export class XReadContentError extends XApiError {
+  constructor(
+    message: string,
+    readonly category: "malformed_content" | "deleted_or_unavailable",
+  ) {
+    super(message, "malformed_content");
+    this.name = "XReadContentError";
+  }
+}
+
+function birdReadRecord(value: unknown): Record<string, unknown> | null {
+  return birdReadRecordAtDepth(value, 0);
+}
+
+function birdReadRecordAtDepth(value: unknown, depth: number): Record<string, unknown> | null {
+  if (depth > 3) return null;
+  if (isRecord(value) && birdPostId(value)) return value;
+  if (Array.isArray(value)) {
+    if (value.length !== 1) return null;
+    const only = value[0];
+    return birdReadRecordAtDepth(only, depth + 1);
+  }
+  if (!isRecord(value)) return null;
+  for (const key of ["post", "tweet", "result", "data"]) {
+    const nested = value[key];
+    const found = birdReadRecordAtDepth(nested, depth + 1);
+    if (found) return found;
+  }
+  return null;
+}
+
+function birdUnavailable(value: unknown, depth = 0): boolean {
+  if (depth > 3) return false;
+  if (typeof value === "string") {
+    return /(?:not found|deleted|unavailable|no such post|does not exist|status\s*404|\b404\b)/i.test(
+      value,
+    );
+  }
+  if (Array.isArray(value) && value.length === 0) return true;
+  if (!value || typeof value !== "object") return false;
+  return Object.values(value).some((entry) => birdUnavailable(entry, depth + 1));
+}
+
+function birdRecordUnavailable(value: Record<string, unknown>): boolean {
+  if (value.deleted === true || value.available === false) return true;
+  const status = value.status ?? value.code ?? value.error_code ?? value.errorCode;
+  return status === 404 || status === 410 || status === "404" || status === "410";
+}
+
+function birdPostId(value: unknown): string | null {
+  if (typeof value === "string" && /^\d{1,30}$/.test(value)) return value;
+  if (!isRecord(value)) return null;
+  const candidate = value.id ?? value.post_id ?? value.postId ?? value.tweet_id ?? value.tweetId;
+  return typeof candidate === "string" && /^\d{1,30}$/.test(candidate) ? candidate : null;
+}
+
+function birdReadAuthor(value: Record<string, unknown>): XReadAuthor | null {
+  const source = isRecord(value.author)
+    ? value.author
+    : isRecord(value.user)
+      ? value.user
+      : isRecord(value.author_identity)
+        ? value.author_identity
+        : birdIncludedAuthor(value);
+  const id = stringValue(
+    source?.id ?? source?.user_id ?? source?.userId ?? value.author_id ?? value.authorId,
+    64,
+  );
+  if (!id) return null;
+  const rawUsername = stringValue(
+    source?.username ?? source?.handle ?? source?.screen_name,
+    30,
+  )?.replace(/^@/, "");
+  const username = rawUsername && /^[A-Za-z0-9_]{1,15}$/.test(rawUsername) ? rawUsername : null;
+  const name = stringValue(source?.name ?? source?.display_name ?? source?.displayName, 160);
+  return { id, username, name };
+}
+
+function birdIncludedAuthor(value: Record<string, unknown>): Record<string, unknown> | null {
+  const includes = isRecord(value.includes) ? value.includes : null;
+  const users = includes?.users;
+  if (!Array.isArray(users)) return null;
+  const authorId = stringValue(value.author_id ?? value.authorId, 64);
+  const match = users.find(
+    (entry) => isRecord(entry) && (!authorId || String(entry.id ?? "") === authorId),
+  );
+  return isRecord(match) ? match : null;
+}
+
+function birdEngagement(value: Record<string, unknown>): XReadEngagement | null {
+  const source = [value.public_metrics, value.publicMetrics, value.engagement, value.metrics].find(
+    isRecord,
+  );
+  if (!source) return null;
+  const result: XReadEngagement = {};
+  const count = (keys: string[]): number | undefined => {
+    for (const key of keys) {
+      const candidate = source[key];
+      if (typeof candidate === "number" && Number.isSafeInteger(candidate) && candidate >= 0) {
+        return candidate;
+      }
+    }
+    return undefined;
+  };
+  const likeCount = count(["like_count", "likeCount", "likes", "favorite_count", "favoriteCount"]);
+  const replyCount = count(["reply_count", "replyCount", "replies"]);
+  const repostCount = count([
+    "retweet_count",
+    "retweetCount",
+    "repost_count",
+    "repostCount",
+    "reposts",
+  ]);
+  const quoteCount = count(["quote_count", "quoteCount", "quotes"]);
+  const bookmarkCount = count(["bookmark_count", "bookmarkCount", "bookmarks"]);
+  const viewCount = count([
+    "impression_count",
+    "impressionCount",
+    "view_count",
+    "viewCount",
+    "views",
+  ]);
+  if (likeCount !== undefined) result.likeCount = likeCount;
+  if (replyCount !== undefined) result.replyCount = replyCount;
+  if (repostCount !== undefined) result.repostCount = repostCount;
+  if (quoteCount !== undefined) result.quoteCount = quoteCount;
+  if (bookmarkCount !== undefined) result.bookmarkCount = bookmarkCount;
+  if (viewCount !== undefined) result.viewCount = viewCount;
+  return Object.keys(result).length > 0 ? result : null;
+}
+
+function birdReplyParent(value: Record<string, unknown>): XReadReplyParent | null {
+  const raw =
+    value.reply_parent ??
+    value.replyParent ??
+    value.in_reply_to ??
+    value.inReplyTo ??
+    value.in_reply_to_status_id ??
+    value.inReplyToStatusId;
+  const postId = birdPostId(raw);
+  if (!postId) return null;
+  const record = isRecord(raw) ? raw : null;
+  const author = record ? birdReadAuthor({ author: record.author ?? record.user }) : null;
+  const canonicalUrl = record
+    ? birdCanonicalUrl(record.canonical_url ?? record.canonicalUrl ?? record.url, postId, false)
+    : null;
+  return { postId, canonicalUrl, author };
+}
+
+function birdQuotedPost(value: Record<string, unknown>): XReadQuotedPost | null {
+  const raw =
+    value.quoted_post ?? value.quotedPost ?? value.quoted_tweet ?? value.quotedTweet ?? value.quote;
+  if (!isRecord(raw)) return null;
+  const postId = birdPostId(raw);
+  if (!postId) return null;
+  const author = birdReadAuthor(raw);
+  const canonicalUrl = birdCanonicalUrl(
+    raw.canonical_url ?? raw.canonicalUrl ?? raw.url ?? raw.permalink,
+    postId,
+    false,
+  );
+  const text = stringValue(raw.text ?? raw.full_text ?? raw.content, 10_000) ?? "";
+  const replyParent = birdReplyParent(raw);
+  return {
+    postId,
+    canonicalUrl,
+    text,
+    author,
+    createdAt: normalizeBirdTimestamp(raw.created_at ?? raw.createdAt ?? raw.timestamp),
+    engagement: birdEngagement(raw),
+    conversationId: birdPostId(raw.conversation_id ?? raw.conversationId ?? raw.conversation),
+    replyParent,
+    mediaUrls: birdMediaUrls(raw),
+  };
+}
+
+function birdMediaUrls(value: Record<string, unknown>): string[] {
+  const candidates: unknown[] = [
+    value.media,
+    value.media_urls,
+    value.mediaUrls,
+    isRecord(value.attachments) ? value.attachments.media : undefined,
+    isRecord(value.attachments) ? value.attachments.images : undefined,
+    isRecord(value.entities) ? value.entities.media : undefined,
+  ];
+  const result: string[] = [];
+  for (const candidate of candidates) {
+    const entries = Array.isArray(candidate) ? candidate : [candidate];
+    for (const entry of entries) {
+      const raw =
+        typeof entry === "string"
+          ? entry
+          : isRecord(entry)
+            ? (entry.url ??
+              entry.media_url ??
+              entry.mediaUrl ??
+              entry.expanded_url ??
+              entry.expandedUrl)
+            : null;
+      if (typeof raw !== "string") continue;
+      let url: URL;
+      try {
+        url = new URL(raw.trim());
+      } catch {
+        continue;
+      }
+      if (url.protocol !== "http:" && url.protocol !== "https:") continue;
+      url.hash = "";
+      const normalized = url.toString();
+      if (!result.includes(normalized)) result.push(normalized);
+      if (result.length >= 25) return result;
+    }
+  }
+  return result;
+}
+
+function birdCanonicalUrl(value: unknown, postId: string, deriveWhenMissing = true): string | null {
+  if (typeof value === "string" && value.trim()) {
+    try {
+      const url = new URL(value.trim());
+      const host = url.hostname.toLowerCase();
+      if (
+        (url.protocol === "http:" || url.protocol === "https:") &&
+        ["x.com", "www.x.com", "twitter.com", "www.twitter.com"].includes(host) &&
+        !url.username &&
+        !url.password &&
+        !url.search &&
+        !url.hash &&
+        new RegExp(`^/(?:[A-Za-z0-9_]{1,15}|i/web)/status/${postId}/?$`, "i").test(url.pathname)
+      ) {
+        url.hash = "";
+        url.pathname = url.pathname.replace(/\/$/, "");
+        return url.toString();
+      }
+    } catch {
+      // Derive the canonical X URL from the requested public identity below.
+    }
+  }
+  return value === null || value === undefined
+    ? deriveWhenMissing
+      ? `https://x.com/i/web/status/${postId}`
+      : null
+    : null;
 }
 
 function birdRecords(value: unknown): Record<string, unknown>[] | null {
