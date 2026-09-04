@@ -1,8 +1,14 @@
-import type { HarnessId } from "@shared/agent";
-import { ArrowUp, Check, ChevronsUpDown, Cloud, File, FileText, Laptop, Wand2 } from "lucide-react";
+import {
+  compileScoutSetup,
+  createDefaultScoutSetup,
+  type HarnessId,
+  parseScoutListDraft,
+  type ScoutDiscoveryAngle,
+  ScoutSetup,
+} from "@shared/agent";
+import { ArrowLeft, ArrowRight, Check, Clock, ShieldCheck, SlidersHorizontal } from "lucide-react";
 import { type ReactNode, useEffect, useRef, useState } from "react";
 import { useCreateAgent } from "../../hooks/useCreateAgent";
-import { useSettings } from "../../hooks/useSettings";
 import { trpc } from "../../lib/trpc";
 import { cn } from "../../lib/utils";
 import { useUIStore } from "../../stores/ui";
@@ -10,69 +16,54 @@ import { HarnessGlyph } from "../icons/HarnessGlyph";
 import { Button } from "../ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogTitle } from "../ui/dialog";
 import { Input } from "../ui/input";
-import { Popover, PopoverContent, PopoverTrigger } from "../ui/popover";
+import { Label } from "../ui/label";
 import { Textarea } from "../ui/textarea";
 
-type Environment = "local" | "cloud";
-
-interface PickerOption {
-  value: string;
-  icon: ReactNode;
+const STEPS = ["Target", "Sources & freshness", "Behavior & review"] as const;
+const SELECT_CLASS =
+  "h-9 w-full rounded-md border border-input bg-background px-3 text-sm outline-none focus:border-ring";
+const DISCOVERY_ANGLES: Array<{
+  value: ScoutDiscoveryAngle;
   label: string;
-  hint?: string;
-  disabled?: boolean;
-}
-
-const TEMPLATES: PickerOption[] = [
-  { value: "default", icon: <Wand2 className="size-3.5" />, label: "General" },
-  { value: "dca", icon: <Wand2 className="size-3.5" />, label: "Candidate sourcing" },
-  { value: "momentum", icon: <Wand2 className="size-3.5" />, label: "Profile review" },
-  { value: "blank", icon: <File className="size-3.5" />, label: "Blank" },
-];
-
-const ENVIRONMENTS: PickerOption[] = [
+  description: string;
+}> = [
   {
-    value: "local",
-    icon: <Laptop className="size-3.5" />,
-    label: "Local",
-    hint: "Runs on this Mac",
+    value: "direct_openings",
+    label: "Direct openings",
+    description: "Published roles on company and job sites",
   },
   {
-    value: "cloud",
-    icon: <Cloud className="size-3.5" />,
-    label: "Cloud",
-    hint: "Soon",
-    disabled: true,
+    value: "founder_signals",
+    label: "Founder signals",
+    description: "Public posts from founders and hiring managers",
+  },
+  {
+    value: "early_stage",
+    label: "Early-stage companies",
+    description: "Smaller companies and emerging teams",
+  },
+  {
+    value: "new_grad",
+    label: "New-grad paths",
+    description: "Entry-level and early-career opportunities",
   },
 ];
 
-/**
- * The New Agent configuration dialog — a wide, CLAUDE.md-centered editor built on
- * shadcn primitives. The agent's
- * CLAUDE.md **specialty section** fills the main text field (a `Textarea` labelled
- * "CLAUDE.md"): picking a template seeds it from that template's own CLAUDE.md
- * (`agents.templateClaudeMd`, prefix excluded), and the user can edit it before
- * creating. The **Blank** template seeds nothing — the field shows its placeholder
- * and the agent gets no starter prompt. The shared OpenRecruit prefix (system
- * mechanics) is prepended by the backend at scaffold time and never shown here. A
- * footer row of `Popover` picker pills sets the environment, harness, and
- * template. Gated on `newAgentOpen`; the form remounts each open so its state
- * resets.
- */
+/** Guided New Scout dialog. Candidate choices compile into Strategy, Policy,
+ * explicit Source Access, harness instructions, and an optional local cadence. */
 export function NewAgentDialog() {
-  const open = useUIStore((s) => s.newAgentOpen);
-  const close = useUIStore((s) => s.closeNewAgent);
+  const open = useUIStore((state) => state.newAgentOpen);
+  const close = useUIStore((state) => state.closeNewAgent);
   return (
     <Dialog open={open} onOpenChange={(next) => !next && close()}>
       <DialogContent
         showCloseButton={false}
-        className="w-[44rem] max-w-[92vw] gap-2.5 p-3.5 sm:max-w-[44rem]"
+        className="max-h-[92vh] w-[48rem] max-w-[94vw] gap-0 overflow-hidden p-0 sm:max-w-[48rem]"
       >
         <DialogTitle className="sr-only">New Scout</DialogTitle>
         <DialogDescription className="sr-only">
-          Create a local Scout and edit its instructions.
+          Configure a role-targeted Scout, its Sources, freshness, and behavior.
         </DialogDescription>
-        {/* Remount the form each open so its state resets. */}
         {open && <NewAgentForm />}
       </DialogContent>
     </Dialog>
@@ -81,244 +72,803 @@ export function NewAgentDialog() {
 
 function NewAgentForm() {
   const { create, isPending } = useCreateAgent();
-  const settings = useSettings();
   const profiles = trpc.recruiting.profiles.useQuery();
-
-  const [name, setName] = useState("");
-  const [template, setTemplate] = useState("default");
-  const [harness, setHarness] = useState<HarnessId>("claude");
-  // CLI availability drives the picker: a missing codex install is shown but disabled.
+  const sources = trpc.recruiting.sources.useQuery();
   const probes = trpc.onboarding.harnesses.useQuery(undefined, { staleTime: 60_000 });
-  const codexFound = probes.data?.codex.found ?? false;
-  const harnessOptions: PickerOption[] = [
-    {
-      value: "claude",
-      icon: <HarnessGlyph harness="claude" />,
-      label: "Claude Code",
-    },
-    {
-      value: "codex",
-      icon: <HarnessGlyph harness="codex" />,
-      label: "Codex",
-      // Keep the "not found" note — it explains why the option is disabled.
-      hint: codexFound ? undefined : "codex CLI not found",
-      disabled: !codexFound,
-    },
-  ];
-  const [environment, setEnvironment] = useState<Environment>("local");
-  const [claudeMd, setClaudeMd] = useState("");
-  const [defaultProfileId, setDefaultProfileId] = useState("");
   const confirmedProfiles = profiles.data?.filter((profile) => profile.state === "confirmed") ?? [];
-  const firstConfirmedProfileId = confirmedProfiles[0]?.id;
+  const [step, setStep] = useState(0);
+  const [name, setName] = useState("");
+  const [profileId, setProfileId] = useState("");
+  const [harness, setHarness] = useState<HarnessId>("claude");
+  const [setup, setSetup] = useState<ScoutSetup>(() => createDefaultScoutSetup(""));
+  const nameEdited = useRef(false);
+  const seededProfile = useRef(false);
 
   useEffect(() => {
-    if (!defaultProfileId && firstConfirmedProfileId) {
-      setDefaultProfileId(firstConfirmedProfileId);
-    }
-  }, [defaultProfileId, firstConfirmedProfileId]);
+    const first = confirmedProfiles[0];
+    if (!first || seededProfile.current) return;
+    seededProfile.current = true;
+    setProfileId(first.id);
+    setSetup(createDefaultScoutSetup(first.roleTarget));
+    setName(`${first.roleTarget} Scout`);
+  }, [confirmedProfiles]);
 
-  // The selected template's specialty section (prefix excluded). Seeds the editor;
-  // switching templates reloads (an explicit choice to load that template's doc).
-  const tplQuery = trpc.agents.templateClaudeMd.useQuery({ template });
-  const seededTemplateRef = useRef<string | null>(null);
-  useEffect(() => {
-    if (tplQuery.data == null) return;
-    if (seededTemplateRef.current === template) return;
-    seededTemplateRef.current = template;
-    setClaudeMd(tplQuery.data);
-  }, [template, tplQuery.data]);
+  const updateSetup = <K extends keyof ScoutSetup>(key: K, value: ScoutSetup[K]) => {
+    setSetup((current) => ({ ...current, [key]: value }));
+  };
+  const chooseProfile = (nextId: string) => {
+    setProfileId(nextId);
+    const profile = confirmedProfiles.find((item) => item.id === nextId);
+    if (!profile) return;
+    setSetup((current) => ({
+      ...createDefaultScoutSetup(profile.roleTarget),
+      sourceIds: current.sourceIds,
+    }));
+    if (!nameEdited.current) setName(`${profile.roleTarget} Scout`);
+  };
 
-  const profileRequired =
-    Boolean(settings.data?.firecrawl.configured) || (profiles.data?.length ?? 0) > 0;
-  const dependenciesReady = settings.data !== undefined && profiles.data !== undefined;
-  const canSubmit =
-    dependenciesReady && !isPending && !!name.trim() && (!profileRequired || !!defaultProfileId);
+  const selectedProfile = confirmedProfiles.find((profile) => profile.id === profileId);
+  const selectedSources =
+    sources.data?.filter((source) => setup.sourceIds.includes(source.id)) ?? [];
+  const targetReady = Boolean(
+    profileId && setup.targetRoles.length && setup.discoveryAngles.length,
+  );
+  const sourcesReady = setup.sourceIds.length > 0;
+  const behaviorReady = Boolean(name.trim());
+  const setupValid = ScoutSetup.safeParse(setup).success;
+  const currentReady = step === 0 ? targetReady : step === 1 ? sourcesReady : behaviorReady;
+  const canSubmit = targetReady && sourcesReady && behaviorReady && setupValid && !isPending;
+  const preview = compileScoutSetup(
+    setup.targetRoles.length ? setup : { ...setup, targetRoles: ["Target role"] },
+  );
+
   const submit = () => {
     if (!canSubmit) return;
     create({
       name: name.trim(),
-      template,
+      template: "dca",
       harness,
-      claudeMd,
-      defaultProfileId: defaultProfileId || null,
+      defaultProfileId: profileId,
+      scoutSetup: setup,
     });
   };
 
-  const selectedTemplate = TEMPLATES.find((t) => t.value === template) ?? TEMPLATES[0];
-  const selectedProfile = confirmedProfiles.find((profile) => profile.id === defaultProfileId);
-  const profileOptions: PickerOption[] = confirmedProfiles.map((profile) => ({
-    value: profile.id,
-    icon: <FileText className="size-3.5" />,
-    label: profile.name,
-    hint: profile.roleTarget,
-  }));
-
   return (
-    // ⌘/Ctrl+Enter creates from anywhere in the form (the Dialog handles Escape).
     <form
-      onSubmit={(e) => {
-        e.preventDefault();
-        submit();
+      onSubmit={(event) => {
+        event.preventDefault();
+        if (step < STEPS.length - 1) {
+          if (currentReady) setStep((current) => current + 1);
+        } else submit();
       }}
-      onKeyDown={(e) => {
-        if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
-          e.preventDefault();
+      onKeyDown={(event) => {
+        if (step === 2 && event.key === "Enter" && (event.metaKey || event.ctrlKey)) {
+          event.preventDefault();
           submit();
         }
       }}
-      className="flex flex-col gap-2.5"
+      className="flex h-[42rem] max-h-[92vh] min-h-0 flex-col"
     >
-      {/* Name */}
-      <Input
-        autoFocus
-        value={name}
-        onChange={(e) => setName(e.target.value)}
-        placeholder="Agent name"
-        maxLength={80}
-        className="border-transparent bg-transparent px-1 text-base font-medium shadow-none placeholder:text-muted-foreground/40 focus-visible:border-transparent"
-      />
+      <header className="border-b border-border px-6 pb-4 pt-5">
+        <div className="flex items-center justify-between gap-4">
+          <div>
+            <h2 className="text-base font-semibold">Create a Scout</h2>
+            <p className="mt-0.5 text-xs text-muted-foreground">
+              Define what it should find, where it may look, and how it should behave.
+            </p>
+          </div>
+          <span className="text-xs text-muted-foreground">{step + 1} of 3</span>
+        </div>
+        <div className="mt-4 grid grid-cols-3 gap-2">
+          {STEPS.map((label, index) => (
+            <button
+              key={label}
+              type="button"
+              disabled={index > step}
+              onClick={() => index <= step && setStep(index)}
+              className="text-left"
+            >
+              <span
+                className={cn(
+                  "mb-1.5 block h-1 rounded-full bg-muted",
+                  index <= step && "bg-primary",
+                )}
+              />
+              <span
+                className={cn(
+                  "text-[11px] text-muted-foreground",
+                  index === step && "text-foreground",
+                )}
+              >
+                {label}
+              </span>
+            </button>
+          ))}
+        </div>
+      </header>
 
-      {/* CLAUDE.md specialty editor */}
-      <div className="flex flex-col rounded-lg border border-border bg-foreground/[0.02]">
-        <div className="flex items-center gap-1.5 border-b border-border/60 px-3.5 py-2 font-mono text-[11px] font-medium text-muted-foreground">
-          <FileText className="size-3" />
-          {harness === "codex" ? "AGENTS.md" : "CLAUDE.md"}
-        </div>
-        <Textarea
-          value={claudeMd}
-          onChange={(e) => setClaudeMd(e.target.value)}
-          spellCheck={false}
-          placeholder="Write this agent's instructions — its strategy, principles, and journaling. Leave blank for a clean slate."
-          className="h-[19rem] resize-none border-transparent bg-transparent px-3.5 py-3 font-mono text-[12px] leading-relaxed shadow-none placeholder:text-muted-foreground/40 focus-visible:border-transparent"
-        />
-        <div className="flex items-center justify-end px-2.5 pb-2.5">
-          <Button
-            type="submit"
-            size="icon"
-            disabled={!canSubmit}
-            aria-label="Create agent"
-            className="rounded-full"
-          >
-            <ArrowUp className="size-4" />
-          </Button>
-        </div>
+      <div className="min-h-0 flex-1 overflow-y-auto px-6 py-5">
+        {step === 0 && (
+          <TargetStep
+            key={profileId}
+            profiles={confirmedProfiles}
+            profileId={profileId}
+            chooseProfile={chooseProfile}
+            setup={setup}
+            updateSetup={updateSetup}
+            isLoading={profiles.isLoading}
+          />
+        )}
+        {step === 1 && (
+          <SourcesStep
+            sources={sources.data ?? []}
+            isLoading={sources.isLoading}
+            setup={setup}
+            updateSetup={updateSetup}
+          />
+        )}
+        {step === 2 && (
+          <BehaviorStep
+            name={name}
+            setName={(value) => {
+              nameEdited.current = true;
+              setName(value);
+            }}
+            profileName={selectedProfile?.name ?? "Candidate Profile"}
+            setup={setup}
+            updateSetup={updateSetup}
+            selectedSourceNames={selectedSources.map((source) => source.name)}
+            harness={harness}
+            setHarness={setHarness}
+            codexFound={probes.data?.codex.found ?? false}
+            generatedInstructions={preview.instructions}
+          />
+        )}
       </div>
 
-      {/* Footer: environment, harness, template pickers, create hint */}
-      <div className="flex items-center justify-between gap-2 px-0.5">
-        <div className="flex items-center gap-1.5">
-          <PickerPill
-            icon={
-              environment === "local" ? (
-                <Laptop className="size-3.5" />
-              ) : (
-                <Cloud className="size-3.5" />
-              )
-            }
-            label={environment === "local" ? "Local" : "Cloud"}
-            options={ENVIRONMENTS}
-            value={environment}
-            onValueChange={(v) => setEnvironment(v as Environment)}
-          />
-          <PickerPill
-            icon={<HarnessGlyph harness={harness} />}
-            label={harness === "codex" ? "Codex" : "Claude Code"}
-            options={harnessOptions}
-            value={harness}
-            onValueChange={(v) => setHarness(v as HarnessId)}
-          />
-          <PickerPill
-            icon={selectedTemplate.icon}
-            label={selectedTemplate.label}
-            options={TEMPLATES}
-            value={template}
-            onValueChange={setTemplate}
-          />
-          {profileOptions.length > 0 && (
-            <PickerPill
-              icon={<FileText className="size-3.5" />}
-              label={selectedProfile?.name ?? "Candidate Profile"}
-              options={profileOptions}
-              value={defaultProfileId}
-              onValueChange={setDefaultProfileId}
-            />
+      <footer className="flex items-center justify-between gap-3 border-t border-border px-6 py-4">
+        <div>
+          {step > 0 && (
+            <Button type="button" variant="ghost" onClick={() => setStep((current) => current - 1)}>
+              <ArrowLeft className="size-4" /> Back
+            </Button>
           )}
         </div>
-        <span className="px-1 text-[11px] text-muted-foreground/50">
-          {isPending
-            ? "Creating…"
-            : profileRequired && !defaultProfileId
-              ? "Confirm a Candidate Profile first"
-              : "⌘↵ to create"}
-        </span>
-      </div>
+        <div className="flex items-center gap-3">
+          {(!currentReady || (step === 2 && !setupValid)) && (
+            <span className="text-[11px] text-muted-foreground">
+              {step === 0
+                ? "Choose a Profile, target role, and angle"
+                : step === 1
+                  ? "Choose at least one ready Source"
+                  : behaviorReady
+                    ? "Complete all behavior settings"
+                    : "Name this Scout"}
+            </span>
+          )}
+          {step < 2 ? (
+            <Button type="submit" disabled={!currentReady}>
+              Continue <ArrowRight className="size-4" />
+            </Button>
+          ) : (
+            <Button type="submit" disabled={!canSubmit}>
+              {isPending ? "Creating…" : "Create Scout"}
+              {!isPending && <ArrowRight className="size-4" />}
+            </Button>
+          )}
+        </div>
+      </footer>
     </form>
   );
 }
 
-/**
- * A compact footer picker pill: a small `Popover` whose trigger is
- * a bordered pill (icon + current label + chevron) and whose content is a list of
- * options with a check on the selected one. Selecting an enabled option closes it.
- */
-function PickerPill({
-  icon,
-  label,
-  options,
-  value,
-  onValueChange,
+type UpdateSetup = <K extends keyof ScoutSetup>(key: K, value: ScoutSetup[K]) => void;
+
+function TargetStep({
+  profiles,
+  profileId,
+  chooseProfile,
+  setup,
+  updateSetup,
+  isLoading,
 }: {
-  icon: ReactNode;
-  label: string;
-  options: PickerOption[];
-  value: string;
-  onValueChange: (value: string) => void;
+  profiles: Array<{ id: string; name: string; roleTarget: string }>;
+  profileId: string;
+  chooseProfile: (id: string) => void;
+  setup: ScoutSetup;
+  updateSetup: UpdateSetup;
+  isLoading: boolean;
 }) {
-  const [open, setOpen] = useState(false);
+  const [roleDraft, setRoleDraft] = useState(setup.targetRoles.join(", "));
+  const [locationDraft, setLocationDraft] = useState(setup.locations.join(", "));
   return (
-    <Popover open={open} onOpenChange={setOpen}>
-      <PopoverTrigger asChild>
-        <Button
-          type="button"
-          variant="ghost"
-          size="sm"
-          className="h-7 gap-1.5 border-[0.5px] border-border bg-foreground/[0.04] font-normal text-foreground"
+    <section className="space-y-5">
+      <Intro
+        title="Who and what is this Scout searching for?"
+        description="The confirmed Candidate Profile anchors fit. This Scout can narrow its role focus."
+      />
+      <Field label="Candidate Profile" hint="Required and pinned at the start of each Run">
+        <select
+          value={profileId}
+          onChange={(event) => chooseProfile(event.target.value)}
+          className={SELECT_CLASS}
+          disabled={isLoading || profiles.length === 0}
         >
-          <span className="text-muted-foreground">{icon}</span>
-          <span className="max-w-[12rem] truncate">{label}</span>
-          <ChevronsUpDown className="size-3 text-muted-foreground" />
-        </Button>
-      </PopoverTrigger>
-      <PopoverContent align="start" sideOffset={6} className="w-60 p-1">
-        {options.map((opt) => {
-          const selected = opt.value === value;
+          <option value="">Select a confirmed Profile</option>
+          {profiles.map((profile) => (
+            <option key={profile.id} value={profile.id}>
+              {profile.name} · {profile.roleTarget}
+            </option>
+          ))}
+        </select>
+        {!isLoading && profiles.length === 0 && (
+          <p className="mt-2 text-xs text-destructive">
+            Confirm a Candidate Profile before creating a Scout.
+          </p>
+        )}
+      </Field>
+      <div className="grid gap-4 sm:grid-cols-2">
+        <Field label="Target roles" hint="Comma-separated; these narrow the Profile target">
+          <Input
+            value={roleDraft}
+            onChange={(event) => {
+              const parsed = parseScoutListDraft(event.target.value);
+              setRoleDraft(parsed.draft);
+              updateSetup("targetRoles", parsed.values);
+            }}
+            placeholder="AI Engineer, ML Engineer"
+          />
+        </Field>
+        <Field label="Location preference" hint="Optional; blank means no location limit">
+          <Input
+            value={locationDraft}
+            onChange={(event) => {
+              const parsed = parseScoutListDraft(event.target.value);
+              setLocationDraft(parsed.draft);
+              updateSetup("locations", parsed.values);
+            }}
+            placeholder="Remote — US, San Francisco"
+          />
+        </Field>
+      </div>
+      <Field label="Discovery angles" hint="Choose one or more enduring search theses">
+        <div className="grid gap-2 sm:grid-cols-2">
+          {DISCOVERY_ANGLES.map((angle) => {
+            const selected = setup.discoveryAngles.includes(angle.value);
+            return (
+              <ChoiceCard
+                key={angle.value}
+                selected={selected}
+                label={angle.label}
+                description={angle.description}
+                onClick={() =>
+                  updateSetup(
+                    "discoveryAngles",
+                    selected
+                      ? setup.discoveryAngles.filter((value) => value !== angle.value)
+                      : [...setup.discoveryAngles, angle.value],
+                  )
+                }
+              />
+            );
+          })}
+        </div>
+      </Field>
+    </section>
+  );
+}
+
+function SourcesStep({
+  sources,
+  isLoading,
+  setup,
+  updateSetup,
+}: {
+  sources: Array<{
+    id: string;
+    name: string;
+    kind: string;
+    provider: string | null;
+    readiness: string;
+    nextAction: string | null;
+  }>;
+  isLoading: boolean;
+  setup: ScoutSetup;
+  updateSetup: UpdateSetup;
+}) {
+  return (
+    <section className="space-y-5">
+      <Intro
+        title="Where may this Scout look?"
+        description="Source selection grants the listed read-only tools. Unready Sources stay visible but cannot be selected."
+      />
+      <div className="space-y-2">
+        {isLoading && <p className="text-xs text-muted-foreground">Loading Sources…</p>}
+        {!isLoading && sources.length === 0 && (
+          <p className="rounded-lg border border-dashed border-border p-4 text-xs text-muted-foreground">
+            No Sources are configured. Add one in Scout Run Center or configure Web Search in
+            Settings.
+          </p>
+        )}
+        {sources.map((source) => {
+          const selected = setup.sourceIds.includes(source.id);
+          const ready = source.readiness === "ready";
           return (
             <button
-              key={opt.value}
+              key={source.id}
               type="button"
-              disabled={opt.disabled}
-              onClick={() => {
-                onValueChange(opt.value);
-                setOpen(false);
-              }}
+              disabled={!ready}
+              onClick={() =>
+                updateSetup(
+                  "sourceIds",
+                  selected
+                    ? setup.sourceIds.filter((id) => id !== source.id)
+                    : [...setup.sourceIds, source.id],
+                )
+              }
               className={cn(
-                "flex w-full items-start gap-2.5 rounded-sm px-2 py-1.5 text-left",
-                opt.disabled ? "opacity-40" : "hover:bg-accent",
+                "flex w-full items-start gap-3 rounded-lg border border-border p-3.5 text-left",
+                ready ? "hover:bg-muted/60" : "cursor-not-allowed opacity-60",
+                selected && "border-primary bg-primary/5",
               )}
-              style={opt.disabled ? { cursor: "default" } : undefined}
             >
-              <span className="mt-0.5 text-muted-foreground">{opt.icon}</span>
+              <CheckBox selected={selected} />
               <span className="min-w-0 flex-1">
-                <span className="block text-sm font-medium">{opt.label}</span>
-                {opt.hint && (
-                  <span className="block text-xs text-muted-foreground">{opt.hint}</span>
+                <span className="flex items-center justify-between gap-3">
+                  <span className="text-xs font-medium">{source.name}</span>
+                  <span
+                    className={cn(
+                      "rounded-full bg-muted px-2 py-0.5 text-[10px] text-muted-foreground",
+                      ready && "bg-emerald-500/10 text-emerald-600 dark:text-emerald-400",
+                    )}
+                  >
+                    {ready ? "Ready" : readable(source.readiness)}
+                  </span>
+                </span>
+                <span className="mt-1 block text-[11px] text-muted-foreground">
+                  {readable(source.kind)}
+                  {source.provider ? ` · ${source.provider}` : ""}
+                </span>
+                <span className="mt-2 flex flex-wrap gap-1">
+                  {toolsForSource(source.kind).map((tool) => (
+                    <span
+                      key={tool}
+                      className="rounded bg-muted px-1.5 py-0.5 font-mono text-[10px]"
+                    >
+                      {tool}
+                    </span>
+                  ))}
+                </span>
+                {!ready && source.nextAction && (
+                  <span className="mt-2 block text-[11px] text-muted-foreground">
+                    {source.nextAction}
+                  </span>
                 )}
               </span>
-              {selected && <Check className="mt-0.5 size-4 shrink-0 text-primary" />}
             </button>
           );
         })}
-      </PopoverContent>
-    </Popover>
+      </div>
+      <div className="rounded-lg border border-border bg-muted/20 p-3">
+        <p className="text-[11px] font-medium">Run tools included</p>
+        <div className="mt-2 flex flex-wrap gap-1">
+          {[
+            "read_run_context",
+            "list_selected_sources",
+            "record_checkpoint",
+            "record_source_outcome",
+            "complete_run",
+          ].map((tool) => (
+            <span key={tool} className="rounded bg-muted px-1.5 py-0.5 font-mono text-[10px]">
+              {tool}
+            </span>
+          ))}
+        </div>
+      </div>
+      <div className="rounded-lg border border-border p-4">
+        <div className="mb-3 flex items-center gap-2">
+          <Clock className="size-4 text-muted-foreground" />
+          <div>
+            <h4 className="text-xs font-medium">Freshness</h4>
+            <p className="text-[11px] text-muted-foreground">
+              Lookback, verification, and run cadence are different controls.
+            </p>
+          </div>
+        </div>
+        <div className="grid gap-3 sm:grid-cols-3">
+          <NumberSelect
+            label="Job listings"
+            hint="Maximum listing age"
+            value={setup.listingLookbackDays}
+            options={[
+              [7, "Past 7 days"],
+              [14, "Past 14 days"],
+              [30, "Past 30 days"],
+              [60, "Past 60 days"],
+              [90, "Past 90 days"],
+            ]}
+            onChange={(value) => updateSetup("listingLookbackDays", value)}
+          />
+          <NumberSelect
+            label="Social signals"
+            hint="Maximum Signal age"
+            value={setup.signalLookbackDays}
+            options={[
+              [1, "Past 24 hours"],
+              [3, "Past 3 days"],
+              [7, "Past 7 days"],
+              [14, "Past 14 days"],
+              [30, "Past 30 days"],
+            ]}
+            onChange={(value) => updateSetup("signalLookbackDays", value)}
+          />
+          <NumberSelect
+            label="Verify active roles"
+            hint="Required re-check age"
+            value={setup.verificationHours}
+            options={[
+              [6, "Within 6 hours"],
+              [12, "Within 12 hours"],
+              [24, "Within 24 hours"],
+              [72, "Within 3 days"],
+              [168, "Within 7 days"],
+            ]}
+            onChange={(value) => updateSetup("verificationHours", value)}
+          />
+        </div>
+      </div>
+    </section>
   );
+}
+
+function BehaviorStep({
+  name,
+  setName,
+  profileName,
+  setup,
+  updateSetup,
+  selectedSourceNames,
+  harness,
+  setHarness,
+  codexFound,
+  generatedInstructions,
+}: {
+  name: string;
+  setName: (name: string) => void;
+  profileName: string;
+  setup: ScoutSetup;
+  updateSetup: UpdateSetup;
+  selectedSourceNames: string[];
+  harness: HarnessId;
+  setHarness: (harness: HarnessId) => void;
+  codexFound: boolean;
+  generatedInstructions: string;
+}) {
+  return (
+    <section className="space-y-5">
+      <Intro
+        title="How should this Scout work?"
+        description="Presets become an explicit Discovery Strategy and Scout Policy you can edit later."
+      />
+      <Field label="Scout name">
+        <Input value={name} onChange={(event) => setName(event.target.value)} maxLength={80} />
+      </Field>
+      <div className="grid gap-4 sm:grid-cols-2">
+        <EnumSelect
+          label="Search effort"
+          hint="How many query variations it attempts"
+          value={setup.effort}
+          options={[
+            ["quick", "Quick"],
+            ["balanced", "Balanced"],
+            ["thorough", "Thorough"],
+          ]}
+          onChange={(value) => updateSetup("effort", value as ScoutSetup["effort"])}
+        />
+        <EnumSelect
+          label="Search focus"
+          hint="Precision versus discovery breadth"
+          value={setup.focus}
+          options={[
+            ["precision", "High precision"],
+            ["balanced", "Balanced"],
+            ["broad", "Broad discovery"],
+          ]}
+          onChange={(value) => updateSetup("focus", value as ScoutSetup["focus"])}
+        />
+        <Field label="Run cadence" hint="Durable local schedule in this Mac's timezone">
+          <div className="flex gap-2">
+            <select
+              value={setup.runCadence}
+              onChange={(event) =>
+                updateSetup("runCadence", event.target.value as ScoutSetup["runCadence"])
+              }
+              className={SELECT_CLASS}
+            >
+              <option value="manual">Manual only</option>
+              <option value="daily">Daily</option>
+              <option value="weekdays">Weekdays</option>
+              <option value="weekly">Weekly · Monday</option>
+            </select>
+            {setup.runCadence !== "manual" && (
+              <Input
+                type="time"
+                value={setup.runTime}
+                onChange={(event) => updateSetup("runTime", event.target.value)}
+                className="w-28"
+              />
+            )}
+          </div>
+        </Field>
+        <EnumSelect
+          label="Revisit promising Leads"
+          hint="Policy for follow-up investigations"
+          value={setup.revisitCadence}
+          options={[
+            ["never", "Only when requested"],
+            ["weekly", "Weekly"],
+            ["monthly", "Monthly"],
+          ]}
+          onChange={(value) => updateSetup("revisitCadence", value as ScoutSetup["revisitCadence"])}
+        />
+      </div>
+      <label className="flex items-start gap-3 rounded-lg border border-border p-3.5">
+        <input
+          type="checkbox"
+          className="mt-0.5"
+          checked={setup.includeInferredOpportunities}
+          onChange={(event) => updateSetup("includeInferredOpportunities", event.target.checked)}
+        />
+        <span>
+          <span className="block text-xs font-medium">Include inferred Opportunities</span>
+          <span className="mt-0.5 block text-[11px] text-muted-foreground">
+            Allow evidence-backed employment paths without a formal listing. They must be labeled as
+            inferred.
+          </span>
+        </span>
+      </label>
+      <div className="rounded-lg border border-border bg-muted/25 p-4">
+        <div className="mb-3 flex items-center gap-2">
+          <ShieldCheck className="size-4 text-emerald-600 dark:text-emerald-400" />
+          <span className="text-xs font-medium">Review</span>
+        </div>
+        <dl className="grid gap-x-6 gap-y-2 text-xs sm:grid-cols-2">
+          <Summary label="Profile" value={profileName} />
+          <Summary label="Roles" value={setup.targetRoles.join(", ")} />
+          <Summary label="Sources" value={selectedSourceNames.join(", ")} />
+          <Summary
+            label="Freshness"
+            value={`${setup.listingLookbackDays}d listings · ${setup.signalLookbackDays}d signals · verify ${setup.verificationHours}h`}
+          />
+          <Summary
+            label="Runs"
+            value={
+              setup.runCadence === "manual"
+                ? "Manual only"
+                : `${readable(setup.runCadence)} at ${setup.runTime}`
+            }
+          />
+          <Summary label="External actions" value="Cannot message, post, reply, or apply" />
+        </dl>
+      </div>
+      <details className="rounded-lg border border-border p-4">
+        <summary className="flex cursor-pointer list-none items-center gap-2 text-xs font-medium">
+          <SlidersHorizontal className="size-4 text-muted-foreground" /> Advanced
+        </summary>
+        <div className="mt-4 space-y-4 border-t border-border pt-4">
+          <Field label="Reasoning harness" hint="Fixed after creation">
+            <div className="grid grid-cols-2 gap-2">
+              <HarnessChoice
+                harness="claude"
+                label="Claude Code"
+                selected={harness === "claude"}
+                onSelect={() => setHarness("claude")}
+              />
+              <HarnessChoice
+                harness="codex"
+                label="Codex"
+                selected={harness === "codex"}
+                disabled={!codexFound}
+                hint={codexFound ? undefined : "CLI not found"}
+                onSelect={() => setHarness("codex")}
+              />
+            </div>
+          </Field>
+          <Field label="Additional guidance" hint="Optional and specific to this search thesis">
+            <Textarea
+              value={setup.additionalGuidance}
+              onChange={(event) => updateSetup("additionalGuidance", event.target.value)}
+              rows={3}
+              maxLength={2_000}
+              placeholder="Prioritize developer-tool companies with small engineering teams."
+            />
+          </Field>
+          <details>
+            <summary className="cursor-pointer text-[11px] text-muted-foreground">
+              Preview generated {harness === "codex" ? "AGENTS.md" : "CLAUDE.md"} specialty
+            </summary>
+            <pre className="mt-2 max-h-56 overflow-auto whitespace-pre-wrap rounded-md bg-background p-3 font-mono text-[10px] leading-relaxed text-muted-foreground">
+              {generatedInstructions}
+            </pre>
+          </details>
+        </div>
+      </details>
+    </section>
+  );
+}
+
+function Intro({ title, description }: { title: string; description: string }) {
+  return (
+    <div>
+      <h3 className="text-sm font-medium">{title}</h3>
+      <p className="mt-1 text-xs text-muted-foreground">{description}</p>
+    </div>
+  );
+}
+
+function Field({ label, hint, children }: { label: string; hint?: string; children: ReactNode }) {
+  return (
+    <div className="space-y-1.5">
+      <div>
+        <Label className="text-xs">{label}</Label>
+        {hint && <p className="mt-0.5 text-[11px] text-muted-foreground">{hint}</p>}
+      </div>
+      {children}
+    </div>
+  );
+}
+
+function ChoiceCard({
+  selected,
+  label,
+  description,
+  onClick,
+}: {
+  selected: boolean;
+  label: string;
+  description: string;
+  onClick: () => void;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      className={cn(
+        "flex items-start gap-3 rounded-lg border border-border p-3 text-left hover:bg-muted/60",
+        selected && "border-primary bg-primary/5",
+      )}
+    >
+      <CheckBox selected={selected} />
+      <span>
+        <span className="block text-xs font-medium">{label}</span>
+        <span className="mt-0.5 block text-[11px] text-muted-foreground">{description}</span>
+      </span>
+    </button>
+  );
+}
+
+function CheckBox({ selected }: { selected: boolean }) {
+  return (
+    <span
+      className={cn(
+        "mt-0.5 flex size-4 shrink-0 items-center justify-center rounded border border-border",
+        selected && "border-primary bg-primary text-primary-foreground",
+      )}
+    >
+      {selected && <Check className="size-3" />}
+    </span>
+  );
+}
+
+function NumberSelect({
+  label,
+  hint,
+  value,
+  options,
+  onChange,
+}: {
+  label: string;
+  hint: string;
+  value: number;
+  options: Array<[number, string]>;
+  onChange: (value: number) => void;
+}) {
+  return (
+    <Field label={label} hint={hint}>
+      <select
+        className={SELECT_CLASS}
+        value={value}
+        onChange={(event) => onChange(Number(event.target.value))}
+      >
+        {options.map(([option, labelText]) => (
+          <option key={option} value={option}>
+            {labelText}
+          </option>
+        ))}
+      </select>
+    </Field>
+  );
+}
+
+function EnumSelect({
+  label,
+  hint,
+  value,
+  options,
+  onChange,
+}: {
+  label: string;
+  hint: string;
+  value: string;
+  options: Array<[string, string]>;
+  onChange: (value: string) => void;
+}) {
+  return (
+    <Field label={label} hint={hint}>
+      <select
+        className={SELECT_CLASS}
+        value={value}
+        onChange={(event) => onChange(event.target.value)}
+      >
+        {options.map(([option, labelText]) => (
+          <option key={option} value={option}>
+            {labelText}
+          </option>
+        ))}
+      </select>
+    </Field>
+  );
+}
+
+function Summary({ label, value }: { label: string; value: string }) {
+  return (
+    <div>
+      <dt className="text-[10px] uppercase tracking-wide text-muted-foreground">{label}</dt>
+      <dd className="mt-0.5 text-foreground">{value || "None"}</dd>
+    </div>
+  );
+}
+
+function HarnessChoice({
+  harness,
+  label,
+  selected,
+  disabled,
+  hint,
+  onSelect,
+}: {
+  harness: HarnessId;
+  label: string;
+  selected: boolean;
+  disabled?: boolean;
+  hint?: string;
+  onSelect: () => void;
+}) {
+  return (
+    <button
+      type="button"
+      disabled={disabled}
+      onClick={onSelect}
+      className={cn(
+        "flex items-center gap-2 rounded-md border border-border px-3 py-2 text-left",
+        selected && "border-primary bg-primary/5",
+        disabled && "cursor-not-allowed opacity-50",
+      )}
+    >
+      <HarnessGlyph harness={harness} />
+      <span className="text-xs">{label}</span>
+      {hint && <span className="ml-auto text-[10px] text-muted-foreground">{hint}</span>}
+    </button>
+  );
+}
+
+function readable(value: string): string {
+  return value.replaceAll("_", " ").replace(/\b\w/g, (letter) => letter.toUpperCase());
+}
+
+function toolsForSource(kind: string): string[] {
+  if (kind === "web_search") return ["WebSearch", "WebFetch"];
+  if (kind === "x") return ["XSearch", "XRead", "RecordSignal"];
+  if (kind === "rss" || kind === "atom") return ["Feed discovery", "Record evidence"];
+  return ["Read Source", "Record evidence"];
 }
