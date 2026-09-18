@@ -652,7 +652,8 @@ export class RecruitingApplication {
 
   recordSignalForScout(input: { scoutId: string; evidenceReference: string }) {
     const run = this.beginRunForScout(input.scoutId);
-    return this.scoutRuns.recordSignal({
+    // Route through recordSignal so Ashby references reach their own evidence store.
+    return this.recordSignal({
       scoutId: run.scoutId,
       evidenceReference: input.evidenceReference,
     });

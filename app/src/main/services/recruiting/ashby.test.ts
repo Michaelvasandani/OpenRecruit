@@ -870,6 +870,27 @@ describe("Ashby inspection", () => {
     ]);
   });
 
+  test("promotes an Ashby evidence reference through the Scout-facing RecordSignal path", async () => {
+    const { app, scout, run } = ashbyFixture({
+      async fetchBoard() {
+        return { status: 200, body: { jobs: [ashbyJob()] } };
+      },
+    });
+    const inspected = await app.ashbyInspect({
+      scoutId: scout.id,
+      urls: [`https://jobs.ashbyhq.com/Roadrunner/${JOB_ID}`],
+    });
+    const evidenceReference = inspected.results[0]?.evidenceReference;
+    if (!evidenceReference) throw new Error("fixture evidence reference missing");
+
+    // The agent MCP tool reaches the host through this method, not recordSignal.
+    app.recordSignalForScout({ scoutId: scout.id, evidenceReference });
+
+    expect(app.listSignals({ runId: run.id })).toMatchObject([
+      { sourceId: "source-ashby", providerIdentity: JOB_ID },
+    ]);
+  });
+
   test("promotes an opaque Ashby evidence reference with the exact full description", async () => {
     const { app, scout, run } = ashbyFixture({
       async fetchBoard() {
