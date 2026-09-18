@@ -10,6 +10,14 @@ const HOST_OWNED_ENV_KEYS = [
   "TYPESAFE_API_KEY",
 ] as const;
 
+/** Identity of an enclosing Claude Code session (the host was launched from a
+ * Claude terminal or the desktop app). A Scout that inherits these believes it
+ * is that session's child: it adopts the parent's session id and messaging
+ * socket, and its own transcript is not saved where `--resume` looks, so every
+ * later wake fails with "No conversation found". */
+const AMBIENT_CLAUDE_SESSION_KEY =
+  /^(CLAUDECODE|CLAUDE_PID|CLAUDE_EFFORT|CLAUDE_AGENT_SDK_VERSION|CLAUDE_PREVIEW_[A-Z_]+|CLAUDE_CODE_(SESSION_ID|CHILD_SESSION|HOST_SESSION_ID|SESSION_ATTENDED|MESSAGING_[A-Z_]+|ENTRYPOINT|EXECPATH|DESKTOP_APP_VERSION|OAUTH_SCOPES|SDK_[A-Z_]+|EAGER_FLUSH|REPORT_FINDINGS|EMIT_TOOL_USE_SUMMARIES|ENABLE_SDK_FILE_CHECKPOINTING|ENABLE_ASK_USER_QUESTION_TOOL|DISABLE_CRON|DISABLE_TERMINAL_TITLE))$/;
+
 /**
  * Build the environment for an agent's PTY. We inherit the app's env, ensure the
  * usual macOS bin dirs are on PATH (so `claude`, `git`, etc. resolve), and inject
@@ -33,6 +41,12 @@ export function buildAgentEnv(
     if (typeof v === "string") base[k] = v;
   }
 
+  // Inside another Claude session the API base URL is that session's local
+  // proxy, which dies with it; a user's own override has no such parent.
+  if (base.CLAUDE_CODE_CHILD_SESSION !== undefined) delete base.ANTHROPIC_BASE_URL;
+  for (const key of Object.keys(base)) {
+    if (AMBIENT_CLAUDE_SESSION_KEY.test(key)) delete base[key];
+  }
   for (const key of opts?.stripEnvKeys ?? []) delete base[key];
   for (const key of HOST_OWNED_ENV_KEYS) delete base[key];
 
