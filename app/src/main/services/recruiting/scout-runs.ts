@@ -52,6 +52,7 @@ import { BIRD_SUPPORTED_VERSION } from "../settings/bird";
 import { assertSafeMaterial } from "./contract";
 import { RecruitingError, type RecruitingFailureCategory } from "./errors";
 import { purgeUnavailableSignals } from "./evidence";
+import { type PendingEvidence, PendingEvidenceStore } from "./pending-evidence";
 import {
   type FeedItem,
   type FeedProvider,
@@ -109,6 +110,8 @@ export type ScoutRunApplicationOptions = {
   birdAccess?: () => BirdAccess | null;
   /** Deterministic adapter seam for tests; production uses birdAccess. */
   birdProvider?: XProvider;
+  /** Shared with every Source module that issues RecordSignal references. */
+  pendingEvidence?: PendingEvidenceStore;
 };
 
 export type CreateRssSourceCommand = {
@@ -160,14 +163,6 @@ export type RecordXEvidenceCommand = {
 export type RecordSignalCommand = {
   scoutId: string;
   evidenceReference: string;
-};
-
-export type RecordHostEvidenceCommand = {
-  scoutId: string;
-  runId: string;
-  sourceId: string;
-  sourceAttemptId: string;
-  item: FeedItem;
 };
 
 export type CreateFeedSourceCommand = CreateRssSourceCommand & {
@@ -310,17 +305,6 @@ type RunRow = typeof scoutRuns.$inferSelect;
 type SourceAccessRow = typeof sourceAccess.$inferSelect;
 type SourceAttemptRow = typeof sourceAttempts.$inferSelect;
 type SourceReadinessValue = SourceAccessSummaryValue["readiness"];
-type PendingXEvidence = {
-  item: FeedItem;
-  scoutId: string;
-  runId: string;
-  sourceId: string;
-  sourceAttemptId: string;
-  contentFingerprint: string;
-  issuedAt: number;
-  expiresAt: number;
-};
-
 const X_EVIDENCE_TTL_MS = 15 * 60_000;
 type SourceAccessPatch = Partial<
   Pick<
@@ -363,7 +347,7 @@ export class ScoutRunApplication {
   private readonly birdProvider: XProvider;
   private readonly webSearchSettings?: () => WebSearchSettingsProjection;
   private readonly birdAccess?: () => BirdAccess | null;
-  private readonly pendingXEvidence = new Map<string, PendingXEvidence>();
+  private readonly pendingEvidence: PendingEvidenceStore;
   /** Every in-flight Bird operation is tied to its Run so terminal Run
    * transitions can cancel both queued and active work. */
   private readonly runOperationControllers = new Map<string, Set<AbortController>>();
@@ -374,6 +358,7 @@ export class ScoutRunApplication {
     options: ScoutRunApplicationOptions = {},
   ) {
     this.webSearchSettings = options.webSearchSettings;
+    this.pendingEvidence = options.pendingEvidence ?? new PendingEvidenceStore();
     this.birdAccess = options.birdAccess;
     this.birdProvider =
       options.birdProvider ?? new BirdXProvider(options.birdAccess ?? (() => null));
@@ -2221,21 +2206,21 @@ export class ScoutRunApplication {
     } catch {
       // The safe result count is the number of normalized items.
     }
-    this.prunePendingXEvidence(retrievedAt);
+    this.pendingEvidence.prune(retrievedAt);
     const results: XSearchEvidence[] = attempt.items
       .filter((item) => isAttributableItem(item))
       .slice(0, limit)
       .map((item) => {
-        const evidenceReference = `bird-evidence:${randomUUID()}`;
-        this.pendingXEvidence.set(evidenceReference, {
+        const evidenceReference = this.pendingEvidence.issue({
+          issuer: "bird",
           item,
           scoutId: scout.id,
           runId: run.id,
           sourceId: selected.source.id,
           sourceAttemptId: attempt.id,
-          contentFingerprint: itemFingerprint(item),
           issuedAt: retrievedAt,
           expiresAt: retrievedAt + X_EVIDENCE_TTL_MS,
+          excludedByPolicy: false,
         });
         const author = item.metadata?.author;
         return {
@@ -2320,12 +2305,23 @@ export class ScoutRunApplication {
         "malformed_content",
       );
     }
-    const evidenceReference = `bird-evidence:${randomUUID()}`;
     const read = detail as Omit<
       XReadEvidence,
       "evidenceReference" | "sourceAttemptId" | "retrievedAt"
     >;
     const retrievedAt = attempt.completedAt ?? this.now();
+    this.pendingEvidence.prune(retrievedAt);
+    const evidenceReference = this.pendingEvidence.issue({
+      issuer: "bird",
+      item,
+      scoutId: scout.id,
+      runId: run.id,
+      sourceId: selected.source.id,
+      sourceAttemptId: attempt.id,
+      issuedAt: retrievedAt,
+      expiresAt: retrievedAt + X_EVIDENCE_TTL_MS,
+      excludedByPolicy: false,
+    });
     const result: XReadResult = {
       ...read,
       postId: target.postId,
@@ -2337,17 +2333,6 @@ export class ScoutRunApplication {
       trust: "untrusted_evidence",
       provenance: { provider: "bird" },
     };
-    this.prunePendingXEvidence(retrievedAt);
-    this.pendingXEvidence.set(evidenceReference, {
-      item,
-      scoutId: scout.id,
-      runId: run.id,
-      sourceId: selected.source.id,
-      sourceAttemptId: attempt.id,
-      contentFingerprint: itemFingerprint(item),
-      issuedAt: retrievedAt,
-      expiresAt: retrievedAt + X_EVIDENCE_TTL_MS,
-    });
     return result;
   }
 
@@ -2418,41 +2403,24 @@ export class ScoutRunApplication {
     });
   }
 
-  /** Persist one reference returned by a prior XSearch or XRead. The
-   * reference is a short-lived host capability; no agent-authored content is
-   * accepted at this seam. */
+  /** Promote one host-issued evidence reference into a durable Signal. The
+   * reference is a short-lived host capability issued by XSearch, XRead, or
+   * AshbyInspectJobs; no agent-authored content is accepted at this seam, and
+   * Run, Attempt, Source, and access identity are revalidated before commit. */
   recordSignal(command: RecordSignalCommand): ScoutRunSummaryValue {
     if (typeof command.evidenceReference !== "string" || !command.evidenceReference.trim()) {
       throw new RecruitingError("VALIDATION", "RecordSignal requires one evidence reference");
     }
     const reference = command.evidenceReference.trim();
-    const pending = this.pendingXEvidence.get(reference);
-    if (!pending) {
-      throw new RecruitingError(
-        "NOT_FOUND",
-        "The X evidence reference is no longer available; run the read again",
-      );
-    }
-    const checkedAt = this.now();
-    if (checkedAt >= pending.expiresAt) {
-      this.pendingXEvidence.delete(reference);
-      throw new RecruitingError(
-        "NOT_FOUND",
-        "The X evidence reference has expired; run the read again",
-      );
-    }
-    if (pending.contentFingerprint !== itemFingerprint(pending.item)) {
-      this.pendingXEvidence.delete(reference);
-      throw new RecruitingError("VALIDATION", "The X evidence reference is invalid");
-    }
+    const pending = this.pendingEvidence.resolve(reference, command.scoutId, this.now());
 
     const outcome = this.db.transaction((tx) => {
       const run = requireRun(tx, pending.runId);
-      if (run.scoutId !== command.scoutId || pending.scoutId !== command.scoutId) {
-        throw new RecruitingError("CONFLICT", "The X evidence reference belongs to another Scout");
+      if (run.scoutId !== command.scoutId) {
+        throw new RecruitingError("CONFLICT", "The evidence reference belongs to another Scout");
       }
       if (!(ACTIVE_RUN_STATUSES as readonly string[]).includes(run.status)) {
-        this.pendingXEvidence.delete(reference);
+        this.pendingEvidence.delete(reference);
         throw new RecruitingError(
           "CONFLICT",
           `Run ${run.id} is ${run.status}; it cannot record evidence`,
@@ -2466,7 +2434,7 @@ export class ScoutRunApplication {
       ) {
         throw new RecruitingError(
           "NOT_FOUND",
-          "The X evidence reference is not available for this Run",
+          "The evidence reference is not available for this Run",
         );
       }
       const source = tx.select().from(sources).where(eq(sources.id, pending.sourceId)).get();
@@ -2481,31 +2449,17 @@ export class ScoutRunApplication {
           ),
         )
         .get();
-      const details = parseJson(attempt.requestedScope);
-      const operation =
-        details && typeof details === "object"
-          ? String((details as Record<string, unknown>).operation ?? "")
-          : "";
-      const detailsRecord =
-        details && typeof details === "object" ? (details as Record<string, unknown>) : null;
-      const returnedIdentities = Array.isArray(detailsRecord?.returnedIdentities)
-        ? detailsRecord.returnedIdentities.filter(
-            (value): value is string => typeof value === "string",
-          )
-        : [];
       if (
         !source ||
-        source.kind !== "x" ||
-        xProviderFromConfig(source.config) !== "bird" ||
         !access ||
-        !["bird_x_search", "bird_x_read"].includes(operation) ||
         !isAttributableItem(pending.item) ||
-        (pending.item.providerIdentity !== null &&
-          !returnedIdentities.includes(pending.item.providerIdentity))
+        !issuedByCompletedAttempt(pending, source, attempt.requestedScope)
       ) {
         throw new RecruitingError(
           "CONFLICT",
-          "The evidence reference was not issued by a completed Bird XSearch or XRead Attempt",
+          pending.issuer === "ashby"
+            ? "The evidence reference was not issued by a completed Ashby inspection"
+            : "The evidence reference was not issued by a completed Bird XSearch or XRead Attempt",
         );
       }
       const at = this.now();
@@ -2526,74 +2480,6 @@ export class ScoutRunApplication {
     return outcome.run;
   }
 
-  /** Persist normalized evidence issued by another host-owned Source module.
-   * The issuing module resolves the opaque capability; this seam revalidates
-   * Run, Attempt, Source, and access identity before committing a Signal. */
-  recordHostEvidence(command: RecordHostEvidenceCommand): ScoutRunSummaryValue {
-    const outcome = this.db.transaction((tx) => {
-      const run = requireRun(tx, command.runId);
-      if (run.scoutId !== command.scoutId) {
-        throw new RecruitingError("CONFLICT", "The evidence reference belongs to another Scout");
-      }
-      if (!(ACTIVE_RUN_STATUSES as readonly string[]).includes(run.status)) {
-        throw new RecruitingError(
-          "CONFLICT",
-          `Run ${run.id} is ${run.status}; it cannot record evidence`,
-        );
-      }
-      const attempt = requireSourceAttempt(tx, command.sourceAttemptId);
-      if (
-        attempt.runId !== run.id ||
-        attempt.sourceId !== command.sourceId ||
-        attempt.completedAt === null
-      ) {
-        throw new RecruitingError(
-          "NOT_FOUND",
-          "The evidence reference is not available for this Run",
-        );
-      }
-      const source = tx.select().from(sources).where(eq(sources.id, command.sourceId)).get();
-      const access = tx
-        .select()
-        .from(sourceAccess)
-        .where(
-          and(
-            eq(sourceAccess.sourceId, command.sourceId),
-            eq(sourceAccess.accountRef, ""),
-            eq(sourceAccess.scopeKey, "public"),
-          ),
-        )
-        .get();
-      if (
-        !source ||
-        source.kind !== "ashby" ||
-        !access ||
-        command.item.metadata?.provider !== "ashby" ||
-        !isAttributableItem(command.item)
-      ) {
-        throw new RecruitingError(
-          "CONFLICT",
-          "The evidence reference was not issued by a completed Ashby inspection",
-        );
-      }
-      const at = this.now();
-      const changed = persistSignals(tx, {
-        run,
-        source,
-        sourceAccess: access,
-        attemptId: attempt.id,
-        items: [command.item],
-        observedAt: at,
-      });
-      return { run: this.toRunSummary(tx, requireRun(tx, run.id)), at, changed };
-    });
-    if (outcome.changed) {
-      const revision = this.db.transaction((tx) => advanceRevision(tx));
-      emitChange(revision, "run", [command.runId], "signals_attributed", outcome.at);
-    }
-    return outcome.run;
-  }
-
   /** Backward-compatible internal alias for pre-#50 callers. Agent-facing
    * transport uses RecordSignal and therefore cannot submit this wider shape. */
   recordXEvidence(command: RecordXEvidenceCommand): ScoutRunSummaryValue {
@@ -2607,7 +2493,7 @@ export class ScoutRunApplication {
     const uniqueReferences = [...new Set(command.evidenceReferences)];
     const run = requireRun(this.db, command.runId);
     for (const reference of uniqueReferences) {
-      const pending = this.pendingXEvidence.get(reference);
+      const pending = this.pendingEvidence.peek(reference);
       if (!pending || pending.sourceAttemptId !== command.sourceAttemptId) {
         throw new RecruitingError("VALIDATION", "The selected X evidence reference is invalid");
       }
@@ -2620,18 +2506,6 @@ export class ScoutRunApplication {
       result = this.recordSignal({ scoutId: run.scoutId, evidenceReference: reference });
     }
     return result;
-  }
-
-  private prunePendingXEvidence(at: number): void {
-    for (const [reference, pending] of this.pendingXEvidence) {
-      if (pending.expiresAt <= at) this.pendingXEvidence.delete(reference);
-    }
-  }
-
-  private invalidatePendingXEvidence(runId: string): void {
-    for (const [reference, pending] of this.pendingXEvidence) {
-      if (pending.runId === runId) this.pendingXEvidence.delete(reference);
-    }
   }
 
   /** Return immutable evidence projections, optionally scoped to a Run or Source. */
@@ -3435,7 +3309,7 @@ export class ScoutRunApplication {
     });
     if ((TERMINAL_RUN_STATUSES as readonly string[]).includes(command.status)) {
       this.cancelRunOperations(command.runId);
-      this.invalidatePendingXEvidence(command.runId);
+      this.pendingEvidence.invalidateRun(command.runId);
     }
     if (notification)
       emitChange(notification.revision, "run", [command.runId], "run_changed", notification.at);
@@ -4132,6 +4006,29 @@ function stableItemIdentity(item: FeedItem): string {
   if (item.canonicalUrl) return `url:${item.canonicalUrl}`;
   if (item.providerIdentity) return `provider:${item.providerIdentity}`;
   return item.identityKey;
+}
+
+/** The issuing module's own proof that this item came from the named Attempt. */
+function issuedByCompletedAttempt(
+  pending: PendingEvidence,
+  source: { kind: string; config: string },
+  requestedScope: string,
+): boolean {
+  if (pending.issuer === "ashby") {
+    return source.kind === "ashby" && pending.item.metadata?.provider === "ashby";
+  }
+  const details = parseJson(requestedScope);
+  const scope = details && typeof details === "object" ? (details as Record<string, unknown>) : {};
+  const returnedIdentities = Array.isArray(scope.returnedIdentities)
+    ? scope.returnedIdentities.filter((value): value is string => typeof value === "string")
+    : [];
+  return (
+    source.kind === "x" &&
+    xProviderFromConfig(source.config) === "bird" &&
+    ["bird_x_search", "bird_x_read"].includes(String(scope.operation ?? "")) &&
+    (pending.item.providerIdentity === null ||
+      returnedIdentities.includes(pending.item.providerIdentity))
+  );
 }
 
 function itemFingerprint(item: FeedItem): string {

@@ -27,14 +27,6 @@ export const recruitingRouter = router({
       .query(({ ctx, input }) => ctx.recruiting.reviewLeadPanel(input.id)),
   }),
 
-  reviewSidebar: publicProcedure.query(({ ctx }) => ctx.recruiting.reviewSidebar()),
-  reviewScoutRunCenter: publicProcedure
-    .input(z.object({ scoutId: z.string().min(1) }))
-    .query(({ ctx, input }) => ctx.recruiting.reviewScoutRunCenter(input.scoutId)),
-  reviewLeadPanel: publicProcedure
-    .input(z.object({ id: z.string().min(1) }))
-    .query(({ ctx, input }) => ctx.recruiting.reviewLeadPanel(input.id)),
-
   profiles: publicProcedure.query(({ ctx }) => ctx.recruiting.listProfiles()),
 
   profile: publicProcedure
@@ -302,10 +294,6 @@ export const recruitingRouter = router({
     .input(z.object({ id: z.string().min(1) }))
     .query(({ ctx, input }) => ctx.recruiting.getLeadContext(input.id)),
 
-  leadPanel: publicProcedure
-    .input(z.object({ id: z.string().min(1) }))
-    .query(({ ctx, input }) => ctx.recruiting.getLeadPanel(input.id)),
-
   candidateDecisions: publicProcedure
     .input(z.object({ subjectId: z.string().min(1) }))
     .query(({ ctx, input }) => ctx.recruiting.listCandidateDecisions(input.subjectId)),
@@ -514,20 +502,6 @@ export const recruitingRouter = router({
       }),
     )
     .mutation(({ ctx, input }) => command(() => ctx.recruiting.launchScoutRun(input))),
-
-  /** Provider-neutral adapter seam: all execution starts from the same bounded preflight. */
-  runScout: publicProcedure
-    .input(
-      z.object({
-        scoutId: z.string().min(1),
-        profileOverrideId: z.string().nullable().optional(),
-        strategyOverride: z.string().max(100_000).nullable().optional(),
-        policyOverride: z.string().max(100_000).nullable().optional(),
-        budget: z.record(z.string(), z.number().int().nonnegative()).optional(),
-        idempotencyKey: z.string().trim().min(1).max(200),
-      }),
-    )
-    .mutation(({ ctx, input }) => command(() => ctx.recruiting.runScout(input))),
 
   advanceScoutRun: publicProcedure
     .input(

@@ -13,8 +13,8 @@ import {
   sources,
 } from "../../db/schema";
 import { RecruitingError } from "./errors";
+import { PendingEvidenceStore } from "./pending-evidence";
 import { JevPostingFitJudge, type PostingFitJudge, type PostingFitJudgment } from "./posting-fit";
-import type { FeedItem } from "./source";
 
 export const ASHBY_SOURCE_ID = "source-ashby";
 const ACTIVE_RUN_STATUSES = ["queued", "preflight", "running", "finalizing"] as const;
@@ -128,6 +128,8 @@ export type AshbyInspectionApplicationOptions = {
   typesafeApiKey?: () => string | undefined;
   /** Injected at the external model boundary for deterministic tests. */
   postingFitJudge?: PostingFitJudge;
+  /** Shared RecordSignal reference store; RecordSignal resolves from it. */
+  pendingEvidence?: PendingEvidenceStore;
 };
 
 /** `unavailable` = a judge is configured but returned nothing for this posting. */
@@ -243,14 +245,6 @@ export type AshbyInspectionResult = {
   }>;
 };
 
-export type AshbyPendingEvidence = {
-  scoutId: string;
-  runId: string;
-  sourceId: string;
-  sourceAttemptId: string;
-  item: FeedItem;
-};
-
 export class AshbyInspectionApplication {
   private readonly provider: AshbyBoardProvider | undefined;
   private readonly fitJudge: PostingFitJudge;
@@ -259,10 +253,7 @@ export class AshbyInspectionApplication {
     { cachedAt: number; response: AshbyBoardProviderResponse }
   >();
   private readonly inFlightBoards = new Map<string, Promise<AshbyBoardProviderResponse>>();
-  private readonly pendingEvidence = new Map<
-    string,
-    AshbyPendingEvidence & { expiresAt: number; policyDecision: "include" | "exclude" | "review" }
-  >();
+  private readonly pendingEvidence: PendingEvidenceStore;
 
   constructor(
     private readonly db: Db,
@@ -270,6 +261,7 @@ export class AshbyInspectionApplication {
     options: AshbyInspectionApplicationOptions = {},
   ) {
     this.provider = options.ashbyProvider ?? new HttpAshbyBoardProvider();
+    this.pendingEvidence = options.pendingEvidence ?? new PendingEvidenceStore();
     this.fitJudge =
       options.postingFitJudge ??
       new JevPostingFitJudge(options.typesafeApiKey ?? (() => undefined));
@@ -564,14 +556,15 @@ export class AshbyInspectionApplication {
           policy,
           judgment,
         );
-        const evidenceReference = `ashby-evidence:${randomUUID()}`;
-        this.pendingEvidence.set(evidenceReference, {
+        const evidenceReference = this.pendingEvidence.issue({
+          issuer: "ashby",
           scoutId: command.scoutId,
           runId: run.id,
           sourceId: source.id,
           sourceAttemptId: attemptId,
+          issuedAt: observedAt,
           expiresAt: observedAt + EVIDENCE_TTL_MS,
-          policyDecision: decision.decision,
+          excludedByPolicy: decision.decision === "exclude",
           item: {
             identityKey: `ashby:${jobId}`,
             providerIdentity: jobId,
@@ -710,36 +703,6 @@ export class AshbyInspectionApplication {
       }),
     );
     return judgments;
-  }
-
-  resolveEvidence(scoutId: string, evidenceReference: string): AshbyPendingEvidence {
-    const pending = this.pendingEvidence.get(evidenceReference);
-    if (!pending || this.now() >= pending.expiresAt) {
-      this.pendingEvidence.delete(evidenceReference);
-      throw new RecruitingError(
-        "NOT_FOUND",
-        "The Ashby evidence reference is no longer available; inspect the posting again",
-      );
-    }
-    if (pending.scoutId !== scoutId) {
-      throw new RecruitingError(
-        "CONFLICT",
-        "The Ashby evidence reference belongs to another Scout",
-      );
-    }
-    if (pending.policyDecision === "exclude") {
-      throw new RecruitingError(
-        "CONFLICT",
-        "The Scout Policy excluded this Ashby posting; it cannot be promoted to a Signal",
-      );
-    }
-    return {
-      scoutId: pending.scoutId,
-      runId: pending.runId,
-      sourceId: pending.sourceId,
-      sourceAttemptId: pending.sourceAttemptId,
-      item: pending.item,
-    };
   }
 
   private requireAccess(scoutId: string) {

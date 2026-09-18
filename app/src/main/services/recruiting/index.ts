@@ -63,6 +63,7 @@ import {
   type RecordInvestigationAttemptCommand,
   type StartInvestigationAttemptCommand,
 } from "./investigations";
+import { PendingEvidenceStore } from "./pending-evidence";
 import type { ConfirmProfileCommand, ImportProfileCommand, UpdateDraftCommand } from "./profile";
 import { CandidateProfileApplication } from "./profile";
 import {
@@ -380,7 +381,9 @@ export class RecruitingApplication {
   ) {
     this.webSearchSettings = options.webSearchSettings;
     this.profileApplication = new CandidateProfileApplication(db, { now });
-    this.scoutRuns = new ScoutRunApplication(db, now, options);
+    // One store for every RecordSignal reference, whichever Source issued it.
+    const pendingEvidence = new PendingEvidenceStore();
+    this.scoutRuns = new ScoutRunApplication(db, now, { ...options, pendingEvidence });
     this.webSearchApplication = new WebSearchApplication(db, now, {
       provider: options.provider,
       apiKey: options.webSearchApiKey ?? options.apiKey,
@@ -395,6 +398,7 @@ export class RecruitingApplication {
       ashbyProvider: options.ashbyProvider,
       typesafeApiKey: options.typesafeApiKey,
       postingFitJudge: options.postingFitJudge,
+      pendingEvidence,
     });
     this.candidateDecisions = new CandidateDecisionApplication(db, now);
     this.evidence = new EvidenceApplication(db, now);
@@ -532,13 +536,6 @@ export class RecruitingApplication {
   }
 
   recordSignal(command: RecordSignalCommand) {
-    if (command.evidenceReference.trim().startsWith("ashby-evidence:")) {
-      const pending = this.ashbyInspectionApplication.resolveEvidence(
-        command.scoutId,
-        command.evidenceReference.trim(),
-      );
-      return this.scoutRuns.recordHostEvidence(pending);
-    }
     return this.scoutRuns.recordSignal(command);
   }
 
@@ -652,7 +649,6 @@ export class RecruitingApplication {
 
   recordSignalForScout(input: { scoutId: string; evidenceReference: string }) {
     const run = this.beginRunForScout(input.scoutId);
-    // Route through recordSignal so Ashby references reach their own evidence store.
     return this.recordSignal({
       scoutId: run.scoutId,
       evidenceReference: input.evidenceReference,
@@ -790,16 +786,8 @@ export class RecruitingApplication {
     };
   }
 
-  getLeadPanel(id: string) {
-    return this.getLeadContext(id);
-  }
-
   recordCandidateDecision(command: RecordCandidateDecisionCommand) {
     return this.candidateDecisions.recordCandidateDecision(command);
-  }
-
-  recordDecision(command: RecordCandidateDecisionCommand) {
-    return this.recordCandidateDecision(command);
   }
 
   requestCandidateReconsideration(command: RequestCandidateReconsiderationCommand) {
@@ -870,10 +858,6 @@ export class RecruitingApplication {
     return this.fitEvaluations.evaluateFit(command);
   }
 
-  createEvaluation(command: CreateFitEvaluationCommand): FitEvaluationSummary {
-    return this.createFitEvaluation(command);
-  }
-
   listFitEvaluations(subjectId?: string): FitEvaluationSummary[] {
     return this.fitEvaluations.listFitEvaluations(subjectId);
   }
@@ -894,10 +878,6 @@ export class RecruitingApplication {
     return this.fitEvaluations.promoteLead(command);
   }
 
-  promote(command: PromoteLeadCommand) {
-    return this.promoteLead(command);
-  }
-
   setScoutSources(command: SetScoutSourcesCommand) {
     return this.scoutRuns.setScoutSources(command);
   }
@@ -906,19 +886,6 @@ export class RecruitingApplication {
     const result = this.scoutRuns.launchScoutRun(command);
     if (!result.replayed) this.dispatchManualRun(result.value);
     return result;
-  }
-
-  /** Alias used by UI/agent adapters: a manual launch always performs preflight. */
-  runScout(command: LaunchScoutRunCommand) {
-    return this.launchScoutRun(command);
-  }
-
-  createScoutRun(command: LaunchScoutRunCommand) {
-    return this.launchScoutRun(command);
-  }
-
-  launchRun(command: LaunchScoutRunCommand) {
-    return this.launchScoutRun(command);
   }
 
   listScoutRuns(scoutId?: string) {
@@ -1032,10 +999,6 @@ export class RecruitingApplication {
     });
   }
 
-  getReviewSidebar(): ReviewSidebarProjection {
-    return this.reviewSidebar();
-  }
-
   /**
    * One authoritative Run Center snapshot. Activity is reconstructed from
    * normalized committed records, which gives the renderer a useful timeline
@@ -1082,10 +1045,6 @@ export class RecruitingApplication {
       recentRuns,
       sources: this.listSources().filter((source) => scout.sourceIds.includes(source.id)),
     });
-  }
-
-  getReviewScoutRunCenter(scoutId: string): ReviewScoutRunCenterProjection | null {
-    return this.reviewScoutRunCenter(scoutId);
   }
 
   /**
@@ -1135,10 +1094,6 @@ export class RecruitingApplication {
       revisitPlans,
       sourceReadiness,
     });
-  }
-
-  getReviewLeadPanel(id: string): ReviewLeadPanelProjection | null {
-    return this.reviewLeadPanel(id);
   }
 
   private freshLeadsForScout(scoutId: string, at = this.now()) {
