@@ -13,8 +13,12 @@ The candidate's CV, GitHub portfolio, and career interests used to judge fit.
 _Avoid_: User profile, search settings
 
 **Scout**:
-A persistent autonomous agent that follows one specialized discovery strategy for the candidate.
+A persistent autonomous role that follows one specialized discovery strategy for the candidate. A Scout keeps its identity even when the model harness or resumable session used to perform its work changes.
 _Avoid_: Search agent, recruiter
+
+**Scout Run**:
+One bounded execution of a Scout against the Sources explicitly selected for that execution. It ends with an explicit completed, incomplete, failed, or cancelled outcome.
+_Avoid_: Agent run, search session
 
 **Discovery Strategy**:
 A scout's enduring search thesis, such as finding early-stage startups, founder hiring posts, new-grad roles, or forward-deployed engineering work.
@@ -37,7 +41,7 @@ An external feed, service, site, or API from which OpenRecruit obtains Signals, 
 _Avoid_: connector, scraper
 
 **Source Access**:
-The permission state that allows OpenRecruit to read a Source, either publicly or through authorization completed by the Candidate.
+The permission state that allows OpenRecruit to read a Source, either publicly or through authorization completed by the Candidate. A Source must be explicitly selected for a Scout before that Scout may read it.
 _Avoid_: credentials, scraping access
 
 **X Source**:
@@ -55,3 +59,35 @@ _Avoid_: Signal, search result
 **Investigation**:
 A reusable record of a scout's question, evidence, conclusions, and check time for a lead or opportunity. A new signal, stale revisit plan, changed Candidate Profile, or unanswered question may justify another investigation.
 _Avoid_: Finding, agent memory
+
+**Candidate Decision**:
+An append-only record of the Candidate's judgment about a Lead or Opportunity. A later change of mind is another Candidate Decision rather than an edit to prior history.
+_Avoid_: Lead status, mutable disposition
+
+**Posting Reference**:
+An untrusted URL that may identify a job posting and must be inspected against its Source before its claims are relied on.
+_Avoid_: Verified job, search result
+
+**Verified Posting**:
+A job posting matched by stable provider identity in a successfully validated Source response. Verification establishes provider facts, not Candidate fit.
+_Avoid_: Search result, recommended job
+
+**Publication Time**:
+The time a Source says it published a posting. It is distinct from search-engine crawl time, retrieval time, and OpenRecruit's First Seen Time.
+_Avoid_: Crawl date, observed date
+
+**First Seen Time**:
+The earliest time OpenRecruit successfully verified a posting identity. It is local observation history, not evidence of when the employer published the role.
+_Avoid_: Publication Time, posted date
+
+**Relisting**:
+An observed transition of the same provider posting identity from explicitly unlisted to explicitly listed. A missing record alone does not establish a Relisting.
+_Avoid_: Repost
+
+**Repost**:
+A new or renewed posting for substantially the same employment possibility. Repost identity is a semantic conclusion and must not be inferred solely from title similarity or search-engine recency.
+_Avoid_: Relisting, refreshed search result
+
+**Experience Requirement**:
+An evidence-backed statement in a posting about years of experience, including whether the wording is required, preferred, or ambiguous.
+_Avoid_: Seniority guess, experience score

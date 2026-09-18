@@ -155,12 +155,15 @@ export const SignalEvidence = z.object({
 });
 export type SignalEvidence = z.infer<typeof SignalEvidence>;
 
+export const SignalProvider = z.enum(["x-api-v2", "bird", "ashby"]);
+export type SignalProvider = z.infer<typeof SignalProvider>;
+
 export const SignalSummary = z.object({
   id: z.string().min(1),
   sourceItemId: z.string().min(1),
   sourceId: z.string().min(1),
-  /** X provider identity, when this Signal came from an X Source. */
-  provider: XSourceProvider.nullable(),
+  /** Normalized provider identity when the Source has a provider-specific adapter. */
+  provider: SignalProvider.nullable(),
   sourceAttemptId: z.string().min(1),
   runId: z.string().min(1),
   scoutId: z.string().min(1),

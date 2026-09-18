@@ -122,10 +122,12 @@ export function recruitingRunWorkflowInstructions(runId: string): string {
   return [
     `Recruiting Run workflow for ${runId}:`,
     "1. Call read_run_context and list_selected_sources before discovery.",
-    "2. Use OpenRecruit WebSearch and WebFetch (not native web tools) so Source Attempts are recorded.",
-    "3. Call record_source_outcome for selected attributable evidence to create Signals and Fresh Leads.",
-    "4. Call RecordSignal for each selected XSearch or XRead reference to create a Signal.",
-    "5. Call record_checkpoint as work progresses.",
-    "6. Always call complete_run with the final outcome before ending the turn.",
+    "2. Use harness-native web search to discover Ashby job URLs, then call AshbyInspectJobs for employer facts, publication time, listed state, and experience evidence.",
+    "3. Use OpenRecruit WebSearch and WebFetch for selected Web Search Sources, and XSearch and XRead for selected X Sources, so those Source Attempts are recorded.",
+    "4. Call record_source_outcome for selected attributable Web Search evidence to create Signals and Fresh Leads.",
+    "5. Primary evidence is preferred, not mandatory. Promote specific, current, attributable, actionable secondary evidence with an explicit verification caveat; reject generic or unsupported reposts.",
+    "6. Call RecordSignal for each selected XSearch, XRead, or AshbyInspectJobs reference to create a Signal.",
+    "7. Call record_checkpoint as work progresses.",
+    "8. Always call complete_run with the final outcome before ending the turn.",
   ].join("\n");
 }

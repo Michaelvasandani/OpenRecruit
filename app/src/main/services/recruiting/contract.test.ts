@@ -26,8 +26,13 @@ describe("provider-neutral Recruiting contract", () => {
       policyMaterial: "Use selected Sources only.",
     });
     expect(instructions).toContain("OpenRecruit WebSearch and WebFetch");
+    expect(instructions).toContain("harness-native web search");
+    expect(instructions).toContain("AshbyInspectJobs");
+    expect(instructions).toContain("XSearch and XRead");
     expect(instructions).toContain("record_source_outcome");
     expect(instructions).toContain("RecordSignal");
+    expect(instructions).toContain("Primary evidence is preferred, not mandatory");
+    expect(instructions).toContain("verification caveat");
     expect(instructions).toContain("complete_run");
   });
 

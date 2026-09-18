@@ -69,6 +69,7 @@ import {
   normalizeXResponse,
   unavailableXItem,
   XApiError,
+  type XApiRequest,
   type XApiResponse,
   type XProvider,
   XReadContentError,
@@ -159,6 +160,14 @@ export type RecordXEvidenceCommand = {
 export type RecordSignalCommand = {
   scoutId: string;
   evidenceReference: string;
+};
+
+export type RecordHostEvidenceCommand = {
+  scoutId: string;
+  runId: string;
+  sourceId: string;
+  sourceAttemptId: string;
+  item: FeedItem;
 };
 
 export type CreateFeedSourceCommand = CreateRssSourceCommand & {
@@ -2056,7 +2065,10 @@ export class ScoutRunApplication {
           },
         );
       }
-      allItems.push(...page.items);
+      const pageItems = input.searchQuery
+        ? page.items.filter((item) => isWithinSearchWindow(item, request))
+        : page.items;
+      allItems.push(...pageItems);
       resultCount = Math.max(resultCount, page.resultCount);
       nextCursor = page.nextCursor;
       if (lookup || !nextCursor) break;
@@ -2510,6 +2522,74 @@ export class ScoutRunApplication {
     if (outcome.changed) {
       const revision = this.db.transaction((tx) => advanceRevision(tx));
       emitChange(revision, "run", [pending.runId], "signals_attributed", outcome.at);
+    }
+    return outcome.run;
+  }
+
+  /** Persist normalized evidence issued by another host-owned Source module.
+   * The issuing module resolves the opaque capability; this seam revalidates
+   * Run, Attempt, Source, and access identity before committing a Signal. */
+  recordHostEvidence(command: RecordHostEvidenceCommand): ScoutRunSummaryValue {
+    const outcome = this.db.transaction((tx) => {
+      const run = requireRun(tx, command.runId);
+      if (run.scoutId !== command.scoutId) {
+        throw new RecruitingError("CONFLICT", "The evidence reference belongs to another Scout");
+      }
+      if (!(ACTIVE_RUN_STATUSES as readonly string[]).includes(run.status)) {
+        throw new RecruitingError(
+          "CONFLICT",
+          `Run ${run.id} is ${run.status}; it cannot record evidence`,
+        );
+      }
+      const attempt = requireSourceAttempt(tx, command.sourceAttemptId);
+      if (
+        attempt.runId !== run.id ||
+        attempt.sourceId !== command.sourceId ||
+        attempt.completedAt === null
+      ) {
+        throw new RecruitingError(
+          "NOT_FOUND",
+          "The evidence reference is not available for this Run",
+        );
+      }
+      const source = tx.select().from(sources).where(eq(sources.id, command.sourceId)).get();
+      const access = tx
+        .select()
+        .from(sourceAccess)
+        .where(
+          and(
+            eq(sourceAccess.sourceId, command.sourceId),
+            eq(sourceAccess.accountRef, ""),
+            eq(sourceAccess.scopeKey, "public"),
+          ),
+        )
+        .get();
+      if (
+        !source ||
+        source.kind !== "ashby" ||
+        !access ||
+        command.item.metadata?.provider !== "ashby" ||
+        !isAttributableItem(command.item)
+      ) {
+        throw new RecruitingError(
+          "CONFLICT",
+          "The evidence reference was not issued by a completed Ashby inspection",
+        );
+      }
+      const at = this.now();
+      const changed = persistSignals(tx, {
+        run,
+        source,
+        sourceAccess: access,
+        attemptId: attempt.id,
+        items: [command.item],
+        observedAt: at,
+      });
+      return { run: this.toRunSummary(tx, requireRun(tx, run.id)), at, changed };
+    });
+    if (outcome.changed) {
+      const revision = this.db.transaction((tx) => advanceRevision(tx));
+      emitChange(revision, "run", [command.runId], "signals_attributed", outcome.at);
     }
     return outcome.run;
   }
@@ -3621,6 +3701,14 @@ function isAttributableItem(item: FeedItem): boolean {
   );
 }
 
+function isWithinSearchWindow(item: FeedItem, request: XApiRequest): boolean {
+  if (!request.startTime && !request.endTime) return true;
+  if (item.publicationAt === null) return false;
+  const start = request.startTime ? Date.parse(request.startTime) : Number.NEGATIVE_INFINITY;
+  const end = request.endTime ? Date.parse(request.endTime) : Number.POSITIVE_INFINITY;
+  return item.publicationAt >= start && item.publicationAt <= end;
+}
+
 function isUnavailableItem(item: FeedItem): boolean {
   return (
     item.metadata?.state === "deleted" ||
@@ -3739,15 +3827,28 @@ function persistSignals(db: RecruitingDb, input: SignalPersistenceInput): boolea
       };
       const candidateProvider = sourceProvider ?? item.metadata?.provider ?? null;
       const provider =
-        candidateProvider === "x-api-v2" || candidateProvider === "bird" ? candidateProvider : null;
-      const isX = provider !== null;
-      const adapterVersion = provider === "bird" ? "bird" : isX ? "x-api-v2" : "rss-atom-v1";
+        candidateProvider === "x-api-v2" ||
+        candidateProvider === "bird" ||
+        candidateProvider === "ashby"
+          ? candidateProvider
+          : null;
+      const isX = provider === "x-api-v2" || provider === "bird";
+      const adapterVersion =
+        provider === "bird"
+          ? "bird"
+          : provider === "x-api-v2"
+            ? "x-api-v2"
+            : provider === "ashby"
+              ? "ashby-posting-v1"
+              : "rss-atom-v1";
       const processor =
         provider === "bird"
           ? "openrecruit-bird"
-          : isX
+          : provider === "x-api-v2"
             ? "openrecruit-x-api"
-            : "openrecruit-rss-atom";
+            : provider === "ashby"
+              ? "openrecruit-ashby"
+              : "openrecruit-rss-atom";
       db.insert(signals)
         .values({
           id: signalId,

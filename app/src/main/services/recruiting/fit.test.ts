@@ -157,7 +157,7 @@ describe("transparent Fit Evaluations and non-destructive Promotion", () => {
 
   test("does not let stale evidence for another Signal invalidate a fresh hard constraint", async () => {
     const { app, profile, run, lead, signal } = await fixture();
-    const source = app.listSources()[0];
+    const source = app.listSources().find((candidate) => candidate.kind === "rss");
     if (!source) throw new Error("fixture source missing");
     await app.readSource({
       runId: run.id,

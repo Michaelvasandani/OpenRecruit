@@ -33,6 +33,12 @@ import {
 import { bus } from "../event-bus";
 import type { WakeTransport } from "../scheduler/wake/types";
 import {
+  type AshbyInspectCommand,
+  AshbyInspectionApplication,
+  type AshbyInspectionApplicationOptions,
+  type AshbyInspectionResult,
+} from "./ashby";
+import {
   CandidateDecisionApplication,
   type RecordCandidateDecisionCommand,
   type RequestCandidateReconsiderationCommand,
@@ -312,7 +318,7 @@ export type RecruitingApplicationOptions = ScoutRunApplicationOptions &
     webSearchApiKey?: () => string | undefined;
     webFetchProvider?: WebFetchProvider;
     webFetchResolveHostname?: (hostname: string) => Promise<readonly string[]>;
-  };
+  } & AshbyInspectionApplicationOptions;
 
 export type ArchiveScoutCommand = {
   scoutId: string;
@@ -363,6 +369,7 @@ export class RecruitingApplication {
   private readonly webSearchSettings?: () => WebSearchSettingsProjection;
   private readonly webSearchApplication: WebSearchApplication;
   private readonly webFetchApplication: WebFetchApplication;
+  private readonly ashbyInspectionApplication: AshbyInspectionApplication;
   private wake?: WakeTransport;
 
   constructor(
@@ -382,6 +389,9 @@ export class RecruitingApplication {
       apiKey: options.webSearchApiKey ?? options.apiKey,
       webSearchSettings: options.webSearchSettings,
       webFetchResolveHostname: options.webFetchResolveHostname,
+    });
+    this.ashbyInspectionApplication = new AshbyInspectionApplication(db, now, {
+      ashbyProvider: options.ashbyProvider,
     });
     this.candidateDecisions = new CandidateDecisionApplication(db, now);
     this.evidence = new EvidenceApplication(db, now);
@@ -519,7 +529,18 @@ export class RecruitingApplication {
   }
 
   recordSignal(command: RecordSignalCommand) {
+    if (command.evidenceReference.trim().startsWith("ashby-evidence:")) {
+      const pending = this.ashbyInspectionApplication.resolveEvidence(
+        command.scoutId,
+        command.evidenceReference.trim(),
+      );
+      return this.scoutRuns.recordHostEvidence(pending);
+    }
     return this.scoutRuns.recordSignal(command);
+  }
+
+  ashbyInspect(command: AshbyInspectCommand): Promise<AshbyInspectionResult> {
+    return this.ashbyInspectionApplication.inspect(command);
   }
 
   webSearch(command: WebSearchRequest & { scoutId: string }): Promise<WebSearchResponse> {

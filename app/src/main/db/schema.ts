@@ -397,6 +397,28 @@ export const sourceItems = sqliteTable(
   (t) => [uniqueIndex("source_items_identity").on(t.sourceId, t.identityKey)],
 );
 
+export const ashbyPostingObservations = sqliteTable(
+  "ashby_posting_observations",
+  {
+    id: text("id").primaryKey(),
+    sourceItemId: text("source_item_id")
+      .notNull()
+      .references(() => sourceItems.id),
+    boardHandle: text("board_handle").notNull(),
+    publicationAt: integer("publication_at"),
+    isListed: integer("is_listed", { mode: "boolean" }).notNull(),
+    contentFingerprint: text("content_fingerprint").notNull(),
+    observationFingerprint: text("observation_fingerprint").notNull(),
+    relisting: integer("relisting", { mode: "boolean" }).notNull().default(false),
+    observedAt: integer("observed_at").notNull(),
+    lastObservedAt: integer("last_observed_at").notNull(),
+  },
+  (t) => [
+    uniqueIndex("ashby_observations_identity").on(t.sourceItemId, t.observationFingerprint),
+    index("ashby_observations_item_time").on(t.sourceItemId, t.observedAt),
+  ],
+);
+
 export const signals = sqliteTable(
   "signals",
   {
