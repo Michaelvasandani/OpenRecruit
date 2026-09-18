@@ -260,6 +260,14 @@ const TOOLS: ToolDef[] = [
                 description:
                   "Exclude only postings with an unambiguous required minimum above this value.",
               },
+              engineeringRolesOnly: {
+                type: "boolean",
+                default: false,
+                description:
+                  "Exclude postings judged not to be hands-on software, AI, or ML engineering " +
+                  "(sales, support, operations, recruiting, legal, product management). Set it " +
+                  "whenever the Candidate's target roles are engineering roles. Needs fitJudgment.",
+              },
             },
             additionalProperties: false,
           },

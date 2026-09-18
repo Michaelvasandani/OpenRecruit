@@ -29,6 +29,11 @@ const DAY_MS = 86_400_000;
 /** Below this Choice confidence a Jev experience judgment goes to review
  * instead of deciding. A starting point; tune against recorded judgments. */
 const FIT_JUDGMENT_MIN_CONFIDENCE = 0.6;
+/** engineeringRolesOnly: below the floor Jev is confident the role is not
+ * hands-on engineering; between the two it goes to review. On the first live
+ * Run every non-engineering posting scored <= 0.17 and every real one >= 0.68. */
+const ENGINEERING_ROLE_EXCLUDE_BELOW = 0.3;
+const ENGINEERING_ROLE_INCLUDE_FROM = 0.6;
 
 export type AshbyBoardProviderRequest = {
   boardHandle: string;
@@ -118,6 +123,9 @@ export type AshbyInspectCommand = {
     publishedAfter?: string;
     listedOnly?: boolean;
     maximumExplicitRequiredYears?: number;
+    /** Exclude postings Jev judges are not hands-on software, AI, or ML
+     * engineering. Needs a TypeSafe key; without a judgment it has no effect. */
+    engineeringRolesOnly?: boolean;
   };
   signal?: AbortSignal;
 };
@@ -201,6 +209,7 @@ export type AshbyInspectionResult = {
     publishedAfterSource: "request" | "scout_policy" | null;
     listedOnly: boolean;
     maximumExplicitRequiredYears: number | null;
+    engineeringRolesOnly: boolean;
   };
   summary: {
     inputCount: number;
@@ -647,6 +656,7 @@ export class AshbyInspectionApplication {
         publishedAfterSource: applied.publishedAfterSource,
         listedOnly: policy.listedOnly === true,
         maximumExplicitRequiredYears: policy.maximumExplicitRequiredYears ?? null,
+        engineeringRolesOnly: policy.engineeringRolesOnly === true,
       },
       summary: {
         inputCount: (command.urls?.length ?? 0) + (command.boards?.length ?? 0),
@@ -900,7 +910,12 @@ function validateCommand(command: AshbyInspectCommand): void {
     if (!isRecord(command.policy)) {
       throw new RecruitingError("VALIDATION", "Ashby inspection policy must be an object");
     }
-    const policyAllowed = new Set(["publishedAfter", "listedOnly", "maximumExplicitRequiredYears"]);
+    const policyAllowed = new Set([
+      "publishedAfter",
+      "listedOnly",
+      "maximumExplicitRequiredYears",
+      "engineeringRolesOnly",
+    ]);
     const policyUnknown = Object.keys(command.policy).filter((key) => !policyAllowed.has(key));
     if (policyUnknown.length > 0) {
       throw new RecruitingError(
@@ -910,6 +925,12 @@ function validateCommand(command: AshbyInspectCommand): void {
     }
     if (command.policy.listedOnly !== undefined && typeof command.policy.listedOnly !== "boolean") {
       throw new RecruitingError("VALIDATION", "listedOnly must be boolean");
+    }
+    if (
+      command.policy.engineeringRolesOnly !== undefined &&
+      typeof command.policy.engineeringRolesOnly !== "boolean"
+    ) {
+      throw new RecruitingError("VALIDATION", "engineeringRolesOnly must be boolean");
     }
   }
   if (command.policy?.publishedAfter !== undefined) {
@@ -1259,6 +1280,18 @@ function evaluatePolicy(
               outcome: "pass",
               code: "explicit_minimum_within_limit",
             },
+    );
+  }
+  if (policy?.engineeringRolesOnly && judgment !== undefined) {
+    const probability = typeof judgment === "object" ? judgment.engineeringRoleProbability : null;
+    reasons.push(
+      probability === null
+        ? { rule: "engineering_roles_only", outcome: "review", code: "role_judgment_unavailable" }
+        : probability < ENGINEERING_ROLE_EXCLUDE_BELOW
+          ? { rule: "engineering_roles_only", outcome: "fail", code: "judged_not_engineering_role" }
+          : probability < ENGINEERING_ROLE_INCLUDE_FROM
+            ? { rule: "engineering_roles_only", outcome: "review", code: "judged_role_uncertain" }
+            : { rule: "engineering_roles_only", outcome: "pass", code: "judged_engineering_role" },
     );
   }
   return {

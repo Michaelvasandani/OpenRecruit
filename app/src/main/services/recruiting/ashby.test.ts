@@ -271,6 +271,71 @@ describe("Ashby posting fit judgments", () => {
     });
   });
 
+  test("engineeringRolesOnly lets Jev exclude non-engineering roles and review borderline ones", async () => {
+    // Engineering-role probabilities observed on the first live Run.
+    const roles: Record<string, number> = {
+      "Software Engineer, Compute Foundations": 0.97,
+      "Office Coordinator (Contract)": 0.01,
+      "Technical Solutions Lead": 0.45,
+    };
+    const ids = [JOB_ID, SECOND_JOB_ID, "3b1f0c52-6f0e-4d0c-9d57-0a2f6c1d9e11"];
+    const jobs = Object.keys(roles).map((title, index) =>
+      ashbyJob({ id: ids[index], title, descriptionPlain: "Join us." }),
+    );
+    const judge = fakeJudge((input) => ({
+      ...fitJudgment("not_stated", null),
+      engineeringRoleProbability: roles[input.title],
+    }));
+    const { app, scout } = ashbyFixture(board(jobs), undefined, undefined, judge);
+
+    const result = await app.ashbyInspect({
+      scoutId: scout.id,
+      urls: ids.map((id) => `https://jobs.ashbyhq.com/Roadrunner/${id}`),
+      policy: { maximumExplicitRequiredYears: 2, engineeringRolesOnly: true },
+    });
+
+    expect(result.appliedPolicy.engineeringRolesOnly).toBe(true);
+    expect(
+      result.results.map((entry) => [
+        entry.posting.title,
+        entry.policy.decision,
+        entry.policy.reasons.find((reason) => reason.rule === "engineering_roles_only")?.code,
+      ]),
+    ).toEqual([
+      ["Software Engineer, Compute Foundations", "include", "judged_engineering_role"],
+      ["Office Coordinator (Contract)", "exclude", "judged_not_engineering_role"],
+      ["Technical Solutions Lead", "review", "judged_role_uncertain"],
+    ]);
+  });
+
+  test("engineeringRolesOnly is opt-in, inert without a judge, and must be boolean", async () => {
+    const job = ashbyJob({ title: "Office Coordinator", descriptionPlain: "Join us." });
+    const judged = ashbyFixture(
+      board([job]),
+      undefined,
+      undefined,
+      fakeJudge(() => ({ ...fitJudgment("not_stated", null), engineeringRoleProbability: 0.01 })),
+    );
+    const unjudged = ashbyFixture(board([job]));
+
+    const optedOut = await judged.app.ashbyInspect({ scoutId: judged.scout.id, urls: [url] });
+    const noJudge = await unjudged.app.ashbyInspect({
+      scoutId: unjudged.scout.id,
+      urls: [url],
+      policy: { engineeringRolesOnly: true },
+    });
+
+    expect(optedOut.results[0].policy.decision).toBe("include");
+    expect(noJudge.results[0].policy.decision).toBe("include");
+    await expect(
+      judged.app.ashbyInspect({
+        scoutId: judged.scout.id,
+        urls: [url],
+        policy: { engineeringRolesOnly: "yes" } as never,
+      }),
+    ).rejects.toThrow(/engineeringRolesOnly must be boolean/);
+  });
+
   test("a failed judgment downgrades a pattern-matched exclusion to review", async () => {
     const { app, scout } = ashbyFixture(
       board([ashbyJob({ descriptionPlain: SABBATICAL_DESCRIPTION })]),

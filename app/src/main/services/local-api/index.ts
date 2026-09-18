@@ -26,6 +26,7 @@ type WebAccessBoundary = {
       publishedAfter?: string;
       listedOnly?: boolean;
       maximumExplicitRequiredYears?: number;
+      engineeringRolesOnly?: boolean;
     };
     signal?: AbortSignal;
   }): Promise<unknown>;
@@ -517,6 +518,7 @@ export class LocalApiServer {
                 publishedAfter?: string;
                 listedOnly?: boolean;
                 maximumExplicitRequiredYears?: number;
+                engineeringRolesOnly?: boolean;
               })
             : undefined,
         signal: controller.signal,
