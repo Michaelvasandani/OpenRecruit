@@ -29,6 +29,7 @@ function ashbyFixture(
   now: () => number = () => 10_000,
   policyMaterial?: string,
   postingFitJudge?: PostingFitJudge,
+  scoutOverrides: { strategyMaterial?: string } = {},
 ) {
   const db = makeDb();
   const app = new RecruitingApplication(db, now, {
@@ -54,6 +55,7 @@ function ashbyFixture(
     defaultProfileId: profile.id,
     sourceIds: ["source-ashby"],
     ...(policyMaterial === undefined ? {} : { policyMaterial }),
+    ...scoutOverrides,
     idempotencyKey: `ashby-scout-${crypto.randomUUID()}`,
   }).value;
   const run = app.launchScoutRun({
@@ -94,7 +96,8 @@ function fitJudgment(
   return {
     model: "jev-test",
     requiredExperience: { level, minimumYears, confidence, probabilities: { [level]: confidence } },
-    engineeringRoleProbability: 0.95,
+    // The default fixture Scout has no Discovery Strategy, so no fit is judged.
+    scoutFitProbability: null,
   };
 }
 
@@ -166,12 +169,13 @@ describe("Ashby posting fit judgments", () => {
         employmentType: "FullTime",
         location: "San Francisco, CA",
         descriptionPlain: SABBATICAL_DESCRIPTION,
+        scoutBrief: null,
       },
     ]);
     expect(result.results[0]).toMatchObject({
       fitJudgment: {
         requiredExperience: { level: "entry_level" },
-        engineeringRoleProbability: 0.95,
+        scoutFitProbability: null,
       },
       policy: {
         decision: "include",
@@ -271,69 +275,63 @@ describe("Ashby posting fit judgments", () => {
     });
   });
 
-  test("engineeringRolesOnly lets Jev exclude non-engineering roles and review borderline ones", async () => {
-    // Engineering-role probabilities observed on the first live Run.
-    const roles: Record<string, number> = {
-      "Software Engineer, Compute Foundations": 0.97,
-      "Office Coordinator (Contract)": 0.01,
-      "Technical Solutions Lead": 0.45,
+  test("judges every posting against the Scout's own brief, whatever its field", async () => {
+    // A marketing Scout: the same rule, no marketing-specific code.
+    const fits: Record<string, number> = {
+      "Growth Marketing Manager": 0.96,
+      "Software Engineer, Compute Foundations": 0.02,
+      "Marketing Operations Analyst": 0.45,
     };
     const ids = [JOB_ID, SECOND_JOB_ID, "3b1f0c52-6f0e-4d0c-9d57-0a2f6c1d9e11"];
-    const jobs = Object.keys(roles).map((title, index) =>
+    const jobs = Object.keys(fits).map((title, index) =>
       ashbyJob({ id: ids[index], title, descriptionPlain: "Join us." }),
     );
     const judge = fakeJudge((input) => ({
       ...fitJudgment("not_stated", null),
-      engineeringRoleProbability: roles[input.title],
+      scoutFitProbability: fits[input.title],
     }));
-    const { app, scout } = ashbyFixture(board(jobs), undefined, undefined, judge);
+    const { app, scout } = ashbyFixture(board(jobs), undefined, undefined, judge, {
+      strategyMaterial: "# Discovery Strategy\nTarget roles: Marketing Manager.",
+    });
 
     const result = await app.ashbyInspect({
       scoutId: scout.id,
       urls: ids.map((id) => `https://jobs.ashbyhq.com/Roadrunner/${id}`),
-      policy: { maximumExplicitRequiredYears: 2, engineeringRolesOnly: true },
+      policy: { targetRoles: ["Growth Marketer"] },
     });
 
-    expect(result.appliedPolicy.engineeringRolesOnly).toBe(true);
+    expect(judge.inputs[0].scoutBrief).toBe(
+      "# Discovery Strategy\nTarget roles: Marketing Manager.\nTarget roles also include: Growth Marketer.",
+    );
+    expect(result.appliedPolicy.scoutFitJudged).toBe(true);
     expect(
       result.results.map((entry) => [
         entry.posting.title,
         entry.policy.decision,
-        entry.policy.reasons.find((reason) => reason.rule === "engineering_roles_only")?.code,
+        entry.policy.reasons.find((reason) => reason.rule === "scout_fit")?.code,
       ]),
     ).toEqual([
-      ["Software Engineer, Compute Foundations", "include", "judged_engineering_role"],
-      ["Office Coordinator (Contract)", "exclude", "judged_not_engineering_role"],
-      ["Technical Solutions Lead", "review", "judged_role_uncertain"],
+      ["Growth Marketing Manager", "include", "judged_within_scout_brief"],
+      ["Software Engineer, Compute Foundations", "exclude", "judged_outside_scout_brief"],
+      ["Marketing Operations Analyst", "review", "judged_fit_uncertain"],
     ]);
   });
 
-  test("engineeringRolesOnly is opt-in, inert without a judge, and must be boolean", async () => {
+  test("applies no fit rule without a judge and validates targetRoles", async () => {
     const job = ashbyJob({ title: "Office Coordinator", descriptionPlain: "Join us." });
-    const judged = ashbyFixture(
-      board([job]),
-      undefined,
-      undefined,
-      fakeJudge(() => ({ ...fitJudgment("not_stated", null), engineeringRoleProbability: 0.01 })),
-    );
     const unjudged = ashbyFixture(board([job]));
 
-    const optedOut = await judged.app.ashbyInspect({ scoutId: judged.scout.id, urls: [url] });
-    const noJudge = await unjudged.app.ashbyInspect({
-      scoutId: unjudged.scout.id,
-      urls: [url],
-      policy: { engineeringRolesOnly: true },
-    });
+    const noJudge = await unjudged.app.ashbyInspect({ scoutId: unjudged.scout.id, urls: [url] });
 
-    expect(optedOut.results[0].policy.decision).toBe("include");
-    expect(noJudge.results[0].policy.decision).toBe("include");
+    expect(noJudge.appliedPolicy.scoutFitJudged).toBe(false);
+    expect(noJudge.results[0].policy).toEqual({ decision: "include", reasons: [] });
     await expect(
-      judged.app.ashbyInspect({
-        scoutId: judged.scout.id,
+      unjudged.app.ashbyInspect({
+        scoutId: unjudged.scout.id,
         urls: [url],
-        policy: { engineeringRolesOnly: "yes" } as never,
+        policy: { targetRoles: "Marketing" } as never,
       }),
-    ).rejects.toThrow(/engineeringRolesOnly must be boolean/);
+    ).rejects.toThrow(/targetRoles must be/);
   });
 
   test("a failed judgment downgrades a pattern-matched exclusion to review", async () => {

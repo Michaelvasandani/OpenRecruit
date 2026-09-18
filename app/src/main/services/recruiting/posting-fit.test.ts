@@ -9,6 +9,7 @@ const POSTING = {
   employmentType: "FullTime",
   location: "San Francisco, CA",
   descriptionPlain: "Build things. Paid Sabbatical Leave after 5 years of employment.",
+  scoutBrief: "Target roles: New Grad AI Engineer.",
 };
 
 function jevResponse(overrides: Record<string, unknown> = {}) {
@@ -21,7 +22,7 @@ function jevResponse(overrides: Record<string, unknown> = {}) {
         probabilities: { entry_level: 0.9, five_plus_years: 0.1 },
         confidence: 0.85,
       },
-      engineering_role: { type: "noul", noul: 0.97 },
+      scout_fit: { type: "noul", noul: 0.97 },
       ...overrides,
     },
     usage: { input_tokens: 400, output_tokens: 0 },
@@ -63,10 +64,13 @@ describe("Jev posting fit judge", () => {
     expect(requests[0].headers.authorization).toBe("Bearer ts-secret");
     expect(requests[0].body).toMatchObject({
       model: "jev-latest",
-      state: { posting: { title: "Junior Software Engineer" } },
+      state: {
+        posting: { title: "Junior Software Engineer" },
+        scoutBrief: "Target roles: New Grad AI Engineer.",
+      },
       questions: {
         required_experience: { type: "choice" },
-        engineering_role: { type: "noul" },
+        scout_fit: { type: "noul" },
       },
     });
     expect(judgment).toEqual({
@@ -77,9 +81,36 @@ describe("Jev posting fit judge", () => {
         confidence: 0.85,
         probabilities: { entry_level: 0.9, five_plus_years: 0.1 },
       },
-      engineeringRoleProbability: 0.97,
+      scoutFitProbability: 0.97,
     });
     expect(JSON.stringify(judgment)).not.toContain("ts-secret");
+  });
+
+  test("asks only about experience when the Scout has no brief", async () => {
+    const bodies: Array<Record<string, unknown>> = [];
+    const judge = new JevPostingFitJudge(() => "ts-secret", (async (_url, init) => {
+      bodies.push(JSON.parse(init.body));
+      return respond(200, jevResponse({ scout_fit: undefined }));
+    }) as PostingFitFetch);
+
+    const judgment = await judge.judge({ ...POSTING, scoutBrief: null });
+
+    expect(Object.keys(bodies[0].questions as object)).toEqual(["required_experience"]);
+    expect(bodies[0].state).not.toHaveProperty("scoutBrief");
+    expect(judgment?.scoutFitProbability).toBeNull();
+  });
+
+  test("judges the same posting again for a Scout with a different brief", async () => {
+    let calls = 0;
+    const judge = new JevPostingFitJudge(() => "ts-secret", (async () => {
+      calls += 1;
+      return respond(200, jevResponse());
+    }) as PostingFitFetch);
+
+    await judge.judge(POSTING);
+    await judge.judge({ ...POSTING, scoutBrief: "Target roles: Marketing Manager." });
+
+    expect(calls).toBe(2);
   });
 
   test("reuses the judgment for unchanged posting content", async () => {

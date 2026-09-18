@@ -8,6 +8,7 @@ const MAX_CONCURRENCY = 8;
 const MAX_CACHE_ENTRIES = 2_000;
 /** Jev's state budget is 32k tokens; a posting body beyond this is boilerplate. */
 const MAX_DESCRIPTION_CHARS = 40_000;
+const MAX_BRIEF_CHARS = 4_000;
 
 /** Ordered by the minimum professional experience an applicant must bring.
  * `minimumYears` is what code compares against the Scout Policy limit. */
@@ -49,6 +50,9 @@ export type PostingFitInput = {
   employmentType: string | null;
   location: string | null;
   descriptionPlain: string;
+  /** What this Scout was asked to find, in the Candidate's own words (its
+   * Discovery Strategy). Null skips the fit question. */
+  scoutBrief: string | null;
 };
 
 /** Raw Jev answers, kept reusable: thresholds and policy live in calling code. */
@@ -60,8 +64,9 @@ export type PostingFitJudgment = {
     confidence: number;
     probabilities: Record<string, number>;
   };
-  /** Probability that this is a hands-on software, AI, or ML engineering role. */
-  engineeringRoleProbability: number;
+  /** Probability that the posting is the kind of role the Scout was asked to
+   * find. Null when the Scout has no brief to judge against. */
+  scoutFitProbability: number | null;
 };
 
 /** `null` means no judgment is available (no key configured, or the provider
@@ -71,27 +76,31 @@ export interface PostingFitJudge {
   judge(input: PostingFitInput, signal?: AbortSignal): Promise<PostingFitJudgment | null>;
 }
 
-const QUESTIONS = {
-  required_experience: {
-    type: "choice",
-    instructions: [
-      "How much prior professional experience must an applicant have to qualify for the job in `posting`?",
-      "Judge only requirements placed on the applicant. Ignore every other mention of years: employee benefits and perks (sabbaticals, vesting, tenure awards), company history, founder or executive biographies, customer stories, and legal notices.",
-      "Treat 'preferred', 'nice to have', and 'bonus' experience as not required. When a range is given, use its lower bound.",
-    ],
-    criteria: Object.fromEntries(
-      Object.entries(EXPERIENCE_LEVELS).map(([level, { criteria }]) => [level, criteria]),
-    ),
-  },
-  engineering_role: {
-    type: "noul",
-    instructions:
-      "Is the job in `posting` a hands-on software, AI, or machine learning engineering role whose main work is writing code?",
-    criteria: {
-      true: "Software, AI, ML, data, infrastructure, agent, or forward-deployed engineer who builds software.",
-      false:
-        "Sales, support, operations, legal, finance, design, recruiting, product or program management, or other roles where writing code is not the main work.",
-    },
+const REQUIRED_EXPERIENCE_QUESTION = {
+  type: "choice",
+  instructions: [
+    "How much prior professional experience must an applicant have to qualify for the job in `posting`?",
+    "Judge only requirements placed on the applicant. Ignore every other mention of years: employee benefits and perks (sabbaticals, vesting, tenure awards), company history, founder or executive biographies, customer stories, and legal notices.",
+    "Treat 'preferred', 'nice to have', and 'bonus' experience as not required. When a range is given, use its lower bound.",
+  ],
+  criteria: Object.fromEntries(
+    Object.entries(EXPERIENCE_LEVELS).map(([level, { criteria }]) => [level, criteria]),
+  ),
+} as const;
+
+/** One general question for every kind of Scout: the brief carries the field
+ * (engineering, marketing, design, ...), so no per-field question exists. */
+const SCOUT_FIT_QUESTION = {
+  type: "noul",
+  instructions: [
+    "`scoutBrief` describes the kind of job a job seeker asked this search to find. Is the job in `posting` that kind of job?",
+    "Judge only the kind of work: the job function and field. A differently worded or more general title still fits when the description shows the same kind of work.",
+    "Ignore seniority words (new grad, junior, senior), years of experience, location, and posting date in `scoutBrief`; those are checked separately.",
+  ],
+  criteria: {
+    true: "The posting's main work is the same kind of job, or a closely adjacent one, as the roles named in `scoutBrief`.",
+    false:
+      "The posting is a different job function from anything in `scoutBrief`, even if it is at a relevant company or mentions the same technology.",
   },
 } as const;
 
@@ -134,17 +143,23 @@ export class JevPostingFitJudge implements PostingFitJudge {
       location: input.location,
       description: input.descriptionPlain.slice(0, MAX_DESCRIPTION_CHARS),
     };
+    const scoutBrief = input.scoutBrief?.trim().slice(0, MAX_BRIEF_CHARS) || null;
+    const state = scoutBrief ? { posting, scoutBrief } : { posting };
+    const questions = {
+      required_experience: REQUIRED_EXPERIENCE_QUESTION,
+      ...(scoutBrief ? { scout_fit: SCOUT_FIT_QUESTION } : {}),
+    };
     // Judgments depend only on posting content, so unchanged postings are free
     // on later inspections within this host's lifetime.
     const cacheKey = createHash("sha256")
-      .update(JSON.stringify([posting, QUESTIONS]))
+      .update(JSON.stringify([state, questions]))
       .digest("hex");
     const cached = this.cache.get(cacheKey);
     if (cached) return cached;
 
     await this.acquire();
     try {
-      const judgment = await this.request(apiKey, posting, signal);
+      const judgment = await this.request(apiKey, { state, questions }, signal);
       if (judgment) {
         if (this.cache.size >= MAX_CACHE_ENTRIES) {
           const oldest = this.cache.keys().next().value;
@@ -162,10 +177,11 @@ export class JevPostingFitJudge implements PostingFitJudge {
 
   private async request(
     apiKey: string,
-    posting: Record<string, unknown>,
+    payload: { state: Record<string, unknown>; questions: Record<string, unknown> },
     signal?: AbortSignal,
   ): Promise<PostingFitJudgment | null> {
-    const body = JSON.stringify({ state: { posting }, model: JEV_MODEL, questions: QUESTIONS });
+    const body = JSON.stringify({ ...payload, model: JEV_MODEL });
+    const expectsFit = "scout_fit" in payload.questions;
     for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt += 1) {
       const timeout = AbortSignal.timeout(REQUEST_TIMEOUT_MS);
       const response = await this.fetchImpl(TYPESAFE_SYSTEMONE_URL, {
@@ -179,7 +195,7 @@ export class JevPostingFitJudge implements PostingFitJudge {
         signal: signal ? AbortSignal.any([signal, timeout]) : timeout,
       });
       if (response.status >= 200 && response.status < 300) {
-        return parseJudgment(await response.json());
+        return parseJudgment(await response.json(), expectsFit);
       }
       const retryable = response.status === 429 || response.status >= 500;
       if (!retryable || attempt === MAX_ATTEMPTS) return null;
@@ -218,19 +234,19 @@ function probability(value: unknown): number | null {
 
 /** Typed output guarantees the interface, not our trust in it: anything that
  * does not match the documented answer shape is treated as no judgment. */
-function parseJudgment(body: unknown): PostingFitJudgment | null {
+function parseJudgment(body: unknown, expectsFit: boolean): PostingFitJudgment | null {
   if (!isRecord(body) || !isRecord(body.answers)) return null;
   const experience = body.answers.required_experience;
-  const engineering = body.answers.engineering_role;
-  if (!isRecord(experience) || !isRecord(engineering)) return null;
+  const fit = body.answers.scout_fit;
+  if (!isRecord(experience) || (expectsFit && !isRecord(fit))) return null;
   const level = experience.choice;
   const confidence = probability(experience.confidence);
-  const engineeringRoleProbability = probability(engineering.noul);
+  const scoutFitProbability = isRecord(fit) ? probability(fit.noul) : null;
   if (
     typeof level !== "string" ||
     !(level in EXPERIENCE_LEVELS) ||
     confidence === null ||
-    engineeringRoleProbability === null
+    (expectsFit && scoutFitProbability === null)
   ) {
     return null;
   }
@@ -249,6 +265,6 @@ function parseJudgment(body: unknown): PostingFitJudgment | null {
       confidence,
       probabilities,
     },
-    engineeringRoleProbability,
+    scoutFitProbability,
   };
 }

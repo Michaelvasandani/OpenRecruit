@@ -29,11 +29,10 @@ const DAY_MS = 86_400_000;
 /** Below this Choice confidence a Jev experience judgment goes to review
  * instead of deciding. A starting point; tune against recorded judgments. */
 const FIT_JUDGMENT_MIN_CONFIDENCE = 0.6;
-/** engineeringRolesOnly: below the floor Jev is confident the role is not
- * hands-on engineering; between the two it goes to review. On the first live
- * Run every non-engineering posting scored <= 0.17 and every real one >= 0.68. */
-const ENGINEERING_ROLE_EXCLUDE_BELOW = 0.3;
-const ENGINEERING_ROLE_INCLUDE_FROM = 0.6;
+/** scout_fit: below the floor Jev is confident the posting is not the kind of
+ * role the Scout was asked to find; between the two it goes to review. */
+const SCOUT_FIT_EXCLUDE_BELOW = 0.3;
+const SCOUT_FIT_INCLUDE_FROM = 0.6;
 
 export type AshbyBoardProviderRequest = {
   boardHandle: string;
@@ -123,9 +122,9 @@ export type AshbyInspectCommand = {
     publishedAfter?: string;
     listedOnly?: boolean;
     maximumExplicitRequiredYears?: number;
-    /** Exclude postings Jev judges are not hands-on software, AI, or ML
-     * engineering. Needs a TypeSafe key; without a judgment it has no effect. */
-    engineeringRolesOnly?: boolean;
+    /** Roles the Candidate refined with the Scout beyond the saved Discovery
+     * Strategy; added to the brief Jev judges each posting against. */
+    targetRoles?: string[];
   };
   signal?: AbortSignal;
 };
@@ -209,7 +208,8 @@ export type AshbyInspectionResult = {
     publishedAfterSource: "request" | "scout_policy" | null;
     listedOnly: boolean;
     maximumExplicitRequiredYears: number | null;
-    engineeringRolesOnly: boolean;
+    /** True when postings were judged against the Scout's brief. */
+    scoutFitJudged: boolean;
   };
   summary: {
     inputCount: number;
@@ -326,6 +326,7 @@ export class AshbyInspectionApplication {
     const boardHandles = [...new Set([...grouped.keys(), ...boardInputs.keys()])].sort();
     const applied = applyPinnedPolicy(command.policy, run.policySnapshot, observedAt);
     const policy = applied.policy;
+    const scoutBrief = scoutBriefFor(run.strategySnapshot, policy.targetRoles);
     this.db
       .insert(sourceAttempts)
       .values({
@@ -539,7 +540,7 @@ export class AshbyInspectionApplication {
           selected.push({ jobId: entry.jobId, aliases: [], record: entry.record });
         }
       }
-      const judgments = await this.judgeSelected(selected, policy, command.signal);
+      const judgments = await this.judgeSelected(selected, policy, scoutBrief, command.signal);
       for (const { jobId, aliases, record } of selected) {
         const identity = this.recordFirstSeen(source.id, jobId, boardHandle, record, observedAt);
         const descriptionPlain = stringField(record, "descriptionPlain") ?? "";
@@ -564,6 +565,7 @@ export class AshbyInspectionApplication {
           extracted.requirements,
           policy,
           judgment,
+          scoutBrief !== null,
         );
         const evidenceReference = this.pendingEvidence.issue({
           issuer: "ashby",
@@ -656,7 +658,7 @@ export class AshbyInspectionApplication {
         publishedAfterSource: applied.publishedAfterSource,
         listedOnly: policy.listedOnly === true,
         maximumExplicitRequiredYears: policy.maximumExplicitRequiredYears ?? null,
-        engineeringRolesOnly: policy.engineeringRolesOnly === true,
+        scoutFitJudged: scoutBrief !== null && this.fitJudge.isConfigured(),
       },
       summary: {
         inputCount: (command.urls?.length ?? 0) + (command.boards?.length ?? 0),
@@ -681,6 +683,7 @@ export class AshbyInspectionApplication {
   private async judgeSelected(
     selected: Array<{ jobId: string; record: Record<string, unknown> }>,
     policy: NonNullable<AshbyInspectCommand["policy"]>,
+    scoutBrief: string | null,
     signal?: AbortSignal,
   ): Promise<Map<string, FitJudgmentOutcome>> {
     const judgments = new Map<string, FitJudgmentOutcome>();
@@ -705,6 +708,7 @@ export class AshbyInspectionApplication {
               employmentType: stringField(record, "employmentType"),
               location: stringField(record, "location"),
               descriptionPlain: stringField(record, "descriptionPlain") ?? "",
+              scoutBrief,
             },
             signal,
           )
@@ -914,7 +918,7 @@ function validateCommand(command: AshbyInspectCommand): void {
       "publishedAfter",
       "listedOnly",
       "maximumExplicitRequiredYears",
-      "engineeringRolesOnly",
+      "targetRoles",
     ]);
     const policyUnknown = Object.keys(command.policy).filter((key) => !policyAllowed.has(key));
     if (policyUnknown.length > 0) {
@@ -926,11 +930,17 @@ function validateCommand(command: AshbyInspectCommand): void {
     if (command.policy.listedOnly !== undefined && typeof command.policy.listedOnly !== "boolean") {
       throw new RecruitingError("VALIDATION", "listedOnly must be boolean");
     }
+    const roles = command.policy.targetRoles;
     if (
-      command.policy.engineeringRolesOnly !== undefined &&
-      typeof command.policy.engineeringRolesOnly !== "boolean"
+      roles !== undefined &&
+      (!Array.isArray(roles) ||
+        roles.length > 12 ||
+        roles.some((role) => typeof role !== "string" || !role.trim() || role.length > 80))
     ) {
-      throw new RecruitingError("VALIDATION", "engineeringRolesOnly must be boolean");
+      throw new RecruitingError(
+        "VALIDATION",
+        "targetRoles must be up to 12 role names of at most 80 characters",
+      );
     }
   }
   if (command.policy?.publishedAfter !== undefined) {
@@ -1030,6 +1040,20 @@ function applyPinnedPolicy(
     };
   }
   return { policy: { ...requested }, publishedAfterSource: asked === null ? null : "request" };
+}
+
+/** What the Scout was asked to find: its pinned Discovery Strategy plus any
+ * roles the Candidate refined with the Scout. Null when there is nothing to
+ * judge a posting against. */
+function scoutBriefFor(strategySnapshot: string | null, targetRoles?: string[]): string | null {
+  const roles = (targetRoles ?? []).map((role) => role.trim()).filter(Boolean);
+  const brief = [
+    policyMaterial(strategySnapshot).trim(),
+    roles.length > 0 ? `Target roles also include: ${roles.join(", ")}.` : "",
+  ]
+    .filter(Boolean)
+    .join("\n");
+  return brief || null;
 }
 
 function policyMaterial(policySnapshot: string | null): string {
@@ -1195,6 +1219,7 @@ function evaluatePolicy(
   requirements: ExperienceRequirement[],
   policy: AshbyInspectCommand["policy"],
   judgment?: FitJudgmentOutcome,
+  scoutBriefed = false,
 ) {
   const reasons: Array<{ rule: string; outcome: "pass" | "fail" | "review"; code: string }> = [];
   if (policy?.publishedAfter !== undefined) {
@@ -1282,16 +1307,18 @@ function evaluatePolicy(
             },
     );
   }
-  if (policy?.engineeringRolesOnly && judgment !== undefined) {
-    const probability = typeof judgment === "object" ? judgment.engineeringRoleProbability : null;
+  // General fit: whatever field the Scout was set up for, Jev judged the
+  // posting against that Scout's own brief. No brief or no judge, no rule.
+  if (judgment === "unavailable" && scoutBriefed) {
+    reasons.push({ rule: "scout_fit", outcome: "review", code: "fit_judgment_unavailable" });
+  } else if (typeof judgment === "object" && judgment.scoutFitProbability !== null) {
+    const probability = judgment.scoutFitProbability;
     reasons.push(
-      probability === null
-        ? { rule: "engineering_roles_only", outcome: "review", code: "role_judgment_unavailable" }
-        : probability < ENGINEERING_ROLE_EXCLUDE_BELOW
-          ? { rule: "engineering_roles_only", outcome: "fail", code: "judged_not_engineering_role" }
-          : probability < ENGINEERING_ROLE_INCLUDE_FROM
-            ? { rule: "engineering_roles_only", outcome: "review", code: "judged_role_uncertain" }
-            : { rule: "engineering_roles_only", outcome: "pass", code: "judged_engineering_role" },
+      probability < SCOUT_FIT_EXCLUDE_BELOW
+        ? { rule: "scout_fit", outcome: "fail", code: "judged_outside_scout_brief" }
+        : probability < SCOUT_FIT_INCLUDE_FROM
+          ? { rule: "scout_fit", outcome: "review", code: "judged_fit_uncertain" }
+          : { rule: "scout_fit", outcome: "pass", code: "judged_within_scout_brief" },
     );
   }
   return {

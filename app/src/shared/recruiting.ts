@@ -162,7 +162,7 @@ export const SignalEvidence = z.object({
         confidence: z.number(),
         probabilities: z.record(z.string(), z.number()),
       }),
-      engineeringRoleProbability: z.number(),
+      scoutFitProbability: z.number().nullable(),
     })
     .optional(),
 });

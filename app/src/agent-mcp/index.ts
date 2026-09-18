@@ -206,7 +206,8 @@ const TOOLS: ToolDef[] = [
       "company boards for every currently listed posting published inside the Scout Policy window " +
       "(newest first). Returns normalized, untrusted posting facts with publishedAtIso and ageDays " +
       "computed on the host clock, exact experience evidence, policy decisions, per-input errors, " +
-      "a fitJudgment (required experience level and engineeringRoleProbability read from the whole " +
+      "a fitJudgment (required experience level, and scoutFitProbability: whether the posting is " +
+      "the kind of role this Scout's Discovery Strategy asks for, read from the whole " +
       "posting, when the Candidate has configured TypeSafe in Settings; it supersedes the " +
       "pattern-matched experienceRequirements), " +
       "and opaque references for RecordSignal. The host enforces the pinned listing cutoff even " +
@@ -260,13 +261,14 @@ const TOOLS: ToolDef[] = [
                 description:
                   "Exclude only postings with an unambiguous required minimum above this value.",
               },
-              engineeringRolesOnly: {
-                type: "boolean",
-                default: false,
+              targetRoles: {
+                type: "array",
+                items: { type: "string", maxLength: 80 },
+                maxItems: 12,
                 description:
-                  "Exclude postings judged not to be hands-on software, AI, or ML engineering " +
-                  "(sales, support, operations, recruiting, legal, product management). Set it " +
-                  "whenever the Candidate's target roles are engineering roles. Needs fitJudgment.",
+                  "Role names the Candidate confirmed beyond the saved Discovery Strategy. The host " +
+                  "already judges every posting against the Scout's Discovery Strategy; pass these " +
+                  "so broader or renamed target roles are not excluded as outside the brief.",
               },
             },
             additionalProperties: false,
