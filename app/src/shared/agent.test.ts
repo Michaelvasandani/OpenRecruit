@@ -2,6 +2,22 @@ import { describe, expect, test } from "bun:test";
 import * as agentContract from "./agent";
 
 describe("guided Scout setup defaults", () => {
+  test("gives Ashby discovery a broadening query ladder before URL inspection", () => {
+    const instructions = agentContract.PUBLIC_URL_DISCOVERY_INSTRUCTIONS;
+
+    expect(instructions).toContain('site:jobs.ashbyhq.com "New Grad" "<location>"');
+    expect(instructions).toContain('site:jobs.ashbyhq.com "Junior Software Engineer" "<location>"');
+    expect(instructions).toContain('site:jobs.ashbyhq.com "AI Engineer" "<location>"');
+    expect(instructions).toContain("one title or seniority phrase per query");
+    expect(instructions).toContain("Repeat without the location");
+    expect(instructions).toContain("Do not put freshness terms such as past week");
+    expect(instructions).toContain("Do not require the target technology in every title");
+    expect(instructions).toContain("Deduplicate every discovered jobs.ashbyhq.com posting URL");
+    expect(instructions).toContain("includeDescription: true");
+    expect(instructions).toContain("publishedAfter");
+    expect(instructions).toContain("A zero-result search is a reason to broaden");
+  });
+
   test("starts from the Profile role target with conservative freshness and manual runs", () => {
     const setup = (
       agentContract as typeof agentContract & {
