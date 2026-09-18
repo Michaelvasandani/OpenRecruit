@@ -33,6 +33,7 @@ export function ScoutRunsScreen() {
   const [sourceIds, setSourceIds] = useState<string[]>([]);
   const [feedName, setFeedName] = useState("");
   const [feedUrl, setFeedUrl] = useState("");
+  const [xSourceName, setXSourceName] = useState("X — Bird");
   const [decisionNote, setDecisionNote] = useState("");
   const selectedId = selectedScoutId ?? scouts.data?.[0]?.id;
   const runs = trpc.recruiting.scoutRuns.useQuery(
@@ -91,6 +92,9 @@ export function ScoutRunsScreen() {
       setFeedUrl("");
       void utils.recruiting.sources.invalidate();
     },
+  });
+  const createX = trpc.recruiting.createXSource.useMutation({
+    onSuccess: () => void utils.recruiting.sources.invalidate(),
   });
   const checkReadiness = trpc.recruiting.checkSourceReadiness.useMutation({
     onSuccess: () => void utils.recruiting.sources.invalidate(),
@@ -325,6 +329,45 @@ export function ScoutRunsScreen() {
                       </Button>
                       {createRss.error && (
                         <p className="text-[11px] text-destructive">{createRss.error.message}</p>
+                      )}
+                    </div>
+                    <div className="flex flex-col gap-2 rounded-md border border-border p-2">
+                      <span className="text-[11px] text-muted-foreground">
+                        Add a consented, read-only Bird provider for public X discovery
+                      </span>
+                      <input
+                        value={xSourceName}
+                        onChange={(event) => setXSourceName(event.target.value)}
+                        placeholder="X Source name"
+                        className="h-8 rounded-md border border-input bg-background px-2 text-xs"
+                      />
+                      <Button
+                        type="button"
+                        size="sm"
+                        variant="outline"
+                        disabled={
+                          createX.isPending ||
+                          !xSourceName.trim() ||
+                          Boolean(sources.data?.some((source) => source.provider === "bird"))
+                        }
+                        onClick={() =>
+                          createX.mutate({
+                            name: xSourceName,
+                            provider: "bird",
+                            idempotencyKey: `bird-x-source-${crypto.randomUUID()}`,
+                          })
+                        }
+                      >
+                        {createX.isPending ? <Loader2 className="size-3" /> : null}
+                        Add Bird X Source
+                      </Button>
+                      {sources.data?.some((source) => source.provider === "bird") && (
+                        <p className="text-[11px] text-muted-foreground">
+                          A Bird-backed X Source already exists. Select it below and save the Scout.
+                        </p>
+                      )}
+                      {createX.error && (
+                        <p className="text-[11px] text-destructive">{createX.error.message}</p>
                       )}
                     </div>
                     <div className="flex flex-wrap gap-2">

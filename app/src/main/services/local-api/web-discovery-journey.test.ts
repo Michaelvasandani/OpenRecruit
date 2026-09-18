@@ -393,7 +393,7 @@ describe("Issue #44 agent-facing web discovery journey", () => {
         (["claude", "codex"] as const).map(async (harness) => {
           const response = await clients[harness].list();
           const result = response.result as {
-            tools?: Array<{ name: string; inputSchema: unknown }>;
+            tools?: Array<{ name: string; description: string; inputSchema: unknown }>;
           };
           return result.tools?.filter(
             (tool) => tool.name === "WebSearch" || tool.name === "WebFetch",
@@ -402,6 +402,10 @@ describe("Issue #44 agent-facing web discovery journey", () => {
       );
       expect(lists[0]).toEqual(lists[1]);
       expect(lists[0]?.map((tool) => tool.name)).toEqual(["WebSearch", "WebFetch"]);
+      expect(lists[0]?.map((tool) => tool.description)).toEqual([
+        expect.stringContaining("(not sure if useful)"),
+        expect.stringContaining("(not sure if useful)"),
+      ]);
 
       const journeySummaries = {} as Record<
         Harness,
