@@ -162,7 +162,10 @@ export const SignalEvidence = z.object({
         confidence: z.number(),
         probabilities: z.record(z.string(), z.number()),
       }),
-      scoutFitProbability: z.number().nullable(),
+      // Stored evidence is immutable: tolerate Signals recorded before this
+      // field existed, including the short-lived engineeringRoleProbability.
+      scoutFitProbability: z.number().nullable().optional(),
+      engineeringRoleProbability: z.number().optional(),
     })
     .optional(),
 });
