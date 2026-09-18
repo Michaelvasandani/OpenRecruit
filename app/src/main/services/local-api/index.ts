@@ -19,7 +19,8 @@ type WebAccessBoundary = {
   webFetch(input: { scoutId: string; urls: string[]; contentLimit?: number }): Promise<unknown>;
   ashbyInspect(input: {
     scoutId: string;
-    urls: string[];
+    urls?: string[];
+    boards?: string[];
     includeDescription?: boolean;
     policy?: {
       publishedAfter?: string;
@@ -496,8 +497,8 @@ export class LocalApiServer {
     const scoutId = recruiting.resolveScoutForAgent(agentId);
     if (!scoutId) return json(res, 404, { error: "unknown Scout" });
     const body = await readJson(req);
-    if (!body || !Array.isArray(body.urls)) {
-      return json(res, 400, { error: "Ashby URLs are required", code: "VALIDATION" });
+    if (!body || (!Array.isArray(body.urls) && !Array.isArray(body.boards))) {
+      return json(res, 400, { error: "Ashby URLs or boards are required", code: "VALIDATION" });
     }
     const controller = new AbortController();
     const abort = () => controller.abort();
@@ -506,7 +507,8 @@ export class LocalApiServer {
       recruiting.beginRunForScout(scoutId);
       const result = await recruiting.ashbyInspect({
         scoutId,
-        urls: body.urls as string[],
+        ...(Array.isArray(body.urls) ? { urls: body.urls as string[] } : {}),
+        ...(Array.isArray(body.boards) ? { boards: body.boards as string[] } : {}),
         includeDescription:
           typeof body.includeDescription === "boolean" ? body.includeDescription : undefined,
         policy:

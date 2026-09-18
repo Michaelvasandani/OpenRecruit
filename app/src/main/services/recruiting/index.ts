@@ -1,4 +1,5 @@
 import { createHash, randomUUID } from "node:crypto";
+import { listingLookbackDaysFromPolicy, listingPublishedAfter } from "@shared/agent";
 import {
   type FitEvaluationSummary,
   type OpportunitySummary,
@@ -564,6 +565,7 @@ export class RecruitingApplication {
       policy: parseSafeJson(run.policySnapshot),
       sourceIds: run.sourceIds,
       sourceProviders: run.sourceProviders,
+      clock: runClock(materialFromSnapshot(run.policySnapshot), this.now()),
     };
   }
 
@@ -712,6 +714,7 @@ export class RecruitingApplication {
         strategyMaterial: materialFromSnapshot(run.strategySnapshot),
         policyMaterial: materialFromSnapshot(run.policySnapshot),
         runId: run.id,
+        now: this.now(),
       }),
     ].join("\n");
     this.wake.enqueue(scout.legacyAgentId ?? scout.id, prompt);
@@ -1603,6 +1606,17 @@ function parseSafeJson(value: string | null): unknown {
   } catch {
     return null;
   }
+}
+
+/** Host-owned clock for a Run: the reasoning harness never derives today's
+ * date or the listing cutoff on its own. */
+function runClock(policyMaterial: string, now: number) {
+  const cutoff = listingPublishedAfter(policyMaterial, now);
+  return {
+    now: new Date(now).toISOString(),
+    listingLookbackDays: listingLookbackDaysFromPolicy(policyMaterial),
+    listingPublishedAfter: cutoff === null ? null : new Date(cutoff).toISOString(),
+  };
 }
 
 function materialFromSnapshot(value: string | null): string {

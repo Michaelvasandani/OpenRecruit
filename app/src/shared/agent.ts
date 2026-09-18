@@ -104,6 +104,9 @@ export const PUBLIC_URL_DISCOVERY_INSTRUCTIONS = [
   '- site:jobs.ashbyhq.com "Agent Engineer" "<location>"',
   "Repeat without the location when location-constrained searches return too few or zero results, then use Ashby's normalized location during inspection.",
   "Do not put freshness terms such as past week in search queries; enforce freshness with Ashby's publishedAt through the publishedAfter policy.",
+  "Never infer today's date yourself. read_run_context returns the host clock (clock.now) and the listing cutoff (clock.listingPublishedAfter); pass that cutoff as publishedAfter. The host also applies the pinned cutoff whenever publishedAfter is omitted or earlier, and RecordSignal rejects postings the policy excluded.",
+  "Every discovered posting reveals a company board. Pass those board handles or board URLs as boards to AshbyInspectJobs to enumerate every currently listed posting on the board that was published inside the window; search results skew old, so board enumeration is the main way to find fresh postings.",
+  "Judge posting age from AshbyInspectJobs' ageDays and publishedAt, never from search snippets.",
   "Do not require the target technology in every title; a broader role title may match through its description.",
   "A zero-result search is a reason to broaden the query, not evidence that no matching postings exist.",
   "Deduplicate every discovered jobs.ashbyhq.com posting URL, then pass the URLs to AshbyInspectJobs with includeDescription: true and the Scout Policy's publishedAfter, listedOnly, and experience constraints.",
@@ -166,6 +169,22 @@ export function compileScoutSetup(setup: ScoutSetup): {
   ].join("\n");
 
   return { strategyMaterial, policyMaterial, instructions };
+}
+
+/** Recover the listing lookback from pinned Scout Policy material so the host,
+ * not the reasoning harness, turns "past N days" into an absolute cutoff. */
+export function listingLookbackDaysFromPolicy(policyMaterial: string): number | null {
+  const match = /\b(?:published|posted)\b[^.\n]*?\b(?:past|last)\s+(\d{1,3})\s+days?\b/i.exec(
+    policyMaterial,
+  );
+  if (!match) return null;
+  const days = Number(match[1]);
+  return Number.isInteger(days) && days >= 1 && days <= 365 ? days : null;
+}
+
+export function listingPublishedAfter(policyMaterial: string, now: number): number | null {
+  const days = listingLookbackDaysFromPolicy(policyMaterial);
+  return days === null ? null : now - days * 86_400_000;
 }
 
 export function scoutCadenceCron(setup: ScoutSetup): string | null {

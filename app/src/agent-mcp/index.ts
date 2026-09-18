@@ -202,10 +202,13 @@ const TOOLS: ToolDef[] = [
   {
     name: "AshbyInspectJobs",
     description:
-      "Verify one to 50 Ashby job URLs against Ashby's board response. Returns normalized, " +
-      "untrusted posting facts, exact experience evidence, safe policy decisions, per-URL errors, " +
-      "and opaque references for explicit RecordSignal promotion. Use harness-native web search " +
-      "for discovery; this tool inspects known Ashby URLs.",
+      "Verify up to 50 Ashby job URLs against Ashby's board response, and/or enumerate up to 10 " +
+      "company boards for every currently listed posting published inside the Scout Policy window " +
+      "(newest first). Returns normalized, untrusted posting facts with publishedAtIso and ageDays " +
+      "computed on the host clock, exact experience evidence, policy decisions, per-input errors, " +
+      "and opaque references for RecordSignal. The host enforces the pinned listing cutoff even " +
+      "when publishedAfter is omitted (see appliedPolicy), and RecordSignal rejects excluded " +
+      "postings. Use harness-native web search to discover job URLs and boards.",
     inputSchema: {
       ...obj(
         {
@@ -220,6 +223,14 @@ const TOOLS: ToolDef[] = [
             },
             description: "Ashby job URLs selected for verification.",
           },
+          boards: {
+            type: "array",
+            minItems: 1,
+            maxItems: 10,
+            items: { type: "string" },
+            description:
+              "Board handles (e.g. acme) or https://jobs.ashbyhq.com/<board> URLs to enumerate for fresh listed postings.",
+          },
           includeDescription: {
             type: "boolean",
             default: false,
@@ -231,7 +242,8 @@ const TOOLS: ToolDef[] = [
               publishedAfter: {
                 type: "string",
                 format: "date-time",
-                description: "Inclusive earliest employer Publication Time.",
+                description:
+                  "Inclusive earliest employer Publication Time. Use clock.listingPublishedAfter from read_run_context; the host raises an omitted or earlier value to the pinned cutoff.",
               },
               listedOnly: {
                 type: "boolean",
@@ -249,13 +261,14 @@ const TOOLS: ToolDef[] = [
             additionalProperties: false,
           },
         },
-        ["urls"],
+        [],
       ),
       additionalProperties: false,
     },
     run: async (a) => {
       const { status, json } = await callHost("POST", "/ashby/inspect", {
-        urls: a.urls,
+        ...(a.urls === undefined ? {} : { urls: a.urls }),
+        ...(a.boards === undefined ? {} : { boards: a.boards }),
         ...(a.includeDescription === undefined ? {} : { includeDescription: a.includeDescription }),
         ...(a.policy === undefined ? {} : { policy: a.policy }),
       });
@@ -451,7 +464,7 @@ const TOOLS: ToolDef[] = [
   {
     name: "read_run_context",
     description:
-      "Read the authenticated Scout's active Run context, pinned Candidate Profile, Strategy, Policy, and budget. No SQL or credentials are exposed.",
+      "Read the authenticated Scout's active Run context, pinned Candidate Profile, Strategy, Policy, budget, and the host clock (clock.now, clock.listingPublishedAfter). Treat clock.now as today. No SQL or credentials are exposed.",
     inputSchema: obj({}),
     run: async () => {
       const { status, json } = await callHost("GET", "/recruiting/run/context");

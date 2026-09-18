@@ -1,4 +1,4 @@
-import { PUBLIC_URL_DISCOVERY_INSTRUCTIONS } from "@shared/agent";
+import { listingPublishedAfter, PUBLIC_URL_DISCOVERY_INSTRUCTIONS } from "@shared/agent";
 import type { ScoutHarness } from "@shared/recruiting";
 import { RecruitingError } from "./errors";
 
@@ -99,11 +99,13 @@ export function recruitingProviderInstructions(input: {
   strategyMaterial: string;
   policyMaterial: string;
   runId: string;
+  now?: number;
 }): string {
   assertSafeMaterial(input.strategyMaterial, "Discovery Strategy");
   assertSafeMaterial(input.policyMaterial, "Scout Policy");
   return [
     `Recruiting Run: ${input.runId}`,
+    ...runClockLines(input.policyMaterial, input.now),
     "Use host-provided Recruiting operations for Run state, Source verification, and durable evidence.",
     "Read only explicitly selected public Sources through the host; do not access credentials or private content.",
     "Do not use unrestricted SQL, arbitrary HTTP, posting, messaging, applications, or access-control bypasses.",
@@ -117,6 +119,19 @@ export function recruitingProviderInstructions(input: {
     "Scout Policy:",
     input.policyMaterial,
   ].join("\n");
+}
+
+function runClockLines(policyMaterial: string, now: number | undefined): string[] {
+  if (now === undefined) return [];
+  const cutoff = listingPublishedAfter(policyMaterial, now);
+  return [
+    `Host clock: the current time is ${new Date(now).toISOString()}. Treat this as today; do not infer the date from memory.`,
+    ...(cutoff === null
+      ? []
+      : [
+          `Listing cutoff: only postings published at or after ${new Date(cutoff).toISOString()} are inside the Scout Policy window. Use this value as publishedAfter.`,
+        ]),
+  ];
 }
 
 export function recruitingRunWorkflowInstructions(runId: string): string {

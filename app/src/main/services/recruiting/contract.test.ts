@@ -76,4 +76,15 @@ describe("provider-neutral Recruiting contract", () => {
       }),
     ).toThrow(/prohibited capability/i);
   });
+
+  test("states the host clock and listing cutoff in the Run prompt", () => {
+    const prompt = recruitingProviderInstructions({
+      runId: "run-1",
+      strategyMaterial: "Find engineering roles.",
+      policyMaterial: "Only surface job listings published within the past 7 days.",
+      now: Date.parse("2026-09-18T12:00:00.000Z"),
+    });
+    expect(prompt).toContain("the current time is 2026-09-18T12:00:00.000Z");
+    expect(prompt).toContain("published at or after 2026-09-11T12:00:00.000Z");
+  });
 });

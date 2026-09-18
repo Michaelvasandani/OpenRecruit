@@ -1,4 +1,5 @@
 import { createHash, randomUUID } from "node:crypto";
+import { listingPublishedAfter } from "@shared/agent";
 import { and, asc, desc, eq, inArray } from "drizzle-orm";
 import type { Db } from "../../db/client";
 import {
@@ -21,6 +22,9 @@ const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3
 const BOARD_PATTERN = /^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/;
 const BOARD_CACHE_TTL_MS = 5 * 60 * 1_000;
 const EVIDENCE_TTL_MS = 30 * 60 * 1_000;
+const MAX_BOARDS = 10;
+const MAX_BOARD_POSTINGS = 100;
+const DAY_MS = 86_400_000;
 
 export type AshbyBoardProviderRequest = {
   boardHandle: string;
@@ -101,7 +105,10 @@ export class HttpAshbyBoardProvider implements AshbyBoardProvider {
 
 export type AshbyInspectCommand = {
   scoutId: string;
-  urls: string[];
+  urls?: string[];
+  /** Board handles or board URLs whose currently listed, in-window postings
+   * are enumerated from the same board response. */
+  boards?: string[];
   includeDescription?: boolean;
   policy?: {
     publishedAfter?: string;
@@ -171,8 +178,17 @@ type NormalizedPosting = {
 export type AshbyInspectionResult = {
   sourceAttemptId: string;
   observedAt: number;
+  observedAtIso: string;
   provider: "ashby";
   trust: "untrusted_evidence";
+  /** The policy the host actually enforced. publishedAfter is the later of the
+   * requested value and the pinned Scout Policy cutoff on the host clock. */
+  appliedPolicy: {
+    publishedAfter: string | null;
+    publishedAfterSource: "request" | "scout_policy" | null;
+    listedOnly: boolean;
+    maximumExplicitRequiredYears: number | null;
+  };
   summary: {
     inputCount: number;
     uniquePostingCount: number;
@@ -181,13 +197,19 @@ export type AshbyInspectionResult = {
     includeCount: number;
     excludeCount: number;
     reviewCount: number;
+    boardCount: number;
+    boardOutsideWindowCount: number;
+    boardTruncatedCount: number;
   };
   results: Array<{
     inputIndexes: number[];
     inputUrls: string[];
     status: "verified";
     evidenceReference: string;
+    discoveredVia: "url" | "board";
     posting: NormalizedPosting;
+    publishedAtIso: string | null;
+    ageDays: number | null;
     experienceStatus: "explicit" | "ambiguous" | "not_stated";
     experienceRequirements: ExperienceRequirement[];
     policy: {
@@ -224,7 +246,7 @@ export class AshbyInspectionApplication {
   private readonly inFlightBoards = new Map<string, Promise<AshbyBoardProviderResponse>>();
   private readonly pendingEvidence = new Map<
     string,
-    AshbyPendingEvidence & { expiresAt: number }
+    AshbyPendingEvidence & { expiresAt: number; policyDecision: "include" | "exclude" | "review" }
   >();
 
   constructor(
@@ -245,7 +267,7 @@ export class AshbyInspectionApplication {
     const observedAt = this.now();
     const references: ParsedReference[] = [];
     const inputErrors: AshbyInspectionResult["errors"] = [];
-    command.urls.forEach((inputUrl, inputIndex) => {
+    (command.urls ?? []).forEach((inputUrl, inputIndex) => {
       try {
         references.push(parseReference(inputUrl, inputIndex));
       } catch (error) {
@@ -263,6 +285,28 @@ export class AshbyInspectionApplication {
       }
     });
     const grouped = groupReferences(references);
+    const boardInputs = new Map<string, string>();
+    for (const input of command.boards ?? []) {
+      try {
+        const handle = parseBoard(input);
+        if (!boardInputs.has(handle)) boardInputs.set(handle, input);
+      } catch (error) {
+        const referenceError = error instanceof AshbyReferenceError ? error : null;
+        inputErrors.push({
+          inputIndexes: [],
+          inputUrls: [input],
+          code: referenceError?.errorCode ?? "invalid_url",
+          message: referenceError?.message ?? "Ashby board reference is invalid",
+          retryable: false,
+          retryAt: null,
+          boardHandle: null,
+          providerJobId: null,
+        });
+      }
+    }
+    const boardHandles = [...new Set([...grouped.keys(), ...boardInputs.keys()])].sort();
+    const applied = applyPinnedPolicy(command.policy, run.policySnapshot, observedAt);
+    const policy = applied.policy;
     this.db
       .insert(sourceAttempts)
       .values({
@@ -271,9 +315,10 @@ export class AshbyInspectionApplication {
         sourceId: source.id,
         requestedScope: JSON.stringify({
           operation: "ashby_inspect",
-          boards: [...grouped.keys()].sort(),
+          boards: boardHandles,
+          enumeratedBoards: [...boardInputs.keys()].sort(),
           jobIds: [...new Set(references.map((reference) => reference.jobId))].sort(),
-          policy: command.policy ?? {},
+          policy,
         }),
         cursor: null,
         outcome: "started",
@@ -291,7 +336,9 @@ export class AshbyInspectionApplication {
     const errors: AshbyInspectionResult["errors"] = [...inputErrors];
     let pageCount = 0;
     let attemptRetryAt: number | null = null;
-    for (const boardHandle of [...grouped.keys()].sort()) {
+    let boardOutsideWindowCount = 0;
+    let boardTruncatedCount = 0;
+    for (const boardHandle of boardHandles) {
       const boardReferences = grouped.get(boardHandle) ?? [];
       const cached = this.boardCache.get(boardHandle);
       const cacheHit = cached !== undefined && observedAt - cached.cachedAt < BOARD_CACHE_TTL_MS;
@@ -364,6 +411,19 @@ export class AshbyInspectionApplication {
             ),
           );
         }
+        const boardInput = boardInputs.get(boardHandle);
+        if (boardInput !== undefined) {
+          errors.push({
+            inputIndexes: [],
+            inputUrls: [boardInput],
+            code: failure.code,
+            message: failure.message,
+            retryable: failure.retryable,
+            retryAt: response.retryAt ?? null,
+            boardHandle,
+            providerJobId: null,
+          });
+        }
         continue;
       }
       let records: Record<string, unknown>[];
@@ -380,9 +440,28 @@ export class AshbyInspectionApplication {
             ),
           );
         }
+        const boardInput = boardInputs.get(boardHandle);
+        if (boardInput !== undefined) {
+          errors.push({
+            inputIndexes: [],
+            inputUrls: [boardInput],
+            code: "schema_changed",
+            message: "Ashby returned an unsupported response schema",
+            retryable: false,
+            retryAt: null,
+            boardHandle,
+            providerJobId: null,
+          });
+        }
         continue;
       }
-      for (const [jobId, aliases] of groupByJob(boardReferences)) {
+      const requestedJobs = groupByJob(boardReferences);
+      const selected: Array<{
+        jobId: string;
+        aliases: ParsedReference[];
+        record: Record<string, unknown>;
+      }> = [];
+      for (const [jobId, aliases] of requestedJobs) {
         const record = records.find(
           (candidate) => stringField(candidate, "id")?.toLowerCase() === jobId,
         );
@@ -403,6 +482,45 @@ export class AshbyInspectionApplication {
           );
           continue;
         }
+        selected.push({ jobId, aliases, record });
+      }
+      if (boardInputs.has(boardHandle)) {
+        // Enumerate the rest of the board: listed postings inside the window,
+        // newest first, bounded so one large board cannot flood the response.
+        const threshold =
+          policy.publishedAfter === undefined ? null : Date.parse(policy.publishedAfter);
+        const enumerated: Array<{ jobId: string; record: Record<string, unknown>; at: number }> =
+          [];
+        for (const record of records) {
+          const jobId = stringField(record, "id")?.toLowerCase();
+          if (!jobId || !UUID_PATTERN.test(jobId) || requestedJobs.has(jobId)) continue;
+          if (record.isListed !== true) continue;
+          try {
+            validateRequestedRecord(record);
+          } catch {
+            continue;
+          }
+          const published = stringField(record, "publishedAt");
+          const at = published ? Date.parse(published) : Number.NaN;
+          if (threshold !== null && Number.isFinite(at) && at < threshold) {
+            boardOutsideWindowCount += 1;
+            continue;
+          }
+          enumerated.push({ jobId, record, at: Number.isFinite(at) ? at : -1 });
+        }
+        enumerated.sort(
+          (left, right) => right.at - left.at || left.jobId.localeCompare(right.jobId),
+        );
+        const room = Math.max(
+          0,
+          MAX_BOARD_POSTINGS - results.filter((result) => result.discoveredVia === "board").length,
+        );
+        boardTruncatedCount += Math.max(0, enumerated.length - room);
+        for (const entry of enumerated.slice(0, room)) {
+          selected.push({ jobId: entry.jobId, aliases: [], record: entry.record });
+        }
+      }
+      for (const { jobId, aliases, record } of selected) {
         const identity = this.recordFirstSeen(source.id, jobId, boardHandle, record, observedAt);
         const descriptionPlain = stringField(record, "descriptionPlain") ?? "";
         const descriptionHtml = stringField(record, "descriptionHtml") ?? "";
@@ -418,12 +536,7 @@ export class AshbyInspectionApplication {
         });
         this.recordObservation(identity.sourceItemId, posting, observedAt);
         const extracted = extractExperienceRequirements(descriptionPlain);
-        const policy = evaluatePolicy(
-          posting,
-          extracted.status,
-          extracted.requirements,
-          command.policy,
-        );
+        const decision = evaluatePolicy(posting, extracted.status, extracted.requirements, policy);
         const evidenceReference = `ashby-evidence:${randomUUID()}`;
         this.pendingEvidence.set(evidenceReference, {
           scoutId: command.scoutId,
@@ -431,6 +544,7 @@ export class AshbyInspectionApplication {
           sourceId: source.id,
           sourceAttemptId: attemptId,
           expiresAt: observedAt + EVIDENCE_TTL_MS,
+          policyDecision: decision.decision,
           item: {
             identityKey: `ashby:${jobId}`,
             providerIdentity: jobId,
@@ -456,15 +570,27 @@ export class AshbyInspectionApplication {
             .map((alias) => alias.inputUrl),
           status: "verified",
           evidenceReference,
+          discoveredVia: aliases.length > 0 ? "url" : "board",
           posting,
+          publishedAtIso:
+            posting.publishedAt === null ? null : new Date(posting.publishedAt).toISOString(),
+          ageDays:
+            posting.publishedAt === null
+              ? null
+              : Math.max(0, Math.floor((observedAt - posting.publishedAt) / DAY_MS)),
           experienceStatus: extracted.status,
           experienceRequirements: extracted.requirements,
-          policy,
+          policy: decision,
         });
       }
     }
-    results.sort((left, right) => (left.inputIndexes[0] ?? 0) - (right.inputIndexes[0] ?? 0));
-    errors.sort((left, right) => (left.inputIndexes[0] ?? 0) - (right.inputIndexes[0] ?? 0));
+    const order = (indexes: number[]) => indexes[0] ?? Number.MAX_SAFE_INTEGER;
+    results.sort(
+      (left, right) =>
+        order(left.inputIndexes) - order(right.inputIndexes) ||
+        (right.posting.publishedAt ?? -1) - (left.posting.publishedAt ?? -1),
+    );
+    errors.sort((left, right) => order(left.inputIndexes) - order(right.inputIndexes));
     this.db
       .update(sourceAttempts)
       .set({
@@ -491,16 +617,26 @@ export class AshbyInspectionApplication {
     return {
       sourceAttemptId: attemptId,
       observedAt,
+      observedAtIso: new Date(observedAt).toISOString(),
       provider: "ashby",
       trust: "untrusted_evidence",
+      appliedPolicy: {
+        publishedAfter: policy.publishedAfter ?? null,
+        publishedAfterSource: applied.publishedAfterSource,
+        listedOnly: policy.listedOnly === true,
+        maximumExplicitRequiredYears: policy.maximumExplicitRequiredYears ?? null,
+      },
       summary: {
-        inputCount: command.urls.length,
+        inputCount: (command.urls?.length ?? 0) + (command.boards?.length ?? 0),
         uniquePostingCount: results.length,
         verifiedCount: results.length,
         errorCount: errors.length,
         includeCount: results.filter((result) => result.policy.decision === "include").length,
         excludeCount: results.filter((result) => result.policy.decision === "exclude").length,
         reviewCount: results.filter((result) => result.policy.decision === "review").length,
+        boardCount: boardInputs.size,
+        boardOutsideWindowCount,
+        boardTruncatedCount,
       },
       results,
       errors,
@@ -520,6 +656,12 @@ export class AshbyInspectionApplication {
       throw new RecruitingError(
         "CONFLICT",
         "The Ashby evidence reference belongs to another Scout",
+      );
+    }
+    if (pending.policyDecision === "exclude") {
+      throw new RecruitingError(
+        "CONFLICT",
+        "The Scout Policy excluded this Ashby posting; it cannot be promoted to a Signal",
       );
     }
     return {
@@ -690,7 +832,7 @@ export class AshbyInspectionApplication {
 }
 
 function validateCommand(command: AshbyInspectCommand): void {
-  const allowed = new Set(["scoutId", "urls", "includeDescription", "policy", "signal"]);
+  const allowed = new Set(["scoutId", "urls", "boards", "includeDescription", "policy", "signal"]);
   const unknown = Object.keys(command).filter((key) => !allowed.has(key));
   if (unknown.length > 0) {
     throw new RecruitingError(
@@ -698,11 +840,26 @@ function validateCommand(command: AshbyInspectCommand): void {
       `Ashby inspection has unknown fields: ${unknown.join(", ")}`,
     );
   }
-  if (!Array.isArray(command.urls) || command.urls.length < 1 || command.urls.length > 50) {
+  const urls = command.urls ?? [];
+  const boards = command.boards ?? [];
+  if (!Array.isArray(urls) || urls.length > 50) {
     throw new RecruitingError("VALIDATION", "Ashby inspection requires between one and 50 URLs");
   }
-  if (command.urls.some((url) => typeof url !== "string")) {
+  if (urls.some((url) => typeof url !== "string")) {
     throw new RecruitingError("VALIDATION", "Ashby inspection URLs must be strings");
+  }
+  if (
+    !Array.isArray(boards) ||
+    boards.length > MAX_BOARDS ||
+    boards.some((board) => typeof board !== "string")
+  ) {
+    throw new RecruitingError(
+      "VALIDATION",
+      `Ashby inspection accepts at most ${MAX_BOARDS} board references`,
+    );
+  }
+  if (urls.length + boards.length < 1) {
+    throw new RecruitingError("VALIDATION", "Ashby inspection requires between one and 50 URLs");
   }
   if (command.includeDescription !== undefined && typeof command.includeDescription !== "boolean") {
     throw new RecruitingError("VALIDATION", "includeDescription must be boolean");
@@ -771,6 +928,65 @@ function parseReference(inputUrl: string, inputIndex: number): ParsedReference {
     boardHandle: parts[0] as string,
     jobId: (parts[1] as string).toLowerCase(),
   };
+}
+
+/** Accepts a bare board handle or any jobs.ashbyhq.com URL under that board. */
+function parseBoard(input: string): string {
+  const trimmed = input.trim();
+  if (BOARD_PATTERN.test(trimmed)) return trimmed;
+  let url: URL;
+  try {
+    url = new URL(trimmed);
+  } catch {
+    throw new AshbyReferenceError("invalid_url", "Ashby board reference is invalid");
+  }
+  if (url.hostname !== ASHBY_HOST) {
+    throw new AshbyReferenceError("unsupported_host", "Ashby board URL uses an unsupported host");
+  }
+  const handle = url.pathname.split("/").filter(Boolean)[0] ?? "";
+  if (url.protocol !== "https:" || url.username || url.password || url.port) {
+    throw new AshbyReferenceError(
+      "invalid_url",
+      "Ashby board URL must use HTTPS without credentials or a custom port",
+    );
+  }
+  if (!BOARD_PATTERN.test(handle)) {
+    throw new AshbyReferenceError("invalid_url", "Ashby board URL must contain a board handle");
+  }
+  return handle;
+}
+
+/** The pinned Scout Policy window is authoritative: the reasoning harness may
+ * narrow it, but an omitted or earlier publishedAfter is raised to the cutoff
+ * computed on the host clock. */
+function applyPinnedPolicy(
+  requested: AshbyInspectCommand["policy"],
+  policySnapshot: string | null,
+  now: number,
+): {
+  policy: NonNullable<AshbyInspectCommand["policy"]>;
+  publishedAfterSource: "request" | "scout_policy" | null;
+} {
+  const pinned = listingPublishedAfter(policyMaterial(policySnapshot), now);
+  const asked =
+    requested?.publishedAfter === undefined ? null : Date.parse(requested.publishedAfter);
+  if (pinned !== null && (asked === null || asked < pinned)) {
+    return {
+      policy: { ...requested, publishedAfter: new Date(pinned).toISOString() },
+      publishedAfterSource: "scout_policy",
+    };
+  }
+  return { policy: { ...requested }, publishedAfterSource: asked === null ? null : "request" };
+}
+
+function policyMaterial(policySnapshot: string | null): string {
+  if (!policySnapshot) return "";
+  try {
+    const parsed: unknown = JSON.parse(policySnapshot);
+    return isRecord(parsed) && typeof parsed.material === "string" ? parsed.material : "";
+  } catch {
+    return "";
+  }
 }
 
 function groupReferences(references: ParsedReference[]): Map<string, ParsedReference[]> {

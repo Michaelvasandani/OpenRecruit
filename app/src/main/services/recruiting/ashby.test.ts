@@ -26,6 +26,7 @@ function makeDb(): Db {
 function ashbyFixture(
   provider: { fetchBoard(request: { boardHandle: string }): Promise<unknown> },
   now: () => number = () => 10_000,
+  policyMaterial?: string,
 ) {
   const db = makeDb();
   const app = new RecruitingApplication(db, now, {
@@ -49,6 +50,7 @@ function ashbyFixture(
     instructionPath: "agents/ashby",
     defaultProfileId: profile.id,
     sourceIds: ["source-ashby"],
+    ...(policyMaterial === undefined ? {} : { policyMaterial }),
     idempotencyKey: `ashby-scout-${crypto.randomUUID()}`,
   }).value;
   const run = app.launchScoutRun({
@@ -696,5 +698,122 @@ describe("Ashby inspection", () => {
       },
     ]);
     expect(app.listLeads()).toHaveLength(1);
+  });
+  describe("host-owned listing window", () => {
+    const NOW = Date.parse("2026-09-18T12:00:00.000Z");
+    const POLICY = "# Scout Policy\n\nOnly surface job listings published within the past 7 days.";
+    const THIRD_JOB_ID = "1b9d6bcd-bbfd-4b2d-9b5d-ab8dfbbd4bed";
+    const board = {
+      async fetchBoard() {
+        return {
+          status: 200,
+          body: {
+            jobs: [
+              ashbyJob(),
+              ashbyJob({
+                id: SECOND_JOB_ID,
+                title: "Stale Engineer",
+                publishedAt: "2026-08-14T00:00:00.000Z",
+                jobUrl: `https://jobs.ashbyhq.com/Roadrunner/${SECOND_JOB_ID}`,
+              }),
+              ashbyJob({
+                id: THIRD_JOB_ID,
+                title: "Unlisted Engineer",
+                publishedAt: "2026-09-17T00:00:00.000Z",
+                isListed: false,
+                jobUrl: `https://jobs.ashbyhq.com/Roadrunner/${THIRD_JOB_ID}`,
+              }),
+            ],
+          },
+        };
+      },
+    };
+
+    test("applies the pinned cutoff when publishedAfter is omitted or too early", async () => {
+      const { app, scout } = ashbyFixture(board, () => NOW, POLICY);
+      for (const policy of [undefined, { publishedAfter: "2026-06-01T00:00:00Z" }]) {
+        const inspected = await app.ashbyInspect({
+          scoutId: scout.id,
+          urls: [
+            `https://jobs.ashbyhq.com/Roadrunner/${JOB_ID}`,
+            `https://jobs.ashbyhq.com/Roadrunner/${SECOND_JOB_ID}`,
+          ],
+          ...(policy ? { policy } : {}),
+        });
+        expect(inspected.appliedPolicy).toMatchObject({
+          publishedAfter: "2026-09-11T12:00:00.000Z",
+          publishedAfterSource: "scout_policy",
+        });
+        expect(inspected.observedAtIso).toBe("2026-09-18T12:00:00.000Z");
+        expect(inspected.results.map((result) => [result.ageDays, result.policy.decision])).toEqual(
+          [
+            [2, "include"],
+            [35, "exclude"],
+          ],
+        );
+      }
+    });
+
+    test("keeps a stricter requested cutoff", async () => {
+      const { app, scout } = ashbyFixture(board, () => NOW, POLICY);
+      const inspected = await app.ashbyInspect({
+        scoutId: scout.id,
+        urls: [`https://jobs.ashbyhq.com/Roadrunner/${JOB_ID}`],
+        policy: { publishedAfter: "2026-09-17T00:00:00Z" },
+      });
+      expect(inspected.appliedPolicy.publishedAfterSource).toBe("request");
+      expect(inspected.results[0]?.policy.decision).toBe("exclude");
+    });
+
+    test("refuses to promote a posting the policy excluded", async () => {
+      const { app, scout, run } = ashbyFixture(board, () => NOW, POLICY);
+      const inspected = await app.ashbyInspect({
+        scoutId: scout.id,
+        urls: [`https://jobs.ashbyhq.com/Roadrunner/${SECOND_JOB_ID}`],
+      });
+      const evidenceReference = inspected.results[0]?.evidenceReference ?? "";
+      expect(() => app.recordSignal({ scoutId: scout.id, evidenceReference })).toThrow(
+        /excluded this Ashby posting/,
+      );
+      expect(app.listSignals({ runId: run.id })).toHaveLength(0);
+    });
+
+    test("enumerates a board for listed postings inside the window", async () => {
+      const { app, scout } = ashbyFixture(board, () => NOW, POLICY);
+      const inspected = await app.ashbyInspect({
+        scoutId: scout.id,
+        boards: ["https://jobs.ashbyhq.com/Roadrunner"],
+      });
+      expect(
+        inspected.results.map((result) => [result.posting.title, result.discoveredVia]),
+      ).toEqual([["Forward Deployed Engineer (New Grad)", "board"]]);
+      expect(inspected.summary).toMatchObject({
+        boardCount: 1,
+        boardOutsideWindowCount: 1,
+        boardTruncatedCount: 0,
+      });
+      const evidenceReference = inspected.results[0]?.evidenceReference ?? "";
+      app.recordSignal({ scoutId: scout.id, evidenceReference });
+      expect(app.listLeads()).toHaveLength(1);
+    });
+
+    test("reports an invalid board reference and requires some input", async () => {
+      const { app, scout } = ashbyFixture(board, () => NOW, POLICY);
+      const inspected = await app.ashbyInspect({
+        scoutId: scout.id,
+        boards: ["https://example.com/Roadrunner"],
+      });
+      expect(inspected.errors).toMatchObject([{ code: "unsupported_host" }]);
+      await expect(app.ashbyInspect({ scoutId: scout.id })).rejects.toThrow(/between one and 50/);
+    });
+
+    test("exposes the host clock and cutoff in the Run context", () => {
+      const { app, scout } = ashbyFixture(board, () => NOW, POLICY);
+      expect(app.readRunContextForScout(scout.id).clock).toEqual({
+        now: "2026-09-18T12:00:00.000Z",
+        listingLookbackDays: 7,
+        listingPublishedAfter: "2026-09-11T12:00:00.000Z",
+      });
+    });
   });
 });

@@ -67,5 +67,24 @@ describe("guided Scout setup defaults", () => {
       agentContract.scoutCadenceCron({ ...base, runCadence: "weekly", runTime: "14:00" }),
     ).toBe("0 14 * * 1");
   });
+});
 
+describe("listing lookback recovery", () => {
+  test("round-trips the compiled Scout Policy window", () => {
+    const setup = { ...agentContract.createDefaultScoutSetup("Engineer"), listingLookbackDays: 7 };
+    const { policyMaterial } = agentContract.compileScoutSetup({ ...setup, sourceIds: ["s"] });
+    expect(agentContract.listingLookbackDaysFromPolicy(policyMaterial)).toBe(7);
+    expect(agentContract.listingPublishedAfter(policyMaterial, 10 * 86_400_000)).toBe(
+      3 * 86_400_000,
+    );
+  });
+
+  test("ignores the signal window and unrelated policy text", () => {
+    expect(
+      agentContract.listingLookbackDaysFromPolicy("Use social Signals from the past 7 days."),
+    ).toBeNull();
+    expect(agentContract.listingLookbackDaysFromPolicy("Jobs posted in the last 14 days.")).toBe(
+      14,
+    );
+  });
 });
