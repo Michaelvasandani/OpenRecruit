@@ -145,6 +145,7 @@ export class TerminalService {
     // anchors) before every launch — agent tampering doesn't survive a spawn —
     // then bring the harness engine up (codex app-server) so the TUI's
     // auto-attach finds it at boot.
+    this.registry.refreshInstructions(agent.id);
     harness.writeConfig?.(dir, agent.id);
     await harness.prepareInteractive?.(agent, dir);
 

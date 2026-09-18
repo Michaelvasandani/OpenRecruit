@@ -7,6 +7,7 @@ import type {
   ExecutionState,
   HarnessId,
 } from "@shared/agent";
+import { PUBLIC_URL_DISCOVERY_INSTRUCTIONS } from "@shared/agent";
 import { templateOf } from "@shared/analytics";
 import { eq } from "drizzle-orm";
 import { nanoid } from "nanoid";
@@ -18,6 +19,12 @@ import { harnessFor } from "../harness";
 import { resolveAgentMcp, resolveTemplatesDir } from "./paths";
 
 const AGENTS_DIR = join(OPENTRADE_HOME, "agents");
+const DISCOVERY_START = "<!-- openrecruit:public-url-discovery:start -->";
+const DISCOVERY_END = "<!-- openrecruit:public-url-discovery:end -->";
+
+function discoveryBlock(): string {
+  return `${DISCOVERY_START}\n${PUBLIC_URL_DISCOVERY_INSTRUCTIONS}\n${DISCOVERY_END}`;
+}
 
 function slugify(name: string): string {
   return name
@@ -56,7 +63,8 @@ function composeInstructions(templatesDir: string, prefixFile: string, specialty
   }
   const prefix = readFileSync(prefixPath, "utf8").trim();
   const s = specialty.trim();
-  return s ? `${prefix}\n\n${s}\n` : `${prefix}\n`;
+  const shared = `${prefix}\n\n${discoveryBlock()}`;
+  return s ? `${shared}\n\n${s}\n` : `${shared}\n`;
 }
 
 /**
@@ -130,6 +138,36 @@ export class AgentRegistry {
 
   agentDir(agent: Agent | { slug: string }): string {
     return join(AGENTS_DIR, agent.slug);
+  }
+
+  /** Refresh the host-owned discovery block without changing Candidate-authored
+   * specialty instructions. Legacy files receive the block after their known
+   * shared prefix; marked files get an in-place contract update. */
+  refreshInstructions(id: string): void {
+    const agent = this.get(id);
+    if (!agent) return;
+    const harness = harnessFor(agent.harness);
+    const templatesDir = resolveTemplatesDir();
+    const prefixPath = join(templatesDir, harness.instructionsPrefixFile);
+    const instructionsPath = join(this.agentDir(agent), harness.instructionsFile);
+    if (!existsSync(prefixPath) || !existsSync(instructionsPath)) return;
+
+    const prefix = readFileSync(prefixPath, "utf8").trim();
+    const current = readFileSync(instructionsPath, "utf8");
+    const marked = new RegExp(
+      `${DISCOVERY_START.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}[\\s\\S]*?${DISCOVERY_END.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}`,
+    );
+    let next: string;
+    if (marked.test(current)) {
+      next = current.replace(marked, discoveryBlock());
+    } else if (current.trimStart().startsWith(prefix)) {
+      const leading = current.indexOf(prefix);
+      const suffix = current.slice(leading + prefix.length).trimStart();
+      next = `${current.slice(0, leading)}${prefix}\n\n${discoveryBlock()}${suffix ? `\n\n${suffix}` : "\n"}`;
+    } else {
+      next = `${current.trimEnd()}\n\n${discoveryBlock()}\n`;
+    }
+    if (next !== current) writeFileSync(instructionsPath, next);
   }
 
   create(input: CreateAgentInput): Agent {

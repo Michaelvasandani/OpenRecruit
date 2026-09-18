@@ -51,4 +51,5 @@ describe("guided Scout setup defaults", () => {
       agentContract.scoutCadenceCron({ ...base, runCadence: "weekly", runTime: "14:00" }),
     ).toBe("0 14 * * 1");
   });
+
 });

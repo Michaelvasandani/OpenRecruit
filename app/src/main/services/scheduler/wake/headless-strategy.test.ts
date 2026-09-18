@@ -30,6 +30,7 @@ describe("HeadlessRunStrategy harness output", () => {
     const registry = {
       get: (id: string) => (id === agent.id ? agent : undefined),
       agentDir: () => dir,
+      refreshInstructions: () => {},
       setLastSessionId: (_id: string, sessionId: string) => {
         agent.lastSessionId = sessionId;
       },

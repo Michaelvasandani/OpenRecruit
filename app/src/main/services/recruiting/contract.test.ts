@@ -27,6 +27,11 @@ describe("provider-neutral Recruiting contract", () => {
     });
     expect(instructions).toContain("OpenRecruit WebSearch and WebFetch");
     expect(instructions).toContain("harness-native web search");
+    expect(instructions).toContain("Claude WebSearch or Codex built-in web search");
+    expect(instructions).toContain("Candidate-provided company or board seeds are optional");
+    expect(instructions).toContain(
+      "Reserve OpenRecruit WebSearch and WebFetch for an explicitly selected Web Search Source",
+    );
     expect(instructions).toContain("AshbyInspectJobs");
     expect(instructions).toContain("XSearch and XRead");
     expect(instructions).toContain("record_source_outcome");

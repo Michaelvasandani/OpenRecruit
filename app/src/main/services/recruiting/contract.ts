@@ -1,3 +1,4 @@
+import { PUBLIC_URL_DISCOVERY_INSTRUCTIONS } from "@shared/agent";
 import type { ScoutHarness } from "@shared/recruiting";
 import { RecruitingError } from "./errors";
 
@@ -103,7 +104,7 @@ export function recruitingProviderInstructions(input: {
   assertSafeMaterial(input.policyMaterial, "Scout Policy");
   return [
     `Recruiting Run: ${input.runId}`,
-    "Use only the host-provided Recruiting operations.",
+    "Use host-provided Recruiting operations for Run state, Source verification, and durable evidence.",
     "Read only explicitly selected public Sources through the host; do not access credentials or private content.",
     "Do not use unrestricted SQL, arbitrary HTTP, posting, messaging, applications, or access-control bypasses.",
     "Preserve bounded budgets and record safe structured outcomes; never persist provider transcripts.",
@@ -122,7 +123,10 @@ export function recruitingRunWorkflowInstructions(runId: string): string {
   return [
     `Recruiting Run workflow for ${runId}:`,
     "1. Call read_run_context and list_selected_sources before discovery.",
-    "2. Use harness-native web search to discover Ashby job URLs, then call AshbyInspectJobs for employer facts, publication time, listed state, and experience evidence.",
+    "",
+    PUBLIC_URL_DISCOVERY_INSTRUCTIONS,
+    "",
+    "2. For each discovered Ashby posting URL, call AshbyInspectJobs for employer facts, publication time, listed state, and experience evidence.",
     "3. Use OpenRecruit WebSearch and WebFetch for selected Web Search Sources, and XSearch and XRead for selected X Sources, so those Source Attempts are recorded.",
     "4. Call record_source_outcome for selected attributable Web Search evidence to create Signals and Fresh Leads.",
     "5. Primary evidence is preferred, not mandatory. Promote specific, current, attributable, actionable secondary evidence with an explicit verification caveat; reject generic or unsupported reposts.",

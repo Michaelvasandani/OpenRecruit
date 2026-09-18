@@ -439,6 +439,13 @@ function SourcesStep({
                     </span>
                   ))}
                 </span>
+                {source.kind === "ashby" && (
+                  <span className="mt-2 block text-[11px] text-muted-foreground">
+                    The selected harness uses its built-in web search to discover public Ashby job
+                    URLs, then AshbyInspectJobs verifies each posting. Company or board seed lists
+                    are optional.
+                  </span>
+                )}
                 {!ready && source.nextAction && (
                   <span className="mt-2 block text-[11px] text-muted-foreground">
                     {source.nextAction}
@@ -867,6 +874,7 @@ function readable(value: string): string {
 }
 
 function toolsForSource(kind: string): string[] {
+  if (kind === "ashby") return ["Built-in web search", "AshbyInspectJobs", "RecordSignal"];
   if (kind === "web_search") return ["WebSearch", "WebFetch"];
   if (kind === "x") return ["XSearch", "XRead", "RecordSignal"];
   if (kind === "rss" || kind === "atom") return ["Feed discovery", "Record evidence"];
