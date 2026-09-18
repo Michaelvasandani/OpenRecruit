@@ -4,7 +4,11 @@ import { OPENTRADE_HOME } from "../../db/client";
 
 /** Credentials and local-provider overrides owned by the detached host and
  * never made available to Scouts. */
-const HOST_OWNED_ENV_KEYS = ["FIRECRAWL_API_KEY", "OPENRECRUIT_BIRD_PATH"] as const;
+const HOST_OWNED_ENV_KEYS = [
+  "FIRECRAWL_API_KEY",
+  "OPENRECRUIT_BIRD_PATH",
+  "TYPESAFE_API_KEY",
+] as const;
 
 /**
  * Build the environment for an agent's PTY. We inherit the app's env, ensure the

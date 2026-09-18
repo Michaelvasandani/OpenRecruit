@@ -13,6 +13,7 @@ import {
   sources,
 } from "../../db/schema";
 import { RecruitingError } from "./errors";
+import { JevPostingFitJudge, type PostingFitJudge, type PostingFitJudgment } from "./posting-fit";
 import type { FeedItem } from "./source";
 
 export const ASHBY_SOURCE_ID = "source-ashby";
@@ -25,6 +26,9 @@ const EVIDENCE_TTL_MS = 30 * 60 * 1_000;
 const MAX_BOARDS = 10;
 const MAX_BOARD_POSTINGS = 100;
 const DAY_MS = 86_400_000;
+/** Below this Choice confidence a Jev experience judgment goes to review
+ * instead of deciding. A starting point; tune against recorded judgments. */
+const FIT_JUDGMENT_MIN_CONFIDENCE = 0.6;
 
 export type AshbyBoardProviderRequest = {
   boardHandle: string;
@@ -120,7 +124,14 @@ export type AshbyInspectCommand = {
 
 export type AshbyInspectionApplicationOptions = {
   ashbyProvider?: AshbyBoardProvider;
+  /** Candidate-supplied TypeSafe key from Settings; enables Jev judgments. */
+  typesafeApiKey?: () => string | undefined;
+  /** Injected at the external model boundary for deterministic tests. */
+  postingFitJudge?: PostingFitJudge;
 };
+
+/** `unavailable` = a judge is configured but returned nothing for this posting. */
+type FitJudgmentOutcome = PostingFitJudgment | "unavailable" | undefined;
 
 type ParsedReference = {
   inputIndex: number;
@@ -212,6 +223,9 @@ export type AshbyInspectionResult = {
     ageDays: number | null;
     experienceStatus: "explicit" | "ambiguous" | "not_stated";
     experienceRequirements: ExperienceRequirement[];
+    /** Jev's reading of the posting, when a TypeSafe key is configured. It
+     * supersedes the pattern-matched experienceRequirements for the decision. */
+    fitJudgment: PostingFitJudgment | null;
     policy: {
       decision: "include" | "exclude" | "review";
       reasons: Array<{ rule: string; outcome: "pass" | "fail" | "review"; code: string }>;
@@ -239,6 +253,7 @@ export type AshbyPendingEvidence = {
 
 export class AshbyInspectionApplication {
   private readonly provider: AshbyBoardProvider | undefined;
+  private readonly fitJudge: PostingFitJudge;
   private readonly boardCache = new Map<
     string,
     { cachedAt: number; response: AshbyBoardProviderResponse }
@@ -255,6 +270,9 @@ export class AshbyInspectionApplication {
     options: AshbyInspectionApplicationOptions = {},
   ) {
     this.provider = options.ashbyProvider ?? new HttpAshbyBoardProvider();
+    this.fitJudge =
+      options.postingFitJudge ??
+      new JevPostingFitJudge(options.typesafeApiKey ?? (() => undefined));
   }
 
   async inspect(command: AshbyInspectCommand): Promise<AshbyInspectionResult> {
@@ -520,6 +538,7 @@ export class AshbyInspectionApplication {
           selected.push({ jobId: entry.jobId, aliases: [], record: entry.record });
         }
       }
+      const judgments = await this.judgeSelected(selected, policy, command.signal);
       for (const { jobId, aliases, record } of selected) {
         const identity = this.recordFirstSeen(source.id, jobId, boardHandle, record, observedAt);
         const descriptionPlain = stringField(record, "descriptionPlain") ?? "";
@@ -536,7 +555,15 @@ export class AshbyInspectionApplication {
         });
         this.recordObservation(identity.sourceItemId, posting, observedAt);
         const extracted = extractExperienceRequirements(descriptionPlain);
-        const decision = evaluatePolicy(posting, extracted.status, extracted.requirements, policy);
+        const judgment = judgments.get(jobId);
+        const fitJudgment = typeof judgment === "object" ? judgment : null;
+        const decision = evaluatePolicy(
+          posting,
+          extracted.status,
+          extracted.requirements,
+          policy,
+          judgment,
+        );
         const evidenceReference = `ashby-evidence:${randomUUID()}`;
         this.pendingEvidence.set(evidenceReference, {
           scoutId: command.scoutId,
@@ -558,6 +585,7 @@ export class AshbyInspectionApplication {
               descriptionHtml,
               experienceStatus: extracted.status,
               experienceRequirements: extracted.requirements,
+              ...(fitJudgment ? { fitJudgment } : {}),
             },
           },
         });
@@ -580,6 +608,7 @@ export class AshbyInspectionApplication {
               : Math.max(0, Math.floor((observedAt - posting.publishedAt) / DAY_MS)),
           experienceStatus: extracted.status,
           experienceRequirements: extracted.requirements,
+          fitJudgment,
           policy: decision,
         });
       }
@@ -641,6 +670,46 @@ export class AshbyInspectionApplication {
       results,
       errors,
     };
+  }
+
+  /** Ask Jev about every posting the cheap code gates have not already
+   * excluded. Judgments run concurrently; a failure degrades that posting to
+   * the deterministic path rather than failing the inspection. */
+  private async judgeSelected(
+    selected: Array<{ jobId: string; record: Record<string, unknown> }>,
+    policy: NonNullable<AshbyInspectCommand["policy"]>,
+    signal?: AbortSignal,
+  ): Promise<Map<string, FitJudgmentOutcome>> {
+    const judgments = new Map<string, FitJudgmentOutcome>();
+    if (!this.fitJudge.isConfigured()) return judgments;
+    const threshold =
+      policy.publishedAfter === undefined ? null : Date.parse(policy.publishedAfter);
+    await Promise.all(
+      selected.map(async ({ jobId, record }) => {
+        if (policy.listedOnly && record.isListed !== true) return;
+        const published = stringField(record, "publishedAt");
+        const at = published ? Date.parse(published) : Number.NaN;
+        if (threshold !== null && Number.isFinite(at) && at < threshold) return;
+        const title = stringField(record, "title");
+        if (!title) return;
+        const judgment = await this.fitJudge
+          .judge(
+            {
+              title,
+              organization: stringField(record, "organization"),
+              department: stringField(record, "department"),
+              team: stringField(record, "team"),
+              employmentType: stringField(record, "employmentType"),
+              location: stringField(record, "location"),
+              descriptionPlain: stringField(record, "descriptionPlain") ?? "",
+            },
+            signal,
+          )
+          .catch(() => null);
+        judgments.set(jobId, judgment ?? "unavailable");
+      }),
+    );
+    return judgments;
   }
 
   resolveEvidence(scoutId: string, evidenceReference: string): AshbyPendingEvidence {
@@ -1141,6 +1210,7 @@ function evaluatePolicy(
   experienceStatus: "explicit" | "ambiguous" | "not_stated",
   requirements: ExperienceRequirement[],
   policy: AshbyInspectCommand["policy"],
+  judgment?: FitJudgmentOutcome,
 ) {
   const reasons: Array<{ rule: string; outcome: "pass" | "fail" | "review"; code: string }> = [];
   if (policy?.publishedAfter !== undefined) {
@@ -1160,7 +1230,37 @@ function evaluatePolicy(
         : { rule: "listed_only", outcome: "fail", code: "not_listed" },
     );
   }
-  if (policy?.maximumExplicitRequiredYears !== undefined) {
+  if (policy?.maximumExplicitRequiredYears !== undefined && typeof judgment === "object") {
+    // Jev read the whole posting, so its judgment replaces pattern matching,
+    // which cannot tell a requirement from a sabbatical perk or a founder bio.
+    const { minimumYears, confidence } = judgment.requiredExperience;
+    reasons.push(
+      confidence < FIT_JUDGMENT_MIN_CONFIDENCE
+        ? {
+            rule: "maximum_explicit_required_years",
+            outcome: "review",
+            code: "judged_experience_uncertain",
+          }
+        : minimumYears === null
+          ? {
+              // No stated requirement and no seniority cue reads as early career.
+              rule: "maximum_explicit_required_years",
+              outcome: "pass",
+              code: "judged_experience_not_stated",
+            }
+          : minimumYears > policy.maximumExplicitRequiredYears
+            ? {
+                rule: "maximum_explicit_required_years",
+                outcome: "fail",
+                code: "judged_minimum_exceeds_limit",
+              }
+            : {
+                rule: "maximum_explicit_required_years",
+                outcome: "pass",
+                code: "judged_minimum_within_limit",
+              },
+    );
+  } else if (policy?.maximumExplicitRequiredYears !== undefined) {
     const required = requirements.filter((requirement) => requirement.necessity === "required");
     const ambiguous = requirements.some((requirement) => requirement.necessity === "ambiguous");
     const exceeds = required.some(
@@ -1170,11 +1270,18 @@ function evaluatePolicy(
     );
     reasons.push(
       exceeds
-        ? {
-            rule: "maximum_explicit_required_years",
-            outcome: "fail",
-            code: "explicit_minimum_exceeds_limit",
-          }
+        ? judgment === "unavailable"
+          ? {
+              // Pattern matching alone must not drop a posting Jev was meant to read.
+              rule: "maximum_explicit_required_years",
+              outcome: "review",
+              code: "experience_judgment_unavailable",
+            }
+          : {
+              rule: "maximum_explicit_required_years",
+              outcome: "fail",
+              code: "explicit_minimum_exceeds_limit",
+            }
         : ambiguous || experienceStatus !== "explicit" || required.length === 0
           ? {
               rule: "maximum_explicit_required_years",

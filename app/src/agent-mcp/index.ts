@@ -206,6 +206,9 @@ const TOOLS: ToolDef[] = [
       "company boards for every currently listed posting published inside the Scout Policy window " +
       "(newest first). Returns normalized, untrusted posting facts with publishedAtIso and ageDays " +
       "computed on the host clock, exact experience evidence, policy decisions, per-input errors, " +
+      "a fitJudgment (required experience level and engineeringRoleProbability read from the whole " +
+      "posting, when the Candidate has configured TypeSafe in Settings; it supersedes the " +
+      "pattern-matched experienceRequirements), " +
       "and opaque references for RecordSignal. The host enforces the pinned listing cutoff even " +
       "when publishedAfter is omitted (see appliedPolicy), and RecordSignal rejects excluded " +
       "postings. Use harness-native web search to discover job URLs and boards.",

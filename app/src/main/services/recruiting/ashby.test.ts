@@ -7,6 +7,7 @@ import { SCHEMA_DDL } from "../../db/ddl";
 import { type MigrationDb, migrate } from "../../db/migrate";
 import { RecruitingApplication } from ".";
 import { HttpAshbyBoardProvider } from "./ashby";
+import type { PostingFitInput, PostingFitJudge, PostingFitJudgment } from "./posting-fit";
 
 const JOB_ID = "eeeb9757-78e0-4776-889e-507a013e1fcf";
 const SECOND_JOB_ID = "7d6ae2be-cd53-466c-8151-2dae2e87aace";
@@ -27,10 +28,12 @@ function ashbyFixture(
   provider: { fetchBoard(request: { boardHandle: string }): Promise<unknown> },
   now: () => number = () => 10_000,
   policyMaterial?: string,
+  postingFitJudge?: PostingFitJudge,
 ) {
   const db = makeDb();
   const app = new RecruitingApplication(db, now, {
     ashbyProvider: provider,
+    postingFitJudge,
   } as never);
   const draft = app.importProfile({
     name: "Candidate",
@@ -82,6 +85,208 @@ function ashbyJob(overrides: Record<string, unknown> = {}) {
     ...overrides,
   };
 }
+
+function fitJudgment(
+  level: PostingFitJudgment["requiredExperience"]["level"],
+  minimumYears: number | null,
+  confidence = 0.9,
+): PostingFitJudgment {
+  return {
+    model: "jev-test",
+    requiredExperience: { level, minimumYears, confidence, probabilities: { [level]: confidence } },
+    engineeringRoleProbability: 0.95,
+  };
+}
+
+function fakeJudge(
+  answer: (input: PostingFitInput) => PostingFitJudgment | null,
+): PostingFitJudge & { inputs: PostingFitInput[] } {
+  const inputs: PostingFitInput[] = [];
+  return {
+    inputs,
+    isConfigured: () => true,
+    async judge(input) {
+      inputs.push(input);
+      return answer(input);
+    },
+  };
+}
+
+// The real posting text that the pattern matcher excluded on 2026-09-18.
+const SABBATICAL_DESCRIPTION =
+  "Build clinical AI products.\nBenefits\n - Sabbatical Leave: Paid Sabbatical Leave after 5 years of employment.";
+
+describe("Ashby posting fit judgments", () => {
+  const board = (jobs: unknown[]) => ({
+    async fetchBoard() {
+      return { status: 200, body: { jobs } };
+    },
+  });
+  const url = `https://jobs.ashbyhq.com/Roadrunner/${JOB_ID}`;
+
+  test("pattern matching alone excludes a junior role over a sabbatical perk", async () => {
+    const { app, scout } = ashbyFixture(
+      board([
+        ashbyJob({ title: "Junior Software Engineer", descriptionPlain: SABBATICAL_DESCRIPTION }),
+      ]),
+    );
+
+    const result = await app.ashbyInspect({
+      scoutId: scout.id,
+      urls: [url],
+      policy: { maximumExplicitRequiredYears: 2 },
+    });
+
+    expect(result.results[0]).toMatchObject({ fitJudgment: null, policy: { decision: "exclude" } });
+  });
+
+  test("a Jev judgment overrides the misread perk and is kept with the evidence", async () => {
+    const judge = fakeJudge(() => fitJudgment("entry_level", 0));
+    const { app, scout } = ashbyFixture(
+      board([
+        ashbyJob({ title: "Junior Software Engineer", descriptionPlain: SABBATICAL_DESCRIPTION }),
+      ]),
+      undefined,
+      undefined,
+      judge,
+    );
+
+    const result = await app.ashbyInspect({
+      scoutId: scout.id,
+      urls: [url],
+      policy: { maximumExplicitRequiredYears: 2 },
+    });
+
+    expect(judge.inputs).toEqual([
+      {
+        title: "Junior Software Engineer",
+        organization: null,
+        department: null,
+        team: "Agents",
+        employmentType: "FullTime",
+        location: "San Francisco, CA",
+        descriptionPlain: SABBATICAL_DESCRIPTION,
+      },
+    ]);
+    expect(result.results[0]).toMatchObject({
+      fitJudgment: {
+        requiredExperience: { level: "entry_level" },
+        engineeringRoleProbability: 0.95,
+      },
+      policy: {
+        decision: "include",
+        reasons: [
+          {
+            rule: "maximum_explicit_required_years",
+            outcome: "pass",
+            code: "judged_minimum_within_limit",
+          },
+        ],
+      },
+    });
+  });
+
+  test("treats a posting with no stated experience as early career", async () => {
+    const { app, scout } = ashbyFixture(
+      board([ashbyJob({ title: "Software Engineer", descriptionPlain: "Build agents with us." })]),
+      undefined,
+      undefined,
+      fakeJudge(() => fitJudgment("not_stated", null)),
+    );
+
+    const result = await app.ashbyInspect({
+      scoutId: scout.id,
+      urls: [url],
+      policy: { maximumExplicitRequiredYears: 2 },
+    });
+
+    expect(result.results[0].policy).toEqual({
+      decision: "include",
+      reasons: [
+        {
+          rule: "maximum_explicit_required_years",
+          outcome: "pass",
+          code: "judged_experience_not_stated",
+        },
+      ],
+    });
+  });
+
+  test("excludes a judged senior role and sends uncertain judgments to review", async () => {
+    const senior = ashbyFixture(
+      board([ashbyJob({ descriptionPlain: "Lead our platform." })]),
+      undefined,
+      undefined,
+      fakeJudge(() => fitJudgment("five_plus_years", 5)),
+    );
+    const uncertain = ashbyFixture(
+      board([ashbyJob({ descriptionPlain: "Lead our platform." })]),
+      undefined,
+      undefined,
+      fakeJudge(() => fitJudgment("five_plus_years", 5, 0.4)),
+    );
+    const policy = { maximumExplicitRequiredYears: 2 };
+
+    const excluded = await senior.app.ashbyInspect({
+      scoutId: senior.scout.id,
+      urls: [url],
+      policy,
+    });
+    const review = await uncertain.app.ashbyInspect({
+      scoutId: uncertain.scout.id,
+      urls: [url],
+      policy,
+    });
+
+    expect(excluded.results[0].policy).toMatchObject({
+      decision: "exclude",
+      reasons: [{ code: "judged_minimum_exceeds_limit" }],
+    });
+    expect(review.results[0].policy).toMatchObject({
+      decision: "review",
+      reasons: [{ code: "judged_experience_uncertain" }],
+    });
+  });
+
+  test("a failed judgment downgrades a pattern-matched exclusion to review", async () => {
+    const { app, scout } = ashbyFixture(
+      board([ashbyJob({ descriptionPlain: SABBATICAL_DESCRIPTION })]),
+      undefined,
+      undefined,
+      fakeJudge(() => null),
+    );
+
+    const result = await app.ashbyInspect({
+      scoutId: scout.id,
+      urls: [url],
+      policy: { maximumExplicitRequiredYears: 2 },
+    });
+
+    expect(result.results[0]).toMatchObject({
+      fitJudgment: null,
+      policy: { decision: "review", reasons: [{ code: "experience_judgment_unavailable" }] },
+    });
+  });
+
+  test("does not spend judgments on postings the freshness gate already excludes", async () => {
+    const judge = fakeJudge(() => fitJudgment("entry_level", 0));
+    const { app, scout } = ashbyFixture(
+      board([ashbyJob({ publishedAt: "2020-01-01T00:00:00.000Z" })]),
+      () => Date.parse("2026-09-18T00:00:00.000Z"),
+      undefined,
+      judge,
+    );
+
+    const result = await app.ashbyInspect({
+      scoutId: scout.id,
+      urls: [url],
+      policy: { publishedAfter: "2026-09-11T00:00:00.000Z", maximumExplicitRequiredYears: 2 },
+    });
+
+    expect(judge.inputs).toEqual([]);
+    expect(result.results[0].policy.decision).toBe("exclude");
+  });
+});
 
 describe("Ashby inspection", () => {
   test("defines durable Ashby posting observations", () => {

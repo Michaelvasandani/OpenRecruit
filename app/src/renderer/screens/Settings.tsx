@@ -111,6 +111,7 @@ function GeneralPanel() {
       </SettingsSection>
       <FirecrawlSourcePanel />
       <BirdSourcePanel />
+      <TypeSafePanel />
       {window.__opentradeShell && (
         <SettingsSection title="Runtime">
           <SettingsRow
@@ -175,6 +176,86 @@ function FirecrawlSourcePanel() {
             onChange={(event) => setDraft(event.target.value)}
             placeholder={status.configured ? "Enter a replacement key" : "Paste API key"}
             aria-label="Firecrawl API key"
+          />
+          <div className="flex flex-wrap justify-end gap-2">
+            <Button
+              type="button"
+              variant="outline"
+              disabled={!hasDraft || setKey.isPending}
+              onClick={() => setKey.mutate({ apiKey: draft })}
+            >
+              {status.configured ? "Replace" : "Save"}
+            </Button>
+            <Button
+              type="button"
+              variant="outline"
+              disabled={testKey.isPending || (!hasDraft && !status.configured)}
+              onClick={() => testKey.mutate(hasDraft ? { apiKey: draft } : undefined)}
+            >
+              Test
+            </Button>
+            {status.configured && (
+              <Button
+                type="button"
+                variant="outline"
+                disabled={clearKey.isPending}
+                onClick={() => clearKey.mutate()}
+              >
+                Clear
+              </Button>
+            )}
+          </div>
+          {feedback && <p className="text-xs text-muted-foreground">{feedback}</p>}
+        </div>
+      </SettingsRow>
+    </SettingsSection>
+  );
+}
+
+function TypeSafePanel() {
+  const settings = useSettings();
+  const status = settings.data?.typesafe;
+  const [draft, setDraft] = useState("");
+  const [feedback, setFeedback] = useState<string | null>(null);
+  const setKey = trpc.settings.setTypeSafeApiKey.useMutation({
+    onSuccess: () => {
+      setDraft("");
+      setFeedback("TypeSafe is configured.");
+    },
+    onError: () => setFeedback("The TypeSafe API key could not be saved."),
+  });
+  const testKey = trpc.settings.testTypeSafeApiKey.useMutation({
+    onSuccess: (result) => setFeedback(result.safeFailure ?? "TypeSafe is ready."),
+    onError: () => setFeedback("TypeSafe could not be tested."),
+  });
+  const clearKey = trpc.settings.clearTypeSafeApiKey.useMutation({
+    onSuccess: () => {
+      setDraft("");
+      setFeedback("TypeSafe was cleared.");
+    },
+    onError: () => setFeedback("The TypeSafe API key could not be cleared."),
+  });
+
+  if (!status) return null;
+  const hasDraft = draft.trim().length > 0;
+  const readiness = status.readiness.replaceAll("_", " ");
+  return (
+    <SettingsSection
+      title="Posting Fit Judgments"
+      description="Use a Candidate-supplied TypeSafe key so Jev reads each Ashby posting and judges the experience it really requires. Without a key, OpenRecruit falls back to pattern matching. The saved key is never shown again."
+    >
+      <SettingsRow
+        label={status.configured ? "Replace TypeSafe API key" : "TypeSafe API key"}
+        hint={`Status: ${readiness}. Test a draft key before saving, or test the saved key when the field is empty.`}
+      >
+        <div className="flex max-w-sm flex-col items-end gap-2">
+          <Input
+            type="password"
+            autoComplete="off"
+            value={draft}
+            onChange={(event) => setDraft(event.target.value)}
+            placeholder={status.configured ? "Enter a replacement key" : "Paste API key"}
+            aria-label="TypeSafe API key"
           />
           <div className="flex flex-wrap justify-end gap-2">
             <Button

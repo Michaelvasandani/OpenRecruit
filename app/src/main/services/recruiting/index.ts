@@ -393,6 +393,8 @@ export class RecruitingApplication {
     });
     this.ashbyInspectionApplication = new AshbyInspectionApplication(db, now, {
       ashbyProvider: options.ashbyProvider,
+      typesafeApiKey: options.typesafeApiKey,
+      postingFitJudge: options.postingFitJudge,
     });
     this.candidateDecisions = new CandidateDecisionApplication(db, now);
     this.evidence = new EvidenceApplication(db, now);

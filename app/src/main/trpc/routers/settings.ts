@@ -19,6 +19,17 @@ export const settingsRouter = router({
 
   clearFirecrawlApiKey: publicProcedure.mutation(({ ctx }) => ctx.settings.clearFirecrawlApiKey()),
 
+  /** TypeSafe (Jev) posting-fit judgments use the same explicit secret lane. */
+  setTypeSafeApiKey: publicProcedure
+    .input(z.object({ apiKey: z.string().trim().min(1).max(512) }))
+    .mutation(({ ctx, input }) => ctx.settings.setTypeSafeApiKey(input.apiKey)),
+
+  testTypeSafeApiKey: publicProcedure
+    .input(z.object({ apiKey: z.string().trim().min(1).max(512).optional() }).optional())
+    .mutation(({ ctx, input }) => ctx.settings.testTypeSafeApiKey(input)),
+
+  clearTypeSafeApiKey: publicProcedure.mutation(({ ctx }) => ctx.settings.clearTypeSafeApiKey()),
+
   /** Bird is a local host-owned executable. These operations expose only safe
    * readiness/consent metadata; executable output and browser-session material
    * never cross the router. Inputs are deliberately path-only. */

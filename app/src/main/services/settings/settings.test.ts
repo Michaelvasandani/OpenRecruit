@@ -255,6 +255,47 @@ describe("SettingsService", () => {
     expect(payloads[1]?.firecrawl.configured).toBe(false);
   });
 
+  test("stores the TypeSafe key host-side while exposing only safe readiness", async () => {
+    const db = memDb();
+    const seenKeys: string[] = [];
+    const s = new SettingsService(db, {
+      typesafeProbe: async (apiKey) => {
+        seenKeys.push(apiKey);
+        return { status: seenKeys.length === 1 ? 401 : 200 };
+      },
+    });
+
+    expect(s.get().typesafe).toEqual({
+      configured: false,
+      readiness: "not_configured",
+      safeFailure: null,
+    });
+    expect(s.getTypeSafeApiKey()).toBeUndefined();
+
+    s.setTypeSafeApiKey("  ts-secret  ");
+    expect(new SettingsService(db).getTypeSafeApiKey()).toBe("ts-secret");
+    expect(JSON.stringify(s.get())).not.toContain("ts-secret");
+
+    const rejected = await s.testTypeSafeApiKey();
+    expect(rejected).toEqual({
+      configured: true,
+      readiness: "reauthentication_required",
+      safeFailure: "TypeSafe rejected the configured API key",
+    });
+    expect(s.get().typesafe).toEqual(rejected);
+
+    // A draft key is tested without touching the saved credential's status.
+    expect((await s.testTypeSafeApiKey({ apiKey: "ts-draft" })).readiness).toBe("ready");
+    expect(seenKeys).toEqual(["ts-secret", "ts-draft"]);
+    expect(s.get().typesafe.readiness).toBe("reauthentication_required");
+
+    s.clearTypeSafeApiKey();
+    expect(s.getTypeSafeApiKey()).toBeUndefined();
+    expect(s.get().typesafe.configured).toBe(false);
+    expect(() => s.setTypeSafeApiKey("   ")).toThrow(/TypeSafe API key/);
+    expect(SettingsUpdate.safeParse({ typesafe: { configured: true } }).success).toBe(false);
+  });
+
   test("rejects an empty Firecrawl API key", () => {
     const s = new SettingsService(memDb());
     expect(() => s.setFirecrawlApiKey("   ")).toThrow(/API key/);
