@@ -152,6 +152,19 @@ export const SignalEvidence = z.object({
   editHistory: z.array(z.string()).optional(),
   withheld: z.unknown().nullable().optional(),
   protected: z.boolean().optional(),
+  /** Jev's reading of an Ashby posting at the time it was recorded. */
+  fitJudgment: z
+    .object({
+      model: z.string(),
+      requiredExperience: z.object({
+        level: z.string(),
+        minimumYears: z.number().nullable(),
+        confidence: z.number(),
+        probabilities: z.record(z.string(), z.number()),
+      }),
+      engineeringRoleProbability: z.number(),
+    })
+    .optional(),
 });
 export type SignalEvidence = z.infer<typeof SignalEvidence>;
 

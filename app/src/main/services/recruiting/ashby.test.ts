@@ -186,6 +186,29 @@ describe("Ashby posting fit judgments", () => {
     });
   });
 
+  test("keeps the Jev judgment with the recorded Signal", async () => {
+    const { app, scout, run } = ashbyFixture(
+      board([ashbyJob({ descriptionPlain: SABBATICAL_DESCRIPTION })]),
+      undefined,
+      undefined,
+      fakeJudge(() => fitJudgment("entry_level", 0)),
+    );
+    const inspected = await app.ashbyInspect({
+      scoutId: scout.id,
+      urls: [url],
+      policy: { maximumExplicitRequiredYears: 2 },
+    });
+
+    app.recordSignalForScout({
+      scoutId: scout.id,
+      evidenceReference: inspected.results[0].evidenceReference,
+    });
+
+    expect(app.listSignals({ runId: run.id })[0].evidence.fitJudgment).toEqual(
+      fitJudgment("entry_level", 0),
+    );
+  });
+
   test("treats a posting with no stated experience as early career", async () => {
     const { app, scout } = ashbyFixture(
       board([ashbyJob({ title: "Software Engineer", descriptionPlain: "Build agents with us." })]),

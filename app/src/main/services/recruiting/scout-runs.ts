@@ -3698,6 +3698,7 @@ function persistSignals(db: RecruitingDb, input: SignalPersistenceInput): boolea
         ...(item.metadata?.editHistory ? { editHistory: item.metadata.editHistory } : {}),
         ...(item.metadata?.withheld ? { withheld: item.metadata.withheld } : {}),
         ...(item.metadata?.protected !== undefined ? { protected: item.metadata.protected } : {}),
+        ...(item.metadata?.fitJudgment ? { fitJudgment: item.metadata.fitJudgment } : {}),
       };
       const candidateProvider = sourceProvider ?? item.metadata?.provider ?? null;
       const provider =
