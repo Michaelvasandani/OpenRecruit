@@ -823,6 +823,12 @@ function pushChannel(content: string): void {
 }
 
 let pollerStarted = false;
+/** `initialized` fires before Claude Code has finished booting its TUI and
+ * registered the channel listener. A wake already queued host-side (the Candidate
+ * clicked Run while the session was opening) would be served to the very first
+ * poll and pushed into a session that silently drops it, stranding the Run in
+ * preflight. Until this elapses the wake stays safely queued on the host. */
+const WAKE_POLLER_SETTLE_MS = 8_000;
 
 /**
  * Long-poll the host `GET /wake-stream`: each resolved wake is pushed into the live
@@ -836,6 +842,7 @@ function startWakePoller(): void {
   pollerStarted = true;
   const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
   (async () => {
+    await sleep(WAKE_POLLER_SETTLE_MS);
     for (;;) {
       try {
         const { status, json } = await callHost("GET", "/wake-stream");
