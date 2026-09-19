@@ -70,6 +70,7 @@ import {
   type StartInvestigationAttemptCommand,
 } from "./investigations";
 import { PendingEvidenceStore } from "./pending-evidence";
+import { PostingScreener } from "./posting-screen";
 import type { ConfirmProfileCommand, ImportProfileCommand, UpdateDraftCommand } from "./profile";
 import { CandidateProfileApplication } from "./profile";
 import {
@@ -414,13 +415,19 @@ export class RecruitingApplication {
       webSearchSettings: options.webSearchSettings,
       webFetchResolveHostname: options.webFetchResolveHostname,
     });
+    // One screener for every job-posting Source, so they share Jev's judgment
+    // cache and concurrency limit.
+    const postingScreener = new PostingScreener({
+      typesafeApiKey: options.typesafeApiKey,
+      postingFitJudge: options.postingFitJudge,
+    });
     this.hackerNewsApplication = new HackerNewsApplication(db, now, {
       hackerNewsProvider: options.hackerNewsProvider,
+      postingScreener,
     });
     this.ashbyInspectionApplication = new AshbyInspectionApplication(db, now, {
       ashbyProvider: options.ashbyProvider,
-      typesafeApiKey: options.typesafeApiKey,
-      postingFitJudge: options.postingFitJudge,
+      postingScreener,
       pendingEvidence,
     });
     this.candidateDecisions = new CandidateDecisionApplication(db, now);

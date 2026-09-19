@@ -9,6 +9,8 @@ const MAX_CACHE_ENTRIES = 2_000;
 /** Jev's state budget is 32k tokens; a posting body beyond this is boilerplate. */
 const MAX_DESCRIPTION_CHARS = 40_000;
 const MAX_BRIEF_CHARS = 4_000;
+const MAX_POLICY_CHARS = 4_000;
+const MAX_PROFILE_CHARS = 12_000;
 
 /** Ordered by the minimum professional experience an applicant must bring.
  * `minimumYears` is what code compares against the Scout Policy limit. */
@@ -53,6 +55,10 @@ export type PostingFitInput = {
   /** What this Scout was asked to find, in the Candidate's own words (its
    * Discovery Strategy). Null skips the fit question. */
   scoutBrief: string | null;
+  /** The Scout Policy: the Candidate's constraints for this Scout. */
+  scoutPolicy?: string | null;
+  /** The pinned Candidate Profile for the Scout Run, as readable text. */
+  candidateProfile?: string | null;
 };
 
 /** Raw Jev answers, kept reusable: thresholds and policy live in calling code. */
@@ -67,6 +73,10 @@ export type PostingFitJudgment = {
   /** Probability that the posting is the kind of role the Scout was asked to
    * find. Null when the Scout has no brief to judge against. */
   scoutFitProbability: number | null;
+  /** Probability that this posting is worth keeping as a Signal for this
+   * Candidate, weighing the Candidate Profile, the Scout's brief, and the
+   * Scout Policy together. Null when none of those was available. */
+  worthKeepingProbability: number | null;
 };
 
 /** `null` means no judgment is available (no key configured, or the provider
@@ -101,6 +111,22 @@ const SCOUT_FIT_QUESTION = {
     true: "The posting's main work is the same kind of job, or a closely adjacent one, as the roles named in `scoutBrief`.",
     false:
       "The posting is a different job function from anything in `scoutBrief`, even if it is at a relevant company or mentions the same technology.",
+  },
+} as const;
+
+/** The keep-or-drop question. Unlike `scout_fit` it weighs everything the
+ * Candidate told OpenRecruit, so a Source needs no rules of its own. */
+const WORTH_KEEPING_QUESTION = {
+  type: "noul",
+  instructions: [
+    "A job seeker runs an automated search. `candidateProfile` is who they are, `scoutBrief` is what this search was asked to find, and `scoutPolicy` lists their constraints; any of the three may be absent. Should the job in `posting` be kept for the job seeker to review?",
+    "Weigh the kind of work, seniority and required experience against the job seeker's background, location and remote constraints, and every explicit must-have or exclusion in `scoutPolicy`.",
+    "A posting that lists several roles should be kept when at least one role qualifies. Missing details are not a reason to drop a posting; only what the posting states can disqualify it.",
+  ],
+  criteria: {
+    true: "A reasonable job seeker with this profile and these constraints would want to look at this posting.",
+    false:
+      "The posting clearly conflicts with the profile, the brief, or a stated constraint: the wrong kind of work, far too senior or junior, an excluded location or arrangement, or not a job opening at all.",
   },
 } as const;
 
@@ -144,10 +170,20 @@ export class JevPostingFitJudge implements PostingFitJudge {
       description: input.descriptionPlain.slice(0, MAX_DESCRIPTION_CHARS),
     };
     const scoutBrief = input.scoutBrief?.trim().slice(0, MAX_BRIEF_CHARS) || null;
-    const state = scoutBrief ? { posting, scoutBrief } : { posting };
+    const scoutPolicy = input.scoutPolicy?.trim().slice(0, MAX_POLICY_CHARS) || null;
+    const candidateProfile = input.candidateProfile?.trim().slice(0, MAX_PROFILE_CHARS) || null;
+    const state = {
+      posting,
+      ...(scoutBrief ? { scoutBrief } : {}),
+      ...(scoutPolicy ? { scoutPolicy } : {}),
+      ...(candidateProfile ? { candidateProfile } : {}),
+    };
     const questions = {
       required_experience: REQUIRED_EXPERIENCE_QUESTION,
       ...(scoutBrief ? { scout_fit: SCOUT_FIT_QUESTION } : {}),
+      ...(scoutBrief || scoutPolicy || candidateProfile
+        ? { worth_keeping: WORTH_KEEPING_QUESTION }
+        : {}),
     };
     // Judgments depend only on posting content, so unchanged postings are free
     // on later inspections within this host's lifetime.
@@ -181,7 +217,10 @@ export class JevPostingFitJudge implements PostingFitJudge {
     signal?: AbortSignal,
   ): Promise<PostingFitJudgment | null> {
     const body = JSON.stringify({ ...payload, model: JEV_MODEL });
-    const expectsFit = "scout_fit" in payload.questions;
+    const expects = {
+      fit: "scout_fit" in payload.questions,
+      worth: "worth_keeping" in payload.questions,
+    };
     for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt += 1) {
       const timeout = AbortSignal.timeout(REQUEST_TIMEOUT_MS);
       const response = await this.fetchImpl(TYPESAFE_SYSTEMONE_URL, {
@@ -195,7 +234,7 @@ export class JevPostingFitJudge implements PostingFitJudge {
         signal: signal ? AbortSignal.any([signal, timeout]) : timeout,
       });
       if (response.status >= 200 && response.status < 300) {
-        return parseJudgment(await response.json(), expectsFit);
+        return parseJudgment(await response.json(), expects);
       }
       const retryable = response.status === 429 || response.status >= 500;
       if (!retryable || attempt === MAX_ATTEMPTS) return null;
@@ -234,19 +273,25 @@ function probability(value: unknown): number | null {
 
 /** Typed output guarantees the interface, not our trust in it: anything that
  * does not match the documented answer shape is treated as no judgment. */
-function parseJudgment(body: unknown, expectsFit: boolean): PostingFitJudgment | null {
+function parseJudgment(
+  body: unknown,
+  expects: { fit: boolean; worth: boolean },
+): PostingFitJudgment | null {
   if (!isRecord(body) || !isRecord(body.answers)) return null;
   const experience = body.answers.required_experience;
   const fit = body.answers.scout_fit;
-  if (!isRecord(experience) || (expectsFit && !isRecord(fit))) return null;
+  const worth = body.answers.worth_keeping;
+  if (!isRecord(experience)) return null;
   const level = experience.choice;
   const confidence = probability(experience.confidence);
   const scoutFitProbability = isRecord(fit) ? probability(fit.noul) : null;
+  const worthKeepingProbability = isRecord(worth) ? probability(worth.noul) : null;
   if (
     typeof level !== "string" ||
     !(level in EXPERIENCE_LEVELS) ||
     confidence === null ||
-    (expectsFit && scoutFitProbability === null)
+    (expects.fit && scoutFitProbability === null) ||
+    (expects.worth && worthKeepingProbability === null)
   ) {
     return null;
   }
@@ -266,5 +311,6 @@ function parseJudgment(body: unknown, expectsFit: boolean): PostingFitJudgment |
       probabilities,
     },
     scoutFitProbability,
+    worthKeepingProbability,
   };
 }

@@ -152,7 +152,7 @@ export const SignalEvidence = z.object({
   editHistory: z.array(z.string()).optional(),
   withheld: z.unknown().nullable().optional(),
   protected: z.boolean().optional(),
-  /** Jev's reading of an Ashby posting at the time it was recorded. */
+  /** Jev's reading of a job posting at the time it was recorded. */
   fitJudgment: z
     .object({
       model: z.string(),
@@ -165,6 +165,7 @@ export const SignalEvidence = z.object({
       // Stored evidence is immutable: tolerate Signals recorded before this
       // field existed, including the short-lived engineeringRoleProbability.
       scoutFitProbability: z.number().nullable().optional(),
+      worthKeepingProbability: z.number().nullable().optional(),
       engineeringRoleProbability: z.number().optional(),
     })
     .optional(),

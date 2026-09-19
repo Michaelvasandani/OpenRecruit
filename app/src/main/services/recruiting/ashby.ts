@@ -14,7 +14,18 @@ import {
 } from "../../db/schema";
 import { RecruitingError } from "./errors";
 import { PendingEvidenceStore } from "./pending-evidence";
-import { JevPostingFitJudge, type PostingFitJudge, type PostingFitJudgment } from "./posting-fit";
+import type { PostingFitJudge, PostingFitJudgment } from "./posting-fit";
+import {
+  decide,
+  judgedExperienceReason,
+  judgedFitReasons,
+  type PostingJudgmentOutcome,
+  PostingScreener,
+  type ScreeningContext,
+  type ScreeningReason,
+  screeningContextForRun,
+  snapshotMaterial,
+} from "./posting-screen";
 
 export const ASHBY_SOURCE_ID = "source-ashby";
 const ACTIVE_RUN_STATUSES = ["queued", "preflight", "running", "finalizing"] as const;
@@ -26,14 +37,6 @@ const EVIDENCE_TTL_MS = 30 * 60 * 1_000;
 const MAX_BOARDS = 10;
 const MAX_BOARD_POSTINGS = 100;
 const DAY_MS = 86_400_000;
-/** Below this Choice confidence a Jev experience judgment goes to review
- * instead of deciding. A starting point; tune against recorded judgments. */
-const FIT_JUDGMENT_MIN_CONFIDENCE = 0.6;
-/** scout_fit: below the floor Jev is confident the posting is not the kind of
- * role the Scout was asked to find; between the two it goes to review. */
-const SCOUT_FIT_EXCLUDE_BELOW = 0.3;
-const SCOUT_FIT_INCLUDE_FROM = 0.6;
-
 export type AshbyBoardProviderRequest = {
   boardHandle: string;
   etag?: string;
@@ -135,12 +138,11 @@ export type AshbyInspectionApplicationOptions = {
   typesafeApiKey?: () => string | undefined;
   /** Injected at the external model boundary for deterministic tests. */
   postingFitJudge?: PostingFitJudge;
+  /** The shared Jev seam; built from the two options above when omitted. */
+  postingScreener?: PostingScreener;
   /** Shared RecordSignal reference store; RecordSignal resolves from it. */
   pendingEvidence?: PendingEvidenceStore;
 };
-
-/** `unavailable` = a judge is configured but returned nothing for this posting. */
-type FitJudgmentOutcome = PostingFitJudgment | "unavailable" | undefined;
 
 type ParsedReference = {
   inputIndex: number;
@@ -256,7 +258,7 @@ export type AshbyInspectionResult = {
 
 export class AshbyInspectionApplication {
   private readonly provider: AshbyBoardProvider | undefined;
-  private readonly fitJudge: PostingFitJudge;
+  private readonly screener: PostingScreener;
   private readonly boardCache = new Map<
     string,
     { cachedAt: number; response: AshbyBoardProviderResponse }
@@ -271,9 +273,12 @@ export class AshbyInspectionApplication {
   ) {
     this.provider = options.ashbyProvider ?? new HttpAshbyBoardProvider();
     this.pendingEvidence = options.pendingEvidence ?? new PendingEvidenceStore();
-    this.fitJudge =
-      options.postingFitJudge ??
-      new JevPostingFitJudge(options.typesafeApiKey ?? (() => undefined));
+    this.screener =
+      options.postingScreener ??
+      new PostingScreener({
+        typesafeApiKey: options.typesafeApiKey,
+        postingFitJudge: options.postingFitJudge,
+      });
   }
 
   async inspect(command: AshbyInspectCommand): Promise<AshbyInspectionResult> {
@@ -326,7 +331,7 @@ export class AshbyInspectionApplication {
     const boardHandles = [...new Set([...grouped.keys(), ...boardInputs.keys()])].sort();
     const applied = applyPinnedPolicy(command.policy, run.policySnapshot, observedAt);
     const policy = applied.policy;
-    const scoutBrief = scoutBriefFor(run.strategySnapshot, policy.targetRoles);
+    const context = screeningContextForRun(run, policy.targetRoles);
     this.db
       .insert(sourceAttempts)
       .values({
@@ -540,7 +545,7 @@ export class AshbyInspectionApplication {
           selected.push({ jobId: entry.jobId, aliases: [], record: entry.record });
         }
       }
-      const judgments = await this.judgeSelected(selected, policy, scoutBrief, command.signal);
+      const judgments = await this.judgeSelected(selected, policy, context, command.signal);
       for (const { jobId, aliases, record } of selected) {
         const identity = this.recordFirstSeen(source.id, jobId, boardHandle, record, observedAt);
         const descriptionPlain = stringField(record, "descriptionPlain") ?? "";
@@ -565,7 +570,7 @@ export class AshbyInspectionApplication {
           extracted.requirements,
           policy,
           judgment,
-          scoutBrief !== null,
+          context,
         );
         const evidenceReference = this.pendingEvidence.issue({
           issuer: "ashby",
@@ -658,7 +663,7 @@ export class AshbyInspectionApplication {
         publishedAfterSource: applied.publishedAfterSource,
         listedOnly: policy.listedOnly === true,
         maximumExplicitRequiredYears: policy.maximumExplicitRequiredYears ?? null,
-        scoutFitJudged: scoutBrief !== null && this.fitJudge.isConfigured(),
+        scoutFitJudged: context.scoutBrief !== null && this.screener.isConfigured(),
       },
       summary: {
         inputCount: (command.urls?.length ?? 0) + (command.boards?.length ?? 0),
@@ -683,40 +688,32 @@ export class AshbyInspectionApplication {
   private async judgeSelected(
     selected: Array<{ jobId: string; record: Record<string, unknown> }>,
     policy: NonNullable<AshbyInspectCommand["policy"]>,
-    scoutBrief: string | null,
+    context: ScreeningContext,
     signal?: AbortSignal,
-  ): Promise<Map<string, FitJudgmentOutcome>> {
-    const judgments = new Map<string, FitJudgmentOutcome>();
-    if (!this.fitJudge.isConfigured()) return judgments;
+  ): Promise<Map<string, PostingJudgmentOutcome>> {
     const threshold =
       policy.publishedAfter === undefined ? null : Date.parse(policy.publishedAfter);
-    await Promise.all(
-      selected.map(async ({ jobId, record }) => {
-        if (policy.listedOnly && record.isListed !== true) return;
-        const published = stringField(record, "publishedAt");
-        const at = published ? Date.parse(published) : Number.NaN;
-        if (threshold !== null && Number.isFinite(at) && at < threshold) return;
-        const title = stringField(record, "title");
-        if (!title) return;
-        const judgment = await this.fitJudge
-          .judge(
-            {
-              title,
-              organization: stringField(record, "organization"),
-              department: stringField(record, "department"),
-              team: stringField(record, "team"),
-              employmentType: stringField(record, "employmentType"),
-              location: stringField(record, "location"),
-              descriptionPlain: stringField(record, "descriptionPlain") ?? "",
-              scoutBrief,
-            },
-            signal,
-          )
-          .catch(() => null);
-        judgments.set(jobId, judgment ?? "unavailable");
-      }),
-    );
-    return judgments;
+    const postings = selected.flatMap(({ jobId, record }) => {
+      if (policy.listedOnly && record.isListed !== true) return [];
+      const published = stringField(record, "publishedAt");
+      const at = published ? Date.parse(published) : Number.NaN;
+      if (threshold !== null && Number.isFinite(at) && at < threshold) return [];
+      const title = stringField(record, "title");
+      if (!title) return [];
+      return [
+        {
+          key: jobId,
+          title,
+          organization: stringField(record, "organization"),
+          department: stringField(record, "department"),
+          team: stringField(record, "team"),
+          employmentType: stringField(record, "employmentType"),
+          location: stringField(record, "location"),
+          descriptionPlain: stringField(record, "descriptionPlain") ?? "",
+        },
+      ];
+    });
+    return this.screener.judgeAll(postings, context, signal);
   }
 
   private requireAccess(scoutId: string) {
@@ -1030,7 +1027,7 @@ function applyPinnedPolicy(
   policy: NonNullable<AshbyInspectCommand["policy"]>;
   publishedAfterSource: "request" | "scout_policy" | null;
 } {
-  const pinned = listingPublishedAfter(policyMaterial(policySnapshot), now);
+  const pinned = listingPublishedAfter(snapshotMaterial(policySnapshot), now);
   const asked =
     requested?.publishedAfter === undefined ? null : Date.parse(requested.publishedAfter);
   if (pinned !== null && (asked === null || asked < pinned)) {
@@ -1040,30 +1037,6 @@ function applyPinnedPolicy(
     };
   }
   return { policy: { ...requested }, publishedAfterSource: asked === null ? null : "request" };
-}
-
-/** What the Scout was asked to find: its pinned Discovery Strategy plus any
- * roles the Candidate refined with the Scout. Null when there is nothing to
- * judge a posting against. */
-function scoutBriefFor(strategySnapshot: string | null, targetRoles?: string[]): string | null {
-  const roles = (targetRoles ?? []).map((role) => role.trim()).filter(Boolean);
-  const brief = [
-    policyMaterial(strategySnapshot).trim(),
-    roles.length > 0 ? `Target roles also include: ${roles.join(", ")}.` : "",
-  ]
-    .filter(Boolean)
-    .join("\n");
-  return brief || null;
-}
-
-function policyMaterial(policySnapshot: string | null): string {
-  if (!policySnapshot) return "";
-  try {
-    const parsed: unknown = JSON.parse(policySnapshot);
-    return isRecord(parsed) && typeof parsed.material === "string" ? parsed.material : "";
-  } catch {
-    return "";
-  }
 }
 
 function groupReferences(references: ParsedReference[]): Map<string, ParsedReference[]> {
@@ -1218,10 +1191,10 @@ function evaluatePolicy(
   experienceStatus: "explicit" | "ambiguous" | "not_stated",
   requirements: ExperienceRequirement[],
   policy: AshbyInspectCommand["policy"],
-  judgment?: FitJudgmentOutcome,
-  scoutBriefed = false,
+  judgment?: PostingJudgmentOutcome,
+  context: ScreeningContext = { scoutBrief: null, scoutPolicy: null, candidateProfile: null },
 ) {
-  const reasons: Array<{ rule: string; outcome: "pass" | "fail" | "review"; code: string }> = [];
+  const reasons: ScreeningReason[] = [];
   if (policy?.publishedAfter !== undefined) {
     const threshold = Date.parse(policy.publishedAfter);
     reasons.push(
@@ -1239,36 +1212,14 @@ function evaluatePolicy(
         : { rule: "listed_only", outcome: "fail", code: "not_listed" },
     );
   }
-  if (policy?.maximumExplicitRequiredYears !== undefined && typeof judgment === "object") {
-    // Jev read the whole posting, so its judgment replaces pattern matching,
-    // which cannot tell a requirement from a sabbatical perk or a founder bio.
-    const { minimumYears, confidence } = judgment.requiredExperience;
-    reasons.push(
-      confidence < FIT_JUDGMENT_MIN_CONFIDENCE
-        ? {
-            rule: "maximum_explicit_required_years",
-            outcome: "review",
-            code: "judged_experience_uncertain",
-          }
-        : minimumYears === null
-          ? {
-              // No stated requirement and no seniority cue reads as early career.
-              rule: "maximum_explicit_required_years",
-              outcome: "pass",
-              code: "judged_experience_not_stated",
-            }
-          : minimumYears > policy.maximumExplicitRequiredYears
-            ? {
-                rule: "maximum_explicit_required_years",
-                outcome: "fail",
-                code: "judged_minimum_exceeds_limit",
-              }
-            : {
-                rule: "maximum_explicit_required_years",
-                outcome: "pass",
-                code: "judged_minimum_within_limit",
-              },
-    );
+  // Jev read the whole posting, so its judgment replaces pattern matching,
+  // which cannot tell a requirement from a sabbatical perk or a founder bio.
+  const judgedExperience =
+    policy?.maximumExplicitRequiredYears === undefined
+      ? null
+      : judgedExperienceReason(judgment, policy.maximumExplicitRequiredYears);
+  if (judgedExperience) {
+    reasons.push(judgedExperience);
   } else if (policy?.maximumExplicitRequiredYears !== undefined) {
     const required = requirements.filter((requirement) => requirement.necessity === "required");
     const ambiguous = requirements.some((requirement) => requirement.necessity === "ambiguous");
@@ -1307,28 +1258,8 @@ function evaluatePolicy(
             },
     );
   }
-  // General fit: whatever field the Scout was set up for, Jev judged the
-  // posting against that Scout's own brief. No brief or no judge, no rule.
-  if (judgment === "unavailable" && scoutBriefed) {
-    reasons.push({ rule: "scout_fit", outcome: "review", code: "fit_judgment_unavailable" });
-  } else if (typeof judgment === "object" && judgment.scoutFitProbability !== null) {
-    const probability = judgment.scoutFitProbability;
-    reasons.push(
-      probability < SCOUT_FIT_EXCLUDE_BELOW
-        ? { rule: "scout_fit", outcome: "fail", code: "judged_outside_scout_brief" }
-        : probability < SCOUT_FIT_INCLUDE_FROM
-          ? { rule: "scout_fit", outcome: "review", code: "judged_fit_uncertain" }
-          : { rule: "scout_fit", outcome: "pass", code: "judged_within_scout_brief" },
-    );
-  }
-  return {
-    decision: reasons.some((reason) => reason.outcome === "fail")
-      ? ("exclude" as const)
-      : reasons.some((reason) => reason.outcome === "review")
-        ? ("review" as const)
-        : ("include" as const),
-    reasons,
-  };
+  reasons.push(...judgedFitReasons(judgment, context));
+  return decide(reasons);
 }
 
 function canonicalJobUrl(

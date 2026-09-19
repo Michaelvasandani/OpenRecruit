@@ -58,6 +58,7 @@ import {
   HACKER_NEWS_SOURCE_KIND,
 } from "./hacker-news";
 import { type PendingEvidence, PendingEvidenceStore } from "./pending-evidence";
+import type { PostingFitJudgment } from "./posting-fit";
 import {
   type FeedItem,
   type FeedProvider,
@@ -261,6 +262,8 @@ export type RecordSourceOutcomeCommand = {
     title: string;
     content: string;
     publicationAt?: number | null;
+    /** Jev's host-issued reading of the posting; never agent-authored. */
+    fitJudgment?: PostingFitJudgment;
   }>;
 };
 
@@ -3477,7 +3480,11 @@ export class ScoutRunApplication {
           title,
           content,
           publicationAt,
-          metadata: { provider: operation, state: "available" },
+          metadata: {
+            provider: operation,
+            state: "available",
+            ...(item.fitJudgment ? { fitJudgment: item.fitJudgment } : {}),
+          },
         };
       });
       const source = tx.select().from(sources).where(eq(sources.id, attempt.sourceId)).get();

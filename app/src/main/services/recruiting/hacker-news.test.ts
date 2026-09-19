@@ -12,6 +12,7 @@ import {
   WEB_SEARCH_SOURCE_ID,
 } from ".";
 import { htmlToText, normalizeHackerNewsRequest } from "./hacker-news";
+import type { PostingFitInput, PostingFitJudge, PostingFitJudgment } from "./posting-fit";
 
 const BASE = "https://hn.algolia.com/api/v1/search_by_date";
 const THREADS_URL = `${BASE}?tags=story,author_whoishiring&hitsPerPage=10`;
@@ -67,12 +68,42 @@ function makeDb(): Db {
   return drizzle(sqlite, { schema }) as unknown as Db;
 }
 
+function fakeJudge(answer: (input: PostingFitInput) => PostingFitJudgment | null) {
+  const inputs: PostingFitInput[] = [];
+  const judge: PostingFitJudge = {
+    isConfigured: () => true,
+    judge: async (input) => {
+      inputs.push(input);
+      return answer(input);
+    },
+  };
+  return Object.assign(judge, { inputs });
+}
+
+function judgment(worthKeepingProbability: number, scoutFitProbability = 0.9): PostingFitJudgment {
+  return {
+    model: "jev-test",
+    requiredExperience: {
+      level: "not_stated",
+      minimumYears: null,
+      confidence: 0.9,
+      probabilities: { not_stated: 0.9 },
+    },
+    scoutFitProbability,
+    worthKeepingProbability,
+  };
+}
+
 function fixture(
   fixtures: Record<string, HackerNewsProviderResponse>,
   sourceIds: string[] = [HACKER_NEWS_SOURCE_ID],
+  postingFitJudge?: PostingFitJudge,
 ) {
   const provider = new DeterministicHackerNewsProvider(fixtures);
-  const app = new RecruitingApplication(makeDb(), () => 10_000, { hackerNewsProvider: provider });
+  const app = new RecruitingApplication(makeDb(), () => 10_000, {
+    hackerNewsProvider: provider,
+    postingFitJudge,
+  });
   const draft = app.importProfile({
     name: "Candidate",
     roleTarget: "Engineer",
@@ -91,6 +122,8 @@ function fixture(
     instructionPath: "agents/hn",
     defaultProfileId: profile.id,
     sourceIds,
+    strategyMaterial: "# Discovery Strategy\nTarget roles: Rust robotics engineer.",
+    policyMaterial: "# Scout Policy\nRemote roles only.",
     idempotencyKey: "hn-scout",
   }).value;
   const run = app.launchScoutRun({ scoutId: scout.id, idempotencyKey: "hn-run" }).value;
@@ -125,7 +158,10 @@ describe("HackerNewsJobs", () => {
         "We build arms & grippers. Apply: https://acme.example/jobs",
       author: "founder",
       publishedAt: 1_100_000,
+      fitJudgment: null,
+      screening: null,
     });
+    expect(result.screened).toBe(false);
     expect(result.provenance).toEqual({
       provider: "hn-algolia",
       sourceId: HACKER_NEWS_SOURCE_ID,
@@ -169,6 +205,8 @@ describe("HackerNewsJobs", () => {
         content: "Gamma (YC W26) is hiring a founding engineer\n\nhttps://gamma.example/careers",
         author: "gamma",
         publishedAt: 2_000_000,
+        fitJudgment: null,
+        screening: null,
       },
     ]);
   });
@@ -192,6 +230,105 @@ describe("HackerNewsJobs", () => {
     });
     expect(recorded.signalIds).toHaveLength(1);
     expect(recorded.leadIds).toHaveLength(1);
+  });
+
+  test("Jev screens postings against the Profile, Discovery Strategy, and Scout Policy", async () => {
+    const judge = fakeJudge((input) => judgment(input.title.startsWith("Acme") ? 0.92 : 0.1));
+    const { app, scout } = fixture(
+      { [THREADS_URL]: THREADS, [commentsUrl("")]: COMMENTS },
+      undefined,
+      judge,
+    );
+
+    const result = await app.hackerNewsJobs({ scoutId: scout.id });
+
+    expect(judge.inputs[0]).toEqual({
+      title: "Acme Robotics | Rust Engineer | Remote (US) | $150k/yr",
+      organization: null,
+      department: null,
+      team: null,
+      employmentType: null,
+      location: null,
+      descriptionPlain: expect.stringContaining("We build arms & grippers."),
+      scoutBrief: expect.stringContaining("Rust robotics engineer"),
+      scoutPolicy: expect.stringContaining("Remote roles only"),
+      candidateProfile: expect.stringContaining("Target role: Engineer"),
+    });
+    expect(result.screened).toBe(true);
+    expect(result.summary).toEqual({ includeCount: 1, reviewCount: 0, excludeCount: 1 });
+    expect(result.results[0]).toMatchObject({
+      id: "4101",
+      fitJudgment: { worthKeepingProbability: 0.92 },
+      screening: {
+        decision: "include",
+        reasons: [
+          { rule: "scout_fit", outcome: "pass", code: "judged_within_scout_brief" },
+          { rule: "worth_keeping", outcome: "pass", code: "judged_worth_keeping" },
+        ],
+      },
+    });
+    expect(result.results[1]).toMatchObject({
+      id: "4103",
+      screening: {
+        decision: "exclude",
+        reasons: expect.arrayContaining([
+          { rule: "worth_keeping", outcome: "fail", code: "judged_not_worth_keeping" },
+        ]),
+      },
+    });
+  });
+
+  test("a posting Jev judged not worth keeping cannot become a Signal", async () => {
+    const judge = fakeJudge((input) => judgment(input.title.startsWith("Acme") ? 0.92 : 0.1));
+    const { app, scout } = fixture(
+      { [THREADS_URL]: THREADS, [commentsUrl("")]: COMMENTS },
+      undefined,
+      judge,
+    );
+    const result = await app.hackerNewsJobs({ scoutId: scout.id });
+
+    expect(() =>
+      app.recordSourceOutcomeForScout({
+        scoutId: scout.id,
+        sourceAttemptId: result.sourceAttemptId,
+        items: [{ canonicalUrl: "https://news.ycombinator.com/item?id=4103" }],
+      }),
+    ).toThrow("not worth keeping");
+
+    const recorded = app.recordSourceOutcomeForScout({
+      scoutId: scout.id,
+      sourceAttemptId: result.sourceAttemptId,
+      items: [{ canonicalUrl: "https://news.ycombinator.com/item?id=4101" }],
+    });
+    const signal = app.getSignal(recorded.signalIds[0] as string);
+    expect(signal?.evidence.fitJudgment).toMatchObject({ worthKeepingProbability: 0.92 });
+  });
+
+  test("an uncertain or failed judgment leaves the posting for review, still promotable", async () => {
+    const judge = fakeJudge((input) => (input.title.startsWith("Acme") ? judgment(0.45) : null));
+    const { app, scout } = fixture(
+      { [THREADS_URL]: THREADS, [commentsUrl("")]: COMMENTS },
+      undefined,
+      judge,
+    );
+
+    const result = await app.hackerNewsJobs({ scoutId: scout.id });
+
+    expect(result.results.map((posting) => posting.screening?.decision)).toEqual([
+      "review",
+      "review",
+    ]);
+    expect(result.results[1]?.screening?.reasons).toEqual([
+      { rule: "scout_fit", outcome: "review", code: "fit_judgment_unavailable" },
+      { rule: "worth_keeping", outcome: "review", code: "worth_judgment_unavailable" },
+    ]);
+    expect(
+      app.recordSourceOutcomeForScout({
+        scoutId: scout.id,
+        sourceAttemptId: result.sourceAttemptId,
+        items: [{ canonicalUrl: "https://news.ycombinator.com/item?id=4103" }],
+      }).signalIds,
+    ).toHaveLength(1);
   });
 
   test("rejects a Scout that has not selected the Hacker News Source", async () => {

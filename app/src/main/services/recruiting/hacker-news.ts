@@ -11,6 +11,14 @@ import {
   sources,
 } from "../../db/schema";
 import { RecruitingError, type RecruitingFailureCategory } from "./errors";
+import type { PostingFitJudgment } from "./posting-fit";
+import {
+  decide,
+  judgedFitReasons,
+  PostingScreener,
+  type ScreeningDecision,
+  screeningContextForRun,
+} from "./posting-screen";
 
 export const HACKER_NEWS_SOURCE_ID = "source-hacker-news";
 export const HACKER_NEWS_SOURCE_KIND = "hacker_news";
@@ -62,6 +70,11 @@ export type HackerNewsJobPosting = {
   content: string;
   author: string | null;
   publishedAt: number | null;
+  /** Jev's reading of the posting, when a TypeSafe key is configured. */
+  fitJudgment: PostingFitJudgment | null;
+  /** Whether the posting is worth keeping for this Candidate and Scout. Null
+   * when no judge is configured; an excluded posting cannot become a Signal. */
+  screening: ScreeningDecision | null;
 };
 
 export type HackerNewsJobsResponse = {
@@ -77,6 +90,10 @@ export type HackerNewsJobsResponse = {
     runId: string;
     scoutId: string;
   };
+  /** True when Jev screened the postings against the Candidate Profile, the
+   * Scout's Discovery Strategy, and the Scout Policy. */
+  screened: boolean;
+  summary: { includeCount: number; reviewCount: number; excludeCount: number };
   results: HackerNewsJobPosting[];
 };
 
@@ -85,11 +102,17 @@ export type SelectedHackerNewsEvidence = {
   title: string;
   content: string;
   publicationAt: number | null;
+  fitJudgment?: PostingFitJudgment;
 };
 
 export type HackerNewsApplicationOptions = {
   hackerNewsProvider?: HackerNewsProvider;
+  /** The shared Jev seam. Without a configured judge, nothing is screened. */
+  postingScreener?: PostingScreener;
 };
+
+type UnscreenedPosting = Omit<HackerNewsJobPosting, "fitJudgment" | "screening">;
+type RememberedPosting = SelectedHackerNewsEvidence & { excluded: boolean };
 
 type HackerNewsAttemptDetails = {
   operation: typeof HACKER_NEWS_OPERATION;
@@ -155,9 +178,10 @@ export class DeterministicHackerNewsProvider implements HackerNewsProvider {
 
 export class HackerNewsApplication {
   private readonly provider: HackerNewsProvider;
+  private readonly screener: PostingScreener;
   private readonly readEvidence = new Map<
     string,
-    { scoutId: string; postings: Map<string, SelectedHackerNewsEvidence> }
+    { scoutId: string; postings: Map<string, RememberedPosting> }
   >();
 
   constructor(
@@ -166,6 +190,7 @@ export class HackerNewsApplication {
     options: HackerNewsApplicationOptions = {},
   ) {
     this.provider = options.hackerNewsProvider ?? new HttpHackerNewsProvider();
+    this.screener = options.postingScreener ?? new PostingScreener();
   }
 
   /** True when the Attempt was issued by this application, so evidence selection
@@ -280,14 +305,14 @@ export class HackerNewsApplication {
     }
 
     let thread: HackerNewsJobsResponse["thread"] = null;
-    let results: HackerNewsJobPosting[];
+    let postings: UnscreenedPosting[];
     try {
       if (request.mode === "who_is_hiring") {
         thread = await this.latestHiringThread(command.signal);
         details = { ...details, threadId: thread?.id ?? null };
-        results = thread ? await this.hiringComments(thread, request, command.signal) : [];
+        postings = thread ? await this.hiringComments(thread, request, command.signal) : [];
       } else {
-        results = await this.jobStories(request, command.signal);
+        postings = await this.jobStories(request, command.signal);
       }
     } catch (error) {
       const providerError = error instanceof HackerNewsProviderError ? error : null;
@@ -306,6 +331,7 @@ export class HackerNewsApplication {
       );
     }
 
+    const results = await this.screen(postings, run, command.signal);
     details = { ...details, returnedUrls: results.map((result) => result.canonicalUrl) };
     this.completeAttempt(
       attemptId,
@@ -327,8 +353,55 @@ export class HackerNewsApplication {
         runId: run.id,
         scoutId: scout.id,
       },
+      screened: this.screener.isConfigured(),
+      summary: {
+        includeCount: results.filter((r) => r.screening?.decision === "include").length,
+        reviewCount: results.filter((r) => r.screening?.decision === "review").length,
+        excludeCount: results.filter((r) => r.screening?.decision === "exclude").length,
+      },
       results,
     };
+  }
+
+  /** Jev decides whether each posting is worth keeping, judged against the
+   * Run's pinned Candidate Profile, Discovery Strategy, and Scout Policy. A
+   * judging failure leaves the posting for review; it never fails the read. */
+  private async screen(
+    postings: UnscreenedPosting[],
+    run: {
+      strategySnapshot: string | null;
+      policySnapshot: string | null;
+      profileSnapshot: string | null;
+    },
+    signal?: AbortSignal,
+  ): Promise<HackerNewsJobPosting[]> {
+    if (!this.screener.isConfigured()) {
+      return postings.map((posting) => ({ ...posting, fitJudgment: null, screening: null }));
+    }
+    const context = screeningContextForRun(run);
+    const judgments = await this.screener.judgeAll(
+      postings.map((posting) => ({
+        key: posting.id,
+        title: posting.title,
+        // HN postings are free text: the organization and location are in the body.
+        organization: null,
+        department: null,
+        team: null,
+        employmentType: null,
+        location: null,
+        descriptionPlain: posting.content,
+      })),
+      context,
+      signal,
+    );
+    return postings.map((posting) => {
+      const judgment = judgments.get(posting.id);
+      return {
+        ...posting,
+        fitJudgment: typeof judgment === "object" ? judgment : null,
+        screening: decide(judgedFitReasons(judgment, context)),
+      };
+    });
   }
 
   /** Resolve Scout-selected postings to the exact content this host read. */
@@ -359,7 +432,14 @@ export class HackerNewsApplication {
           "Selected evidence URL was not returned by this HackerNewsJobs Attempt",
         );
       }
-      return { ...posting };
+      if (posting.excluded) {
+        throw new RecruitingError(
+          "CONFLICT",
+          "Jev judged this Hacker News posting not worth keeping for this Scout; it cannot be promoted to a Signal",
+        );
+      }
+      const { excluded: _excluded, ...evidence } = posting;
+      return evidence;
     });
   }
 
@@ -384,7 +464,7 @@ export class HackerNewsApplication {
     thread: NonNullable<HackerNewsJobsResponse["thread"]>,
     request: NormalizedRequest,
     signal?: AbortSignal,
-  ): Promise<HackerNewsJobPosting[]> {
+  ): Promise<UnscreenedPosting[]> {
     const params = new URLSearchParams({
       tags: `comment,story_${thread.id}`,
       query: request.query,
@@ -392,7 +472,7 @@ export class HackerNewsApplication {
       page: String(request.page),
     });
     const hits = await this.hits(`${ALGOLIA_BASE_URL}/search_by_date?${params}`, signal);
-    const postings: HackerNewsJobPosting[] = [];
+    const postings: UnscreenedPosting[] = [];
     for (const hit of hits) {
       const id = itemId(hit.objectID);
       if (!id || String(hit.parent_id) !== thread.id) continue;
@@ -417,7 +497,7 @@ export class HackerNewsApplication {
   private async jobStories(
     request: NormalizedRequest,
     signal?: AbortSignal,
-  ): Promise<HackerNewsJobPosting[]> {
+  ): Promise<UnscreenedPosting[]> {
     const params = new URLSearchParams({
       tags: "job",
       query: request.query,
@@ -425,7 +505,7 @@ export class HackerNewsApplication {
       page: String(request.page),
     });
     const hits = await this.hits(`${ALGOLIA_BASE_URL}/search_by_date?${params}`, signal);
-    const postings: HackerNewsJobPosting[] = [];
+    const postings: UnscreenedPosting[] = [];
     for (const hit of hits) {
       const id = itemId(hit.objectID);
       const title = typeof hit.title === "string" ? normalizeText(hit.title, MAX_TITLE_LENGTH) : "";
@@ -472,13 +552,15 @@ export class HackerNewsApplication {
     scoutId: string,
     results: HackerNewsJobPosting[],
   ): void {
-    const postings = new Map<string, SelectedHackerNewsEvidence>();
+    const postings = new Map<string, RememberedPosting>();
     for (const result of results) {
       postings.set(result.canonicalUrl, {
         canonicalUrl: result.canonicalUrl,
         title: result.title,
         content: result.content,
         publicationAt: result.publishedAt,
+        ...(result.fitJudgment ? { fitJudgment: result.fitJudgment } : {}),
+        excluded: result.screening?.decision === "exclude",
       });
     }
     this.readEvidence.set(sourceAttemptId, { scoutId, postings });
