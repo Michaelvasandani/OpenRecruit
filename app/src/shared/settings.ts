@@ -26,6 +26,32 @@ export const FirecrawlSettings = z.object({
 });
 export type FirecrawlSettings = z.infer<typeof FirecrawlSettings>;
 
+/** Safe readiness for the Candidate-supplied TypeSafe credential that powers
+ * Jev posting-fit judgments. The credential itself is never part of this value. */
+export const TypeSafeReadiness = z.enum([
+  "not_configured",
+  "ready",
+  "reauthentication_required",
+  "rate_limited",
+  "degraded",
+]);
+export type TypeSafeReadiness = z.infer<typeof TypeSafeReadiness>;
+
+export const TypeSafeSafeFailure = z.enum([
+  "TypeSafe rejected the configured API key",
+  "TypeSafe is temporarily rate limited",
+  "TypeSafe is temporarily unavailable",
+  "TypeSafe could not verify the configured API key",
+]);
+export type TypeSafeSafeFailure = z.infer<typeof TypeSafeSafeFailure>;
+
+export const TypeSafeSettings = z.object({
+  configured: z.boolean(),
+  readiness: TypeSafeReadiness,
+  safeFailure: TypeSafeSafeFailure.nullable(),
+});
+export type TypeSafeSettings = z.infer<typeof TypeSafeSettings>;
+
 /** Safe readiness states for the locally installed Bird executable. Raw Bird
  * output, cookies, cookie locations, and authentication material never belong
  * in this projection. */
@@ -121,12 +147,18 @@ export const AppSettings = z.object({
   /** Safe local Bird readiness and consent. Bird credentials and process output
    * are never part of this value. */
   bird: BirdSettings,
+  /** Safe TypeSafe (Jev) readiness. The API key is never part of this value. */
+  typesafe: TypeSafeSettings,
 });
 export type AppSettings = z.infer<typeof AppSettings>;
 
 /** Settings that may be changed through the generic settings patch. Secret-backed
  * provider state has explicit operations below and cannot be smuggled into a patch. */
-export const EditableAppSettings = AppSettings.omit({ firecrawl: true, bird: true });
+export const EditableAppSettings = AppSettings.omit({
+  firecrawl: true,
+  bird: true,
+  typesafe: true,
+});
 export type EditableAppSettings = z.infer<typeof EditableAppSettings>;
 
 export const DEFAULT_SETTINGS: AppSettings = {
@@ -158,6 +190,11 @@ export const DEFAULT_SETTINGS: AppSettings = {
     consentedAt: null,
     invalidSignatureWarning: BIRD_INVALID_SIGNATURE_WARNING,
     cookieAccessWarning: BIRD_COOKIE_ACCESS_WARNING,
+  },
+  typesafe: {
+    configured: false,
+    readiness: "not_configured",
+    safeFailure: null,
   },
 };
 

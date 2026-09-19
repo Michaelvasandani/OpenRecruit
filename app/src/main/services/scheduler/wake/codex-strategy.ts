@@ -37,6 +37,7 @@ export class CodexHeadlessStrategy implements HeadlessWakeStrategy {
     }
     const agentDir = this.registry.agentDir(agent);
     // Self-heal the generated config before an unattended run, same as spawn.
+    this.registry.refreshInstructions(agentId);
     harnessFor(agent.harness).writeConfig?.(agentDir, agentId);
     const codexHome = codexHomeFor(basename(agentDir));
     const ac = new AbortController();

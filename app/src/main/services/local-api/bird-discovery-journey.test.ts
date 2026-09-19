@@ -728,11 +728,13 @@ describe("Issue #53 Bird discovery acceptance gate", () => {
           postId: report.postId,
           providerIdentity: report.postId,
           canonicalUrl: expect.stringMatching(/^https:\/\/x\.com\//),
-          evidenceReference: expect.stringMatching(/^bird-evidence:/),
           available: true,
           trust: "untrusted_evidence",
           provenance: { provider: "bird" },
         });
+        // Keep the asymmetric matcher outside toMatchObject: Bun 1.4 mutates
+        // this field to the matcher object, which invalidates the live reference.
+        expect(read.evidenceReference).toMatch(/^bird-evidence:/);
         expect(fixture.app.listSourceAttempts(run.id)).toHaveLength(2);
         expect(fixture.app.listSignals({ runId: run.id })).toHaveLength(0);
 

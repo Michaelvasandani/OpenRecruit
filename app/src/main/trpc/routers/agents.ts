@@ -1,5 +1,5 @@
 import type { Agent } from "@shared/agent";
-import { CreateAgentInput } from "@shared/agent";
+import { CreateAgentInput, compileScoutSetup, scoutCadenceCron } from "@shared/agent";
 import { observable } from "@trpc/server/observable";
 import { z } from "zod";
 import { bus } from "../../services/event-bus";
@@ -19,21 +19,62 @@ export const agentsRouter = router({
     .query(({ ctx, input }) => ctx.registry.templateClaudeMd(input.template)),
 
   create: publicProcedure.input(CreateAgentInput).mutation(({ ctx, input }) => {
-    const agent = ctx.registry.create(input);
+    const compiled = input.scoutSetup ? compileScoutSetup(input.scoutSetup) : null;
+    const agent = ctx.registry.create({
+      ...input,
+      claudeMd: compiled?.instructions ?? input.claudeMd,
+    });
     try {
       ctx.recruiting.createScout({
         name: agent.name,
         harness: agent.harness,
         instructionPath: `agents/${agent.slug}`,
+        strategyMaterial: compiled?.strategyMaterial,
+        policyMaterial: compiled?.policyMaterial,
+        sourceIds: input.scoutSetup?.sourceIds,
         defaultProfileId: input.defaultProfileId ?? null,
         resumableSessionRef: agent.lastSessionId,
         legacyAgentId: agent.id,
         idempotencyKey: `local-agent:${agent.id}`,
       });
+      if (input.scoutSetup) {
+        const cron = scoutCadenceCron(input.scoutSetup);
+        if (cron) {
+          ctx.scheduler.createCron(agent.id, {
+            cron,
+            prompt:
+              "Run the configured Scout discovery cycle now. Read the pinned context and selected Sources, use only their read-only discovery tools, record relevant evidence and checkpoints, and complete the Run explicitly.",
+            recurring: true,
+          });
+        }
+      }
     } catch (error) {
-      // Do not leave the local half of a Scout behind when domain validation
-      // rejects the composite creation (for example, a stale Profile choice).
-      if (!ctx.recruiting.resolveScoutForAgent(agent.id)) {
+      // Composite creation is all-or-nothing from the Candidate's perspective.
+      // Retire a schedule or Scout that was created before a later step failed,
+      // then remove the freshly scaffolded harness.
+      try {
+        ctx.scheduler.removeAgent?.(agent.id);
+      } catch {
+        // Preserve the original creation error; cleanup is best effort.
+      }
+      const scoutId = ctx.recruiting.resolveScoutForAgent(agent.id);
+      const scout = scoutId ? ctx.recruiting.getScout(scoutId) : null;
+      if (scout?.lifecycleState === "active") {
+        try {
+          ctx.recruiting.archiveScout({
+            scoutId: scout.id,
+            expectedRevision: scout.revision,
+            idempotencyKey: `failed-local-agent:${agent.id}`,
+          });
+        } catch {
+          // Preserve the original creation error; cleanup is best effort.
+        }
+      }
+      if (scoutId) {
+        // The archived Scout retains a foreign-key reference for auditability,
+        // so retire the harness row instead of trying to hard-delete it.
+        ctx.registry.archive(agent.id);
+      } else {
         ctx.registry.discardFailedCreation(agent.id);
       }
       throw error;

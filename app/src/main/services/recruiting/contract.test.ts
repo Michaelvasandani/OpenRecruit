@@ -26,8 +26,18 @@ describe("provider-neutral Recruiting contract", () => {
       policyMaterial: "Use selected Sources only.",
     });
     expect(instructions).toContain("OpenRecruit WebSearch and WebFetch");
+    expect(instructions).toContain("harness-native web search");
+    expect(instructions).toContain("Claude WebSearch or Codex built-in web search");
+    expect(instructions).toContain("Candidate-provided company or board seeds are optional");
+    expect(instructions).toContain(
+      "Reserve OpenRecruit WebSearch and WebFetch for an explicitly selected Web Search Source",
+    );
+    expect(instructions).toContain("AshbyInspectJobs");
+    expect(instructions).toContain("XSearch and XRead");
     expect(instructions).toContain("record_source_outcome");
     expect(instructions).toContain("RecordSignal");
+    expect(instructions).toContain("Primary evidence is preferred, not mandatory");
+    expect(instructions).toContain("verification caveat");
     expect(instructions).toContain("complete_run");
   });
 
@@ -65,5 +75,16 @@ describe("provider-neutral Recruiting contract", () => {
         policyMaterial: "Safe policy",
       }),
     ).toThrow(/prohibited capability/i);
+  });
+
+  test("states the host clock and listing cutoff in the Run prompt", () => {
+    const prompt = recruitingProviderInstructions({
+      runId: "run-1",
+      strategyMaterial: "Find engineering roles.",
+      policyMaterial: "Only surface job listings published within the past 7 days.",
+      now: Date.parse("2026-09-18T12:00:00.000Z"),
+    });
+    expect(prompt).toContain("the current time is 2026-09-18T12:00:00.000Z");
+    expect(prompt).toContain("published at or after 2026-09-11T12:00:00.000Z");
   });
 });

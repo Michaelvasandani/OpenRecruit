@@ -92,6 +92,30 @@ describe("Bird XSearch", () => {
     ).toThrow(/current Bird consent/i);
   });
 
+  test("creates a consented Bird Source without storing run-time search scope", () => {
+    const app = new RecruitingApplication(makeDb(), () => Date.parse("2026-08-23T16:00:00Z"), {
+      birdAccess: () => ({
+        configuredPath: "/private/bird",
+        resolvedPath: "/private/bird",
+        fingerprint: "fingerprint",
+        version: "0.8.0",
+        accountIdentity: { id: "42", username: "candidate", displayName: "Candidate" },
+      }),
+    });
+
+    const source = app.createXSource({
+      name: "Bird X",
+      provider: "bird",
+      idempotencyKey: "x-search-scope-free-source",
+    });
+
+    expect(source.value).toMatchObject({
+      name: "Bird X",
+      kind: "x",
+      provider: "bird",
+    });
+  });
+
   test("executes only the fixed search command with bounded output and stripped X tokens", async () => {
     const executable = join(tmpdir(), `openrecruit-bird-search-${crypto.randomUUID()}`);
     writeFileSync(
@@ -129,6 +153,36 @@ describe("Bird XSearch", () => {
       if (previous === undefined) delete process.env.CT0;
       else process.env.CT0 = previous;
     }
+  });
+
+  test("adds the host-owned search window to the Bird query", async () => {
+    const executable = join(tmpdir(), `openrecruit-bird-window-${crypto.randomUUID()}`);
+    writeFileSync(
+      executable,
+      '#!/bin/sh\nprintf \'[{"id":"1900000000000000002","text":"%s %s %s %s %s","author":{"username":"bird"}}]\' "$1" "$2" "$3" "$4" "$5"',
+    );
+    chmodSync(executable, 0o755);
+    const provider = new BirdXProvider(() => ({
+      configuredPath: executable,
+      resolvedPath: executable,
+      fingerprint: "fingerprint",
+      version: "0.8.0",
+      accountIdentity: { id: "42", username: "candidate", displayName: "Candidate" },
+    }));
+
+    const response = await provider.request({
+      operation: "search_recent",
+      query: "hiring",
+      startTime: "2026-08-16T16:00:00.000Z",
+      endTime: "2026-08-23T16:00:00.000Z",
+      maxResults: 3,
+      fields: [],
+      expansions: [],
+      userFields: [],
+    });
+
+    expect(response.status).toBe(200);
+    expect(response.body).toContain("search hiring since:2026-08-16 until:2026-08-24 -n 3 --json");
   });
 
   test("runs the configured Bird executable into temporary normalized evidence", async () => {
@@ -232,6 +286,40 @@ describe("Bird XSearch", () => {
         },
       ],
     });
+  });
+
+  test("excludes Bird posts outside the host-owned search window", async () => {
+    const provider = new DeterministicXProvider({
+      search: {
+        status: 200,
+        body: JSON.stringify([
+          {
+            id: "1900000000000000010",
+            text: "Current hiring post",
+            created_at: "2026-08-23T15:00:00.000Z",
+            author: { id: "42", username: "current", name: "Current" },
+          },
+          {
+            id: "1900000000000000011",
+            text: "Month-old hiring post",
+            created_at: "2026-07-23T15:00:00.000Z",
+            author: { id: "43", username: "old", name: "Old" },
+          },
+          {
+            id: "1900000000000000012",
+            text: "Hiring post with no timestamp",
+            author: { id: "44", username: "undated", name: "Undated" },
+          },
+        ]),
+      },
+    });
+    const { app, scout } = fixture(provider);
+
+    const result = await app.xSearch({ scoutId: scout.id, query: "hiring", limit: 3 });
+
+    expect(result.availableCount).toBe(1);
+    expect(result.results.map((item) => item.providerIdentity)).toEqual(["1900000000000000010"]);
+    expect(app.getSourceAttempt(result.sourceAttemptId)?.itemCount).toBe(1);
   });
 
   test("rejects invalid limits and does not invoke Bird", async () => {

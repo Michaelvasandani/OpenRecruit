@@ -101,7 +101,9 @@ export function AgentSidebar() {
           Scouts
         </span>
       </div>
-      <div className="px-2 pb-2">
+      {/* Scouts scroll within their own region so a long list cannot squeeze the
+          local harness list below to zero height. */}
+      <div className="min-h-0 shrink overflow-y-auto px-2 pb-2">
         {!backendConnected && reviewSidebar.data && (
           <p className="mb-1 rounded-md border border-warning/30 bg-warning/10 px-2 py-1 text-[10px] text-warning">
             Scout summaries are stale while reconnecting.
@@ -209,7 +211,7 @@ export function AgentSidebar() {
 
       <div
         className={cn(
-          "flex-1 overflow-y-auto px-2",
+          "min-h-28 flex-1 overflow-y-auto px-2",
           // Backend down: agent rows are stale and can't be opened/acted on — grey them out.
           !backendConnected && "pointer-events-none opacity-50",
         )}

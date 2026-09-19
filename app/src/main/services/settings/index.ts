@@ -10,6 +10,9 @@ import {
   FirecrawlSafeFailure,
   type FirecrawlSettings,
   SettingsUpdate,
+  TypeSafeReadiness,
+  TypeSafeSafeFailure,
+  type TypeSafeSettings,
 } from "@shared/settings";
 import { eq } from "drizzle-orm";
 import type { Db } from "../../db/client";
@@ -29,6 +32,11 @@ const FIRECRAWL_READINESS = "firecrawl_readiness";
 const FIRECRAWL_SAFE_FAILURE = "firecrawl_safe_failure";
 const FIRECRAWL_CREDENTIALS_URL = "https://api.firecrawl.dev/v2/team/credit-usage";
 const FIRECRAWL_PROBE_TIMEOUT_MS = 10_000;
+const TYPESAFE_API_KEY = "typesafe_api_key";
+const TYPESAFE_READINESS = "typesafe_readiness";
+const TYPESAFE_SAFE_FAILURE = "typesafe_safe_failure";
+const TYPESAFE_MODELS_URL = "https://api.typesafe.ai/v1/models";
+const TYPESAFE_PROBE_TIMEOUT_MS = 10_000;
 const BIRD_PATH = "bird_path";
 const BIRD_TESTED_PATH = "bird_tested_path";
 const BIRD_RESOLVED_PATH = "bird_resolved_path";
@@ -44,6 +52,7 @@ const BIRD_CONSENTED_AT = "bird_consented_at";
  * headers are intentionally not represented, so they cannot cross this seam. */
 export type FirecrawlProbeResponse = { status: number };
 export type FirecrawlProbe = (apiKey: string) => Promise<FirecrawlProbeResponse>;
+export type TypeSafeProbe = (apiKey: string) => Promise<FirecrawlProbeResponse>;
 export type BirdProbe = (configuredPath: string) => Promise<BirdProbeResult>;
 
 export type BirdConsentBinding = {
@@ -63,6 +72,8 @@ export type SettingsServiceOptions = {
   /** Injected at the local executable boundary for settings tests. Production
    * uses the real Bird executable and the allowlisted setup commands. */
   birdProbe?: BirdProbe;
+  /** Injected at the external HTTP boundary for deterministic tests. */
+  typesafeProbe?: TypeSafeProbe;
 };
 
 /** kv keys backing each active AppSettings field. Legacy settings rows are deliberately
@@ -90,6 +101,7 @@ const KEYS: Record<keyof EditableAppSettings, string> = {
 export class SettingsService {
   private readonly firecrawlProbe: FirecrawlProbe;
   private readonly birdProbe: BirdProbe;
+  private readonly typesafeProbe: TypeSafeProbe;
 
   constructor(
     private db: Db,
@@ -97,6 +109,7 @@ export class SettingsService {
   ) {
     this.firecrawlProbe = options.firecrawlProbe ?? probeFirecrawl;
     this.birdProbe = options.birdProbe ?? probeBirdExecutable;
+    this.typesafeProbe = options.typesafeProbe ?? probeTypeSafe;
   }
 
   get(): AppSettings {
@@ -129,6 +142,7 @@ export class SettingsService {
       showInMenuBar: this.readBool(KEYS.showInMenuBar, DEFAULT_SETTINGS.showInMenuBar),
       firecrawl: this.getFirecrawlSettings(),
       bird: this.getBirdSettings(),
+      typesafe: this.getTypeSafeSettings(),
     };
   }
 
@@ -228,6 +242,60 @@ export class SettingsService {
       this.write(FIRECRAWL_READINESS, result.readiness);
       if (result.safeFailure) this.write(FIRECRAWL_SAFE_FAILURE, result.safeFailure);
       else this.deleteRaw(FIRECRAWL_SAFE_FAILURE);
+      this.broadcastSafeSettings();
+    }
+    return result;
+  }
+
+  /**
+   * Return the current TypeSafe key to the host-owned posting-fit judge. Like
+   * the Firecrawl key, it is absent from every router and renderer projection,
+   * and is read per operation so replacement and removal apply immediately.
+   */
+  getTypeSafeApiKey(): string | undefined {
+    return this.readRaw(TYPESAFE_API_KEY);
+  }
+
+  /** Store a Candidate-supplied key and reset any previous failure state. */
+  setTypeSafeApiKey(apiKey: string): TypeSafeSettings {
+    const normalized = normalizeApiKey(apiKey, "TypeSafe");
+    this.write(TYPESAFE_API_KEY, normalized);
+    this.write(TYPESAFE_READINESS, "ready");
+    this.deleteRaw(TYPESAFE_SAFE_FAILURE);
+    this.broadcastSafeSettings();
+    return this.getTypeSafeSettings();
+  }
+
+  /** Remove the key and all safe readiness details associated with it. */
+  clearTypeSafeApiKey(): TypeSafeSettings {
+    this.deleteRaw(TYPESAFE_API_KEY);
+    this.deleteRaw(TYPESAFE_READINESS);
+    this.deleteRaw(TYPESAFE_SAFE_FAILURE);
+    this.broadcastSafeSettings();
+    return this.getTypeSafeSettings();
+  }
+
+  /** Test either an explicitly supplied (unsaved) key or the stored key. Only
+   * status is returned; response bodies and the credential stay host-only. */
+  async testTypeSafeApiKey(input: { apiKey?: string } = {}): Promise<TypeSafeSettings> {
+    const supplied =
+      input.apiKey === undefined ? undefined : normalizeApiKey(input.apiKey, "TypeSafe");
+    const apiKey = supplied ?? this.getTypeSafeApiKey();
+    if (!apiKey) return typesafeResult(false, "not_configured", null);
+
+    let result: TypeSafeSettings;
+    try {
+      const response = await this.typesafeProbe(apiKey);
+      result = resultForTypeSafeStatus(response.status);
+    } catch {
+      result = typesafeResult(true, "degraded", "TypeSafe is temporarily unavailable");
+    }
+
+    // Testing an unsaved draft must not mutate the saved credential's status.
+    if (supplied === undefined && this.getTypeSafeApiKey() === apiKey) {
+      this.write(TYPESAFE_READINESS, result.readiness);
+      if (result.safeFailure) this.write(TYPESAFE_SAFE_FAILURE, result.safeFailure);
+      else this.deleteRaw(TYPESAFE_SAFE_FAILURE);
       this.broadcastSafeSettings();
     }
     return result;
@@ -528,6 +596,19 @@ export class SettingsService {
     );
   }
 
+  private getTypeSafeSettings(): TypeSafeSettings {
+    const configured = this.getTypeSafeApiKey() !== undefined;
+    if (!configured) return typesafeResult(false, "not_configured", null);
+
+    const readiness = TypeSafeReadiness.safeParse(this.readRaw(TYPESAFE_READINESS));
+    const safeFailure = TypeSafeSafeFailure.safeParse(this.readRaw(TYPESAFE_SAFE_FAILURE));
+    return typesafeResult(
+      true,
+      readiness.success ? readiness.data : "ready",
+      safeFailure.success ? safeFailure.data : null,
+    );
+  }
+
   private broadcastSafeSettings(): void {
     bus.emitEvent("settings:changed", this.get());
   }
@@ -756,13 +837,17 @@ function serialize(value: unknown): string {
 }
 
 function normalizeFirecrawlApiKey(apiKey: string): string {
+  return normalizeApiKey(apiKey, "Firecrawl");
+}
+
+function normalizeApiKey(apiKey: string, provider: string): string {
   const normalized = apiKey.trim();
   const hasControlCharacter = [...normalized].some((character) => {
     const code = character.charCodeAt(0);
     return code < 32 || code === 127;
   });
   if (!normalized || normalized.length > 512 || hasControlCharacter) {
-    throw new Error("Firecrawl API key must be a non-empty value");
+    throw new Error(`${provider} API key must be a non-empty value`);
   }
   return normalized;
 }
@@ -791,6 +876,44 @@ function resultForFirecrawlStatus(status: number): FirecrawlSettings {
     return firecrawlResult(true, "degraded", "Firecrawl is temporarily unavailable");
   }
   return firecrawlResult(true, "degraded", "Firecrawl could not verify the configured API key");
+}
+
+function typesafeResult(
+  configured: boolean,
+  readiness: TypeSafeSettings["readiness"],
+  safeFailure: TypeSafeSettings["safeFailure"],
+): TypeSafeSettings {
+  return { configured, readiness, safeFailure };
+}
+
+function resultForTypeSafeStatus(status: number): TypeSafeSettings {
+  if (status >= 200 && status < 300) return typesafeResult(true, "ready", null);
+  if (status === 401 || status === 403) {
+    return typesafeResult(
+      true,
+      "reauthentication_required",
+      "TypeSafe rejected the configured API key",
+    );
+  }
+  if (status === 429) {
+    return typesafeResult(true, "rate_limited", "TypeSafe is temporarily rate limited");
+  }
+  if (status === 408 || status >= 500) {
+    return typesafeResult(true, "degraded", "TypeSafe is temporarily unavailable");
+  }
+  return typesafeResult(true, "degraded", "TypeSafe could not verify the configured API key");
+}
+
+async function probeTypeSafe(apiKey: string): Promise<FirecrawlProbeResponse> {
+  const response = await fetch(TYPESAFE_MODELS_URL, {
+    method: "GET",
+    headers: {
+      accept: "application/json",
+      authorization: `Bearer ${apiKey}`,
+    },
+    signal: AbortSignal.timeout(TYPESAFE_PROBE_TIMEOUT_MS),
+  });
+  return { status: response.status };
 }
 
 async function probeFirecrawl(apiKey: string): Promise<FirecrawlProbeResponse> {

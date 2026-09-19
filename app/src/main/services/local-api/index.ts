@@ -25,6 +25,19 @@ type WebAccessBoundary = {
     page?: number;
     signal?: AbortSignal;
   }): Promise<unknown>;
+  ashbyInspect(input: {
+    scoutId: string;
+    urls?: string[];
+    boards?: string[];
+    includeDescription?: boolean;
+    policy?: {
+      publishedAfter?: string;
+      listedOnly?: boolean;
+      maximumExplicitRequiredYears?: number;
+      targetRoles?: string[];
+    };
+    signal?: AbortSignal;
+  }): Promise<unknown>;
   readRunContextForScout(scoutId: string): unknown;
   listSelectedSourcesForScout(scoutId: string): unknown;
   beginRunForScout(scoutId: string): unknown;
@@ -195,6 +208,9 @@ export class LocalApiServer {
     }
     if (req.method === "POST" && url.pathname === "/hn-jobs") {
       return this.handleHackerNewsJobs(req, res);
+    }
+    if (req.method === "POST" && url.pathname === "/ashby/inspect") {
+      return this.handleAshbyInspect(req, res);
     }
     if (url.pathname.startsWith("/recruiting/run")) {
       return this.handleRecruitingRun(req, res, url);
@@ -480,6 +496,59 @@ export class LocalApiServer {
         code,
         ...(category && category !== "null" ? { category } : {}),
       });
+    }
+  }
+
+  /** Authenticated Ashby inspection. Agent identity selects the Scout and the
+   * host owns the fixed upstream endpoint, Source policy, and cancellation. */
+  private async handleAshbyInspect(req: IncomingMessage, res: ServerResponse) {
+    const recruiting = this.recruiting;
+    if (!recruiting) return json(res, 503, { error: "recruiting service not ready" });
+    const agentId = header(req, "x-opentrade-agent");
+    if (!agentId) return json(res, 404, { error: "unknown Scout" });
+    const scoutId = recruiting.resolveScoutForAgent(agentId);
+    if (!scoutId) return json(res, 404, { error: "unknown Scout" });
+    const body = await readJson(req);
+    if (!body || (!Array.isArray(body.urls) && !Array.isArray(body.boards))) {
+      return json(res, 400, { error: "Ashby URLs or boards are required", code: "VALIDATION" });
+    }
+    const controller = new AbortController();
+    const abort = () => controller.abort();
+    req.once("aborted", abort);
+    try {
+      recruiting.beginRunForScout(scoutId);
+      const result = await recruiting.ashbyInspect({
+        scoutId,
+        ...(Array.isArray(body.urls) ? { urls: body.urls as string[] } : {}),
+        ...(Array.isArray(body.boards) ? { boards: body.boards as string[] } : {}),
+        includeDescription:
+          typeof body.includeDescription === "boolean" ? body.includeDescription : undefined,
+        policy:
+          body.policy && typeof body.policy === "object"
+            ? (body.policy as {
+                publishedAfter?: string;
+                listedOnly?: boolean;
+                maximumExplicitRequiredYears?: number;
+                targetRoles?: string[];
+              })
+            : undefined,
+        signal: controller.signal,
+      });
+      return json(res, 200, result);
+    } catch (error) {
+      const code =
+        error && typeof error === "object" && "code" in error ? String(error.code) : "CONFLICT";
+      const category =
+        error && typeof error === "object" && "category" in error
+          ? String(error.category)
+          : undefined;
+      return json(res, code === "NOT_FOUND" ? 404 : 400, {
+        error: error instanceof Error ? error.message : "Ashby inspection could not complete",
+        code,
+        ...(category && category !== "null" ? { category } : {}),
+      });
+    } finally {
+      req.off("aborted", abort);
     }
   }
 

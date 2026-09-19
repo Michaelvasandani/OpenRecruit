@@ -94,6 +94,7 @@ export class HeadlessRunStrategy implements HeadlessWakeStrategy {
     // the interactive spawn): a Claude agent created by an older build gets its
     // `.claude/settings.json` regenerated here, so headless runs receive the same
     // local harness configuration as the interactive PTY.
+    this.registry.refreshInstructions(agentId);
     harness.writeConfig?.(this.registry.agentDir(agent), agentId);
     // I3: OpenRecruit owns the session id. Resume the known one, or mint+store one for a
     // never-started agent (begins the conversation headlessly).

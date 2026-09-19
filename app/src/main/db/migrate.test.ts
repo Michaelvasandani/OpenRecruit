@@ -430,7 +430,39 @@ describe("db migrations", () => {
     ).toEqual({ count: 0 });
   });
 
-  test("v16 seeds the canonical Hacker News Source without granting existing Scouts access", () => {
+  test("v16 seeds the public Ashby Source without granting existing Scouts access", () => {
+    const db = new Database(":memory:");
+    const m = wrap(db);
+    db.exec(SCHEMA_DDL);
+    db.exec(`
+      DELETE FROM source_access WHERE source_id = 'source-ashby';
+      DELETE FROM sources WHERE id = 'source-ashby';
+      INSERT INTO scouts (id, name, instruction_path, created_at)
+      VALUES ('existing-scout', 'Existing Scout', 'agents/existing', 1);
+      PRAGMA user_version = 15;
+    `);
+
+    migrate(m, { fresh: false });
+
+    expect(
+      db.query("SELECT id, kind, name, readiness FROM sources WHERE id = 'source-ashby'").get(),
+    ).toEqual({
+      id: "source-ashby",
+      kind: "ashby",
+      name: "Ashby",
+      readiness: "ready",
+    });
+    expect(
+      db.query("SELECT readiness FROM source_access WHERE source_id = 'source-ashby'").get(),
+    ).toEqual({ readiness: "ready" });
+    expect(
+      db
+        .query("SELECT count(*) AS count FROM scout_sources WHERE scout_id = 'existing-scout'")
+        .get(),
+    ).toEqual({ count: 0 });
+  });
+
+  test("v17 seeds the canonical Hacker News Source without granting existing Scouts access", () => {
     const db = new Database(":memory:");
     const m = wrap(db);
     db.exec(SCHEMA_DDL);
@@ -439,7 +471,7 @@ describe("db migrations", () => {
       DELETE FROM sources WHERE id = 'source-hacker-news';
       INSERT INTO scouts (id, name, instruction_path, created_at)
       VALUES ('existing-scout', 'Existing Scout', 'agents/existing', 1);
-      PRAGMA user_version = 15;
+      PRAGMA user_version = 16;
     `);
 
     migrate(m, { fresh: false });

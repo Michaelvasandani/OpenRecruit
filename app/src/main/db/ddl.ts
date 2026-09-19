@@ -271,6 +271,21 @@ export const SCHEMA_DDL = `
       updated_at INTEGER NOT NULL,
       UNIQUE (source_id, identity_key)
     );
+    CREATE TABLE IF NOT EXISTS ashby_posting_observations (
+      id TEXT PRIMARY KEY,
+      source_item_id TEXT NOT NULL REFERENCES source_items(id),
+      board_handle TEXT NOT NULL,
+      publication_at INTEGER,
+      is_listed INTEGER NOT NULL,
+      content_fingerprint TEXT NOT NULL,
+      observation_fingerprint TEXT NOT NULL,
+      relisting INTEGER NOT NULL DEFAULT 0,
+      observed_at INTEGER NOT NULL,
+      last_observed_at INTEGER NOT NULL,
+      UNIQUE (source_item_id, observation_fingerprint)
+    );
+    CREATE INDEX IF NOT EXISTS ashby_observations_item_time
+      ON ashby_posting_observations (source_item_id, observed_at);
     CREATE TABLE IF NOT EXISTS signals (
       id TEXT PRIMARY KEY,
       source_item_id TEXT NOT NULL REFERENCES source_items(id),
@@ -464,6 +479,23 @@ export const SCHEMA_DDL = `
       'not_configured', NULL, NULL, NULL,
       'Configure Firecrawl in Settings before enabling Web Search for a Scout', NULL,
       NULL, NULL, NULL, NULL, 0, 0
+    );
+    -- Ashby is a public inspection Source. Discovery remains harness-owned;
+    -- this row grants no Scout access until selected explicitly.
+    INSERT OR IGNORE INTO sources (
+      id, kind, name, config, readiness, safe_failure, created_at, updated_at
+    ) VALUES (
+      'source-ashby', 'ashby', 'Ashby', '{"provider":"ashby"}',
+      'ready', NULL, 0, 0
+    );
+    INSERT OR IGNORE INTO source_access (
+      id, source_id, account_ref, scope_key, access_mode, readiness, safe_failure,
+      last_checked_at, last_success_at, next_action, retry_at, etag, last_modified,
+      cursor, source_identity, created_at, updated_at
+    ) VALUES (
+      'source-ashby-access', 'source-ashby', '', 'public', 'public',
+      'ready', NULL, NULL, NULL, NULL, NULL,
+      NULL, NULL, NULL, 'ashby', 0, 0
     );
     -- Hacker News job postings come from the public, unauthenticated HN Search
     -- API, so the canonical Source is ready without any Candidate credential.

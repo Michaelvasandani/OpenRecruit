@@ -54,3 +54,47 @@ describe("buildAgentEnv — subscription auth", () => {
     ).toBeUndefined();
   });
 });
+
+describe("buildAgentEnv — enclosing Claude session", () => {
+  const AMBIENT = {
+    CLAUDECODE: "1",
+    CLAUDE_PID: "79664",
+    CLAUDE_CODE_SESSION_ID: "parent-session",
+    CLAUDE_CODE_CHILD_SESSION: "1",
+    CLAUDE_CODE_HOST_SESSION_ID: "local_parent",
+    CLAUDE_CODE_MESSAGING_SOCKET: "/tmp/cc-socks/79664.sock",
+    CLAUDE_CODE_MESSAGING_TOKEN: "parent-token",
+    CLAUDE_CODE_ENTRYPOINT: "claude-desktop",
+    ANTHROPIC_BASE_URL: "http://127.0.0.1:9999",
+  };
+  const USER_OWNED = { CLAUDE_CONFIG_DIR: "/custom/claude", CLAUDE_CODE_USE_BEDROCK: "1" };
+  let saved: Record<string, string | undefined>;
+  beforeEach(() => {
+    saved = {};
+    for (const key of [...Object.keys(AMBIENT), ...Object.keys(USER_OWNED)]) {
+      saved[key] = process.env[key];
+      delete process.env[key];
+    }
+  });
+  afterEach(() => {
+    for (const [key, value] of Object.entries(saved)) {
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
+  });
+
+  test("never lets a Scout inherit the identity of the Claude session that launched the host", () => {
+    Object.assign(process.env, AMBIENT, USER_OWNED);
+
+    const env = buildAgentEnv("a1");
+
+    for (const key of Object.keys(AMBIENT)) expect(env[key]).toBeUndefined();
+    expect(env).toMatchObject(USER_OWNED);
+  });
+
+  test("keeps a user's own API base URL when no Claude session encloses the host", () => {
+    process.env.ANTHROPIC_BASE_URL = "https://gateway.example.com";
+
+    expect(buildAgentEnv("a1").ANTHROPIC_BASE_URL).toBe("https://gateway.example.com");
+  });
+});

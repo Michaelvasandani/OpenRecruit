@@ -1,6 +1,6 @@
 import { Database } from "bun:sqlite";
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { drizzle } from "drizzle-orm/bun-sqlite";
@@ -99,12 +99,32 @@ describe("AgentRegistry — CLAUDE.md composition", () => {
       const md = claudeMdFor(template);
       expect(md).toContain("# OpenRecruit Local Scout");
       expect(md).toContain("Candidate");
+      expect(md).toContain("Claude WebSearch or Codex built-in web search");
+      expect(md).toContain("Candidate-provided company or board seeds are optional");
+      expect(md).toContain("AshbyInspectJobs");
     }
   });
 
   test("unknown templates fall back to default but still get the prefix", () => {
     const md = claudeMdFor("does-not-exist");
     expect(md).toContain("# OpenRecruit Local Scout");
+  });
+
+  test("upgrades a legacy Scout contract while preserving its specialty", () => {
+    const r = memRegistry();
+    const agent = r.create({ name: "legacy discovery", template: "default", harness: "claude" });
+    const path = join(r.agentDir(agent), "CLAUDE.md");
+    const legacy = readFileSync(path, "utf8").replace(
+      /\n*<!-- openrecruit:public-url-discovery:start -->[\s\S]*?<!-- openrecruit:public-url-discovery:end -->\n*/,
+      "\n",
+    );
+    writeFileSync(path, `${legacy.trim()}\n\n# Candidate specialty\nPreserve this exactly.\n`);
+
+    r.refreshInstructions(agent.id);
+
+    const refreshed = readFileSync(path, "utf8");
+    expect(refreshed).toContain("Claude WebSearch or Codex built-in web search");
+    expect(refreshed).toContain("# Candidate specialty\nPreserve this exactly.");
   });
 });
 
@@ -146,6 +166,8 @@ describe("AgentRegistry — codex scaffold divergence", () => {
     const agents = readFileSync(join(dir, "AGENTS.md"), "utf8");
     expect(agents).toContain("# OpenRecruit Local Scout");
     expect(agents).toContain("Codex");
+    expect(agents).toContain("Claude WebSearch or Codex built-in web search");
+    expect(agents).toContain("AshbyInspectJobs");
 
     // Claude-shaped template files skipped; codex config generated instead.
     expect(existsSync(join(dir, ".claude"))).toBe(false);

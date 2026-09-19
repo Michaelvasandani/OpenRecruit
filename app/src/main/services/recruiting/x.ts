@@ -261,7 +261,7 @@ export class BirdXProvider implements XProvider {
       const executionStartedAt = Date.now();
       const result = await executeBirdSearch(
         access.resolvedPath,
-        request.query?.trim() ?? "",
+        birdSearchQuery(request.query?.trim() ?? "", request.startTime, request.endTime),
         limit,
         request.signal,
         request.timeoutMs,
@@ -334,6 +334,23 @@ export class BirdXProvider implements XProvider {
       throw error;
     }
   }
+}
+
+function birdSearchQuery(query: string, startTime?: string, endTime?: string): string {
+  const terms = [query];
+  const start = searchDate(startTime);
+  if (start) terms.push(`since:${start}`);
+  const end = searchDate(endTime, true);
+  if (end) terms.push(`until:${end}`);
+  return terms.join(" ");
+}
+
+function searchDate(value: string | undefined, exclusiveUpperBound = false): string | null {
+  if (!value) return null;
+  const timestamp = Date.parse(value);
+  if (!Number.isFinite(timestamp)) return null;
+  const date = new Date(exclusiveUpperBound ? timestamp + 24 * 60 * 60 * 1_000 : timestamp);
+  return date.toISOString().slice(0, 10);
 }
 
 function sameBirdConsent(expected: BirdAccess, current: BirdAccess | null): boolean {
@@ -506,7 +523,7 @@ export function xConfigFromSource(config: string): XSourceConfig {
   const postIds = Array.isArray(idsValue)
     ? idsValue.filter((item): item is string => typeof item === "string" && /^\d{1,30}$/.test(item))
     : [];
-  if (!query && postIds.length === 0) {
+  if (provider === "x-api-v2" && !query && postIds.length === 0) {
     throw new XApiError(
       "X Source requires recent-search terms derived from the Discovery Strategy or public Post IDs",
       "malformed_config",

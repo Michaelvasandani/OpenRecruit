@@ -1,3 +1,4 @@
+import { listingPublishedAfter, PUBLIC_URL_DISCOVERY_INSTRUCTIONS } from "@shared/agent";
 import type { ScoutHarness } from "@shared/recruiting";
 import { RecruitingError } from "./errors";
 
@@ -98,12 +99,14 @@ export function recruitingProviderInstructions(input: {
   strategyMaterial: string;
   policyMaterial: string;
   runId: string;
+  now?: number;
 }): string {
   assertSafeMaterial(input.strategyMaterial, "Discovery Strategy");
   assertSafeMaterial(input.policyMaterial, "Scout Policy");
   return [
     `Recruiting Run: ${input.runId}`,
-    "Use only the host-provided Recruiting operations.",
+    ...runClockLines(input.policyMaterial, input.now),
+    "Use host-provided Recruiting operations for Run state, Source verification, and durable evidence.",
     "Read only explicitly selected public Sources through the host; do not access credentials or private content.",
     "Do not use unrestricted SQL, arbitrary HTTP, posting, messaging, applications, or access-control bypasses.",
     "Preserve bounded budgets and record safe structured outcomes; never persist provider transcripts.",
@@ -118,14 +121,32 @@ export function recruitingProviderInstructions(input: {
   ].join("\n");
 }
 
+function runClockLines(policyMaterial: string, now: number | undefined): string[] {
+  if (now === undefined) return [];
+  const cutoff = listingPublishedAfter(policyMaterial, now);
+  return [
+    `Host clock: the current time is ${new Date(now).toISOString()}. Treat this as today; do not infer the date from memory.`,
+    ...(cutoff === null
+      ? []
+      : [
+          `Listing cutoff: only postings published at or after ${new Date(cutoff).toISOString()} are inside the Scout Policy window. Use this value as publishedAfter.`,
+        ]),
+  ];
+}
+
 export function recruitingRunWorkflowInstructions(runId: string): string {
   return [
     `Recruiting Run workflow for ${runId}:`,
     "1. Call read_run_context and list_selected_sources before discovery.",
-    "2. Use OpenRecruit WebSearch and WebFetch (not native web tools) so Source Attempts are recorded.",
-    "3. Call record_source_outcome for selected attributable evidence to create Signals and Fresh Leads.",
-    "4. Call RecordSignal for each selected XSearch or XRead reference to create a Signal.",
-    "5. Call record_checkpoint as work progresses.",
-    "6. Always call complete_run with the final outcome before ending the turn.",
+    "",
+    PUBLIC_URL_DISCOVERY_INSTRUCTIONS,
+    "",
+    "2. For each discovered Ashby posting URL, call AshbyInspectJobs for employer facts, publication time, listed state, and experience evidence.",
+    "3. Use OpenRecruit WebSearch and WebFetch for selected Web Search Sources, HackerNewsJobs for a selected Hacker News Source, and XSearch and XRead for selected X Sources, so those Source Attempts are recorded.",
+    "4. Call record_source_outcome for selected attributable Web Search or Hacker News evidence to create Signals and Fresh Leads.",
+    "5. Primary evidence is preferred, not mandatory. Promote specific, current, attributable, actionable secondary evidence with an explicit verification caveat; reject generic or unsupported reposts.",
+    "6. Call RecordSignal for each selected XSearch, XRead, or AshbyInspectJobs reference to create a Signal.",
+    "7. Call record_checkpoint as work progresses.",
+    "8. Always call complete_run with the final outcome before ending the turn.",
   ].join("\n");
 }
