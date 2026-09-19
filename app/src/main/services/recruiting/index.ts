@@ -57,6 +57,12 @@ import {
   type PromoteLeadCommand,
 } from "./fit";
 import {
+  HackerNewsApplication,
+  type HackerNewsApplicationOptions,
+  type HackerNewsJobsRequest,
+  type HackerNewsJobsResponse,
+} from "./hacker-news";
+import {
   type CompleteInvestigationAttemptCommand,
   type CreateInvestigationCommand,
   InvestigationApplication,
@@ -64,6 +70,7 @@ import {
   type StartInvestigationAttemptCommand,
 } from "./investigations";
 import { PendingEvidenceStore } from "./pending-evidence";
+import { PostingScreener } from "./posting-screen";
 import type { ConfirmProfileCommand, ImportProfileCommand, UpdateDraftCommand } from "./profile";
 import { CandidateProfileApplication } from "./profile";
 import {
@@ -169,6 +176,18 @@ export {
   type FitEvidenceInput,
   type PromoteLeadCommand,
 } from "./fit";
+export {
+  DeterministicHackerNewsProvider,
+  HACKER_NEWS_SOURCE_ID,
+  HACKER_NEWS_SOURCE_KIND,
+  type HackerNewsJobPosting,
+  type HackerNewsJobsMode,
+  type HackerNewsJobsRequest,
+  type HackerNewsJobsResponse,
+  type HackerNewsProvider,
+  type HackerNewsProviderResponse,
+  HttpHackerNewsProvider,
+} from "./hacker-news";
 export {
   type CompleteInvestigationAttemptCommand,
   type CreateInvestigationCommand,
@@ -316,7 +335,8 @@ export type CreateScoutCommand = {
 };
 
 export type RecruitingApplicationOptions = ScoutRunApplicationOptions &
-  WebSearchApplicationOptions & {
+  WebSearchApplicationOptions &
+  HackerNewsApplicationOptions & {
     webSearchApiKey?: () => string | undefined;
     webFetchProvider?: WebFetchProvider;
     webFetchResolveHostname?: (hostname: string) => Promise<readonly string[]>;
@@ -371,6 +391,7 @@ export class RecruitingApplication {
   private readonly webSearchSettings?: () => WebSearchSettingsProjection;
   private readonly webSearchApplication: WebSearchApplication;
   private readonly webFetchApplication: WebFetchApplication;
+  private readonly hackerNewsApplication: HackerNewsApplication;
   private readonly ashbyInspectionApplication: AshbyInspectionApplication;
   private wake?: WakeTransport;
 
@@ -394,10 +415,19 @@ export class RecruitingApplication {
       webSearchSettings: options.webSearchSettings,
       webFetchResolveHostname: options.webFetchResolveHostname,
     });
-    this.ashbyInspectionApplication = new AshbyInspectionApplication(db, now, {
-      ashbyProvider: options.ashbyProvider,
+    // One screener for every job-posting Source, so they share Jev's judgment
+    // cache and concurrency limit.
+    const postingScreener = new PostingScreener({
       typesafeApiKey: options.typesafeApiKey,
       postingFitJudge: options.postingFitJudge,
+    });
+    this.hackerNewsApplication = new HackerNewsApplication(db, now, {
+      hackerNewsProvider: options.hackerNewsProvider,
+      postingScreener,
+    });
+    this.ashbyInspectionApplication = new AshbyInspectionApplication(db, now, {
+      ashbyProvider: options.ashbyProvider,
+      postingScreener,
       pendingEvidence,
     });
     this.candidateDecisions = new CandidateDecisionApplication(db, now);
@@ -551,6 +581,12 @@ export class RecruitingApplication {
     return this.webFetchApplication.fetch(command);
   }
 
+  hackerNewsJobs(
+    command: HackerNewsJobsRequest & { scoutId: string; signal?: AbortSignal },
+  ): Promise<HackerNewsJobsResponse> {
+    return this.hackerNewsApplication.jobs(command);
+  }
+
   readRunContextForScout(scoutId: string) {
     const run = this.requireActiveRunForScout(scoutId);
     return {
@@ -622,11 +658,14 @@ export class RecruitingApplication {
         "Source Attempt was not found for the active Scout Run",
       );
     }
-    const items = this.webFetchApplication.selectEvidence({
+    const selection = {
       scoutId: input.scoutId,
       sourceAttemptId: input.sourceAttemptId,
       canonicalUrls: input.items.map((item) => item.canonicalUrl),
-    });
+    };
+    const items = this.hackerNewsApplication.ownsAttempt(input.sourceAttemptId)
+      ? this.hackerNewsApplication.selectEvidence(selection)
+      : this.webFetchApplication.selectEvidence(selection);
     return this.scoutRuns.recordSourceOutcome({
       runId: run.id,
       sourceAttemptId: input.sourceAttemptId,
@@ -714,6 +753,7 @@ export class RecruitingApplication {
         policyMaterial: materialFromSnapshot(run.policySnapshot),
         runId: run.id,
         now: this.now(),
+        sourceKinds: run.sourceIds.flatMap((id) => this.getSource(id)?.kind ?? []),
       }),
     ].join("\n");
     this.wake.enqueue(scout.legacyAgentId ?? scout.id, prompt);

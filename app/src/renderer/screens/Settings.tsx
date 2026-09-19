@@ -242,7 +242,7 @@ function TypeSafePanel() {
   return (
     <SettingsSection
       title="Posting Fit Judgments"
-      description="Use a Candidate-supplied TypeSafe key so Jev reads each Ashby posting and judges the experience it really requires. Without a key, OpenRecruit falls back to pattern matching. The saved key is never shown again."
+      description="Use a Candidate-supplied TypeSafe key so Jev reads each Ashby and Hacker News posting, judges the experience it really requires, and decides whether it is worth keeping for your Candidate Profile, Discovery Strategy, and Scout Policy. Without a key, postings are not screened and Ashby falls back to pattern matching. The saved key is never shown again."
     >
       <SettingsRow
         label={status.configured ? "Replace TypeSafe API key" : "TypeSafe API key"}

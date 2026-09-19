@@ -497,4 +497,21 @@ export const SCHEMA_DDL = `
       'ready', NULL, NULL, NULL, NULL, NULL,
       NULL, NULL, NULL, 'ashby', 0, 0
     );
+    -- Hacker News job postings come from the public, unauthenticated HN Search
+    -- API, so the canonical Source is ready without any Candidate credential.
+    INSERT OR IGNORE INTO sources (
+      id, kind, name, config, readiness, safe_failure, created_at, updated_at
+    ) VALUES (
+      'source-hacker-news', 'hacker_news', 'Hacker News', '{"provider":"hn-algolia"}',
+      'ready', NULL, 0, 0
+    );
+    INSERT OR IGNORE INTO source_access (
+      id, source_id, account_ref, scope_key, access_mode, readiness, safe_failure,
+      last_checked_at, last_success_at, next_action, retry_at, etag, last_modified,
+      cursor, source_identity, created_at, updated_at
+    ) VALUES (
+      'source-hacker-news-access', 'source-hacker-news', '', 'public', 'public',
+      'ready', NULL, NULL, NULL, NULL, NULL,
+      NULL, NULL, NULL, NULL, 0, 0
+    );
 `;

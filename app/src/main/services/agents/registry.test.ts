@@ -128,6 +128,33 @@ describe("AgentRegistry — CLAUDE.md composition", () => {
   });
 });
 
+describe("AgentRegistry — selected-Source playbooks", () => {
+  test("a Scout's instructions carry only the playbooks of its selected Sources", () => {
+    const { db, sqlite } = memDb();
+    const r = new AgentRegistry(db);
+    const agent = r.create({ name: "hn only", template: "default", harness: "claude" });
+    const path = join(r.agentDir(agent), "CLAUDE.md");
+    // No Scout yet: the scaffold cannot know the selection, so it lists every playbook.
+    expect(readFileSync(path, "utf8")).toContain("AshbyInspectJobs");
+
+    sqlite
+      .query(
+        "INSERT INTO scouts (id, name, instruction_path, legacy_agent_id, created_at) VALUES (?, ?, ?, ?, 1)",
+      )
+      .run("scout-hn", "hn only", "agents/hn-only", agent.id);
+    sqlite
+      .query("INSERT INTO scout_sources (scout_id, source_id, selected_at) VALUES (?, ?, 1)")
+      .run("scout-hn", "source-hacker-news");
+
+    r.refreshInstructions(agent.id);
+
+    const refreshed = readFileSync(path, "utf8");
+    expect(refreshed).toContain("HackerNewsJobs");
+    expect(refreshed).toContain("do not mention, suggest, or fall back to any other Source");
+    expect(refreshed).not.toMatch(/ashby/i);
+  });
+});
+
 describe("AgentRegistry — codex scaffold divergence", () => {
   test("codex agents get AGENTS.md + generated .codex config, no claude files", async () => {
     const { registerHarness } = await import("../harness");

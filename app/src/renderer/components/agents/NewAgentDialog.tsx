@@ -876,6 +876,7 @@ function readable(value: string): string {
 function toolsForSource(kind: string): string[] {
   if (kind === "ashby") return ["Built-in web search", "AshbyInspectJobs", "RecordSignal"];
   if (kind === "web_search") return ["WebSearch", "WebFetch"];
+  if (kind === "hacker_news") return ["HackerNewsJobs"];
   if (kind === "x") return ["XSearch", "XRead", "RecordSignal"];
   if (kind === "rss" || kind === "atom") return ["Feed discovery", "Record evidence"];
   return ["Read Source", "Record evidence"];

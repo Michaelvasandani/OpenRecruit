@@ -726,12 +726,19 @@ export class RevisitPlanApplication {
       if (!request) return;
       const scout = tx.select().from(scouts).where(eq(scouts.id, scoutId)).get();
       const agentId = scout?.legacyAgentId ?? scoutId;
+      const sourceKinds = tx
+        .select({ kind: sources.kind })
+        .from(scoutSources)
+        .innerJoin(sources, eq(sources.id, scoutSources.sourceId))
+        .where(eq(scoutSources.scoutId, scoutId))
+        .all()
+        .map((row) => row.kind);
       wake.enqueue(
         agentId,
         [
           `[OpenRecruit Scout Run ${runId}] ${trigger} request accepted. Resume from the latest committed checkpoint.`,
           "",
-          recruitingRunWorkflowInstructions(runId),
+          recruitingRunWorkflowInstructions(runId, sourceKinds),
         ].join("\n"),
       );
       tx.update(scoutRunRequests)

@@ -98,6 +98,7 @@ function fitJudgment(
     requiredExperience: { level, minimumYears, confidence, probabilities: { [level]: confidence } },
     // The default fixture Scout has no Discovery Strategy, so no fit is judged.
     scoutFitProbability: null,
+    worthKeepingProbability: null,
   };
 }
 
@@ -170,6 +171,9 @@ describe("Ashby posting fit judgments", () => {
         location: "San Francisco, CA",
         descriptionPlain: SABBATICAL_DESCRIPTION,
         scoutBrief: null,
+        scoutPolicy: null,
+        // Every Run pins a Candidate Profile, so Jev always sees who it screens for.
+        candidateProfile: expect.stringContaining("Target role:"),
       },
     ]);
     expect(result.results[0]).toMatchObject({
@@ -350,7 +354,13 @@ describe("Ashby posting fit judgments", () => {
 
     expect(result.results[0]).toMatchObject({
       fitJudgment: null,
-      policy: { decision: "review", reasons: [{ code: "experience_judgment_unavailable" }] },
+      policy: {
+        decision: "review",
+        reasons: [
+          { code: "experience_judgment_unavailable" },
+          { rule: "worth_keeping", code: "worth_judgment_unavailable" },
+        ],
+      },
     });
   });
 

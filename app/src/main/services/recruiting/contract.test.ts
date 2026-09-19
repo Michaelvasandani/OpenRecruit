@@ -30,7 +30,7 @@ describe("provider-neutral Recruiting contract", () => {
     expect(instructions).toContain("Claude WebSearch or Codex built-in web search");
     expect(instructions).toContain("Candidate-provided company or board seeds are optional");
     expect(instructions).toContain(
-      "Reserve OpenRecruit WebSearch and WebFetch for an explicitly selected Web Search Source",
+      "Reserve each Source's tools for that explicitly selected Source",
     );
     expect(instructions).toContain("AshbyInspectJobs");
     expect(instructions).toContain("XSearch and XRead");
@@ -39,6 +39,22 @@ describe("provider-neutral Recruiting contract", () => {
     expect(instructions).toContain("Primary evidence is preferred, not mandatory");
     expect(instructions).toContain("verification caveat");
     expect(instructions).toContain("complete_run");
+  });
+
+  test("names only the Sources pinned to the Run", () => {
+    const instructions = recruitingProviderInstructions({
+      runId: "run-hn",
+      strategyMaterial: "Find matching public roles.",
+      policyMaterial: "Use selected Sources only.",
+      sourceKinds: ["hacker_news"],
+    });
+    expect(instructions).toContain("HackerNewsJobs");
+    expect(instructions).toContain("record_source_outcome");
+    expect(instructions).toContain("do not mention, suggest, or fall back to any other Source");
+    expect(instructions).not.toMatch(/ashby/i);
+    expect(instructions).not.toContain("XSearch");
+    expect(instructions).not.toContain("OpenRecruit WebSearch");
+    expect(instructions).toMatch(/\n2\. Call HackerNewsJobs[^\n]*\n3\. Primary evidence/);
   });
 
   test("fails closed for unrestricted or externally communicative capabilities", () => {

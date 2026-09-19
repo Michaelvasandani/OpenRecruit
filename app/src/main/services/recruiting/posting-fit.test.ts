@@ -23,6 +23,7 @@ function jevResponse(overrides: Record<string, unknown> = {}) {
         confidence: 0.85,
       },
       scout_fit: { type: "noul", noul: 0.97 },
+      worth_keeping: { type: "noul", noul: 0.91 },
       ...overrides,
     },
     usage: { input_tokens: 400, output_tokens: 0 },
@@ -71,6 +72,7 @@ describe("Jev posting fit judge", () => {
       questions: {
         required_experience: { type: "choice" },
         scout_fit: { type: "noul" },
+        worth_keeping: { type: "noul" },
       },
     });
     expect(judgment).toEqual({
@@ -82,6 +84,7 @@ describe("Jev posting fit judge", () => {
         probabilities: { entry_level: 0.9, five_plus_years: 0.1 },
       },
       scoutFitProbability: 0.97,
+      worthKeepingProbability: 0.91,
     });
     expect(JSON.stringify(judgment)).not.toContain("ts-secret");
   });
@@ -90,7 +93,7 @@ describe("Jev posting fit judge", () => {
     const bodies: Array<Record<string, unknown>> = [];
     const judge = new JevPostingFitJudge(() => "ts-secret", (async (_url, init) => {
       bodies.push(JSON.parse(init.body));
-      return respond(200, jevResponse({ scout_fit: undefined }));
+      return respond(200, jevResponse({ scout_fit: undefined, worth_keeping: undefined }));
     }) as PostingFitFetch);
 
     const judgment = await judge.judge({ ...POSTING, scoutBrief: null });
@@ -98,6 +101,39 @@ describe("Jev posting fit judge", () => {
     expect(Object.keys(bodies[0].questions as object)).toEqual(["required_experience"]);
     expect(bodies[0].state).not.toHaveProperty("scoutBrief");
     expect(judgment?.scoutFitProbability).toBeNull();
+    expect(judgment?.worthKeepingProbability).toBeNull();
+  });
+
+  test("asks whether the posting is worth keeping from the profile and policy alone", async () => {
+    const bodies: Array<Record<string, unknown>> = [];
+    const judge = new JevPostingFitJudge(() => "ts-secret", (async (_url, init) => {
+      bodies.push(JSON.parse(init.body));
+      return respond(200, jevResponse({ scout_fit: undefined }));
+    }) as PostingFitFetch);
+
+    const judgment = await judge.judge({
+      ...POSTING,
+      scoutBrief: null,
+      scoutPolicy: "Remote only. No defense contractors.",
+      candidateProfile: "Target role: AI Engineer\n\nNew graduate, built agents.",
+    });
+
+    expect(Object.keys(bodies[0].questions as object)).toEqual([
+      "required_experience",
+      "worth_keeping",
+    ]);
+    expect(bodies[0].state).toMatchObject({
+      scoutPolicy: "Remote only. No defense contractors.",
+      candidateProfile: "Target role: AI Engineer\n\nNew graduate, built agents.",
+    });
+    expect(judgment?.worthKeepingProbability).toBe(0.91);
+  });
+
+  test("treats a missing worth_keeping answer as no judgment", async () => {
+    const judge = new JevPostingFitJudge(() => "ts-secret", (async () =>
+      respond(200, jevResponse({ worth_keeping: undefined }))) as PostingFitFetch);
+
+    expect(await judge.judge(POSTING)).toBeNull();
   });
 
   test("judges the same posting again for a Scout with a different brief", async () => {
