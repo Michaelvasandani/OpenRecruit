@@ -44,6 +44,10 @@ _Avoid_: credentials, scraping access
 A Source of public posts and public account information from X used to discover recruiting Signals. Its retrieval provider does not expand what Scouts are allowed to read.
 _Avoid_: Bird Source, Twitter Source
 
+**Hacker News Source**:
+A canonical Source of public Hacker News job postings: top-level postings in the monthly "Who is hiring?" thread and YC startup job stories. It needs no Candidate authorization.
+_Avoid_: HN scraper, Algolia Source
+
 **Public Source Access**:
 Source Access limited to evidence publicly visible on the Source. Candidate authorization may enable retrieval but does not grant Scouts access to private account surfaces.
 _Avoid_: logged-in access, cookie access

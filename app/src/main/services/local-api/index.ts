@@ -17,6 +17,14 @@ type WebAccessBoundary = {
   }): Promise<unknown>;
   xRead(input: { scoutId: string; target: string; signal?: AbortSignal }): Promise<unknown>;
   webFetch(input: { scoutId: string; urls: string[]; contentLimit?: number }): Promise<unknown>;
+  hackerNewsJobs(input: {
+    scoutId: string;
+    mode?: "who_is_hiring" | "job_stories";
+    query?: string;
+    limit?: number;
+    page?: number;
+    signal?: AbortSignal;
+  }): Promise<unknown>;
   readRunContextForScout(scoutId: string): unknown;
   listSelectedSourcesForScout(scoutId: string): unknown;
   beginRunForScout(scoutId: string): unknown;
@@ -184,6 +192,9 @@ export class LocalApiServer {
     }
     if (req.method === "POST" && url.pathname === "/web-fetch") {
       return this.handleWebFetch(req, res);
+    }
+    if (req.method === "POST" && url.pathname === "/hn-jobs") {
+      return this.handleHackerNewsJobs(req, res);
     }
     if (url.pathname.startsWith("/recruiting/run")) {
       return this.handleRecruitingRun(req, res, url);
@@ -469,6 +480,57 @@ export class LocalApiServer {
         code,
         ...(category && category !== "null" ? { category } : {}),
       });
+    }
+  }
+
+  /** Authenticated agent-facing HackerNewsJobs boundary. The host owns every
+   * outbound URL; request bodies can only shape the bounded job-posting read. */
+  private async handleHackerNewsJobs(req: IncomingMessage, res: ServerResponse) {
+    const recruiting = this.recruiting;
+    if (!recruiting) return json(res, 503, { error: "recruiting service not ready" });
+    const agentId = header(req, "x-opentrade-agent");
+    if (!agentId) return json(res, 404, { error: "unknown Scout" });
+    const scoutId = recruiting.resolveScoutForAgent(agentId);
+    if (!scoutId) return json(res, 404, { error: "unknown Scout" });
+    const body = (await readJson(req)) ?? {};
+    const allowed = ["mode", "query", "limit", "page"];
+    if (Object.keys(body).some((key) => !allowed.includes(key))) {
+      return json(res, 400, {
+        error: "HackerNewsJobs accepts only mode, query, limit, and page",
+        code: "VALIDATION",
+      });
+    }
+    const controller = new AbortController();
+    const onAborted = () => controller.abort();
+    req.once("aborted", onAborted);
+    res.once("close", onAborted);
+    try {
+      recruiting.beginRunForScout(scoutId);
+      const result = await recruiting.hackerNewsJobs({
+        scoutId,
+        mode: body.mode as "who_is_hiring" | "job_stories" | undefined,
+        query: body.query as string | undefined,
+        limit: body.limit as number | undefined,
+        page: body.page as number | undefined,
+        signal: controller.signal,
+      });
+      return json(res, 200, result);
+    } catch (error) {
+      const code =
+        error && typeof error === "object" && "code" in error ? String(error.code) : "CONFLICT";
+      const category =
+        error && typeof error === "object" && "category" in error
+          ? String(error.category)
+          : undefined;
+      const message = error instanceof Error ? error.message : "Hacker News could not be read";
+      return json(res, code === "NOT_FOUND" ? 404 : 400, {
+        error: message,
+        code,
+        ...(category && category !== "null" ? { category } : {}),
+      });
+    } finally {
+      req.off("aborted", onAborted);
+      res.off("close", onAborted);
     }
   }
 

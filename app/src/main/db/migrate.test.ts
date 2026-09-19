@@ -429,4 +429,35 @@ describe("db migrations", () => {
         .get(),
     ).toEqual({ count: 0 });
   });
+
+  test("v16 seeds the canonical Hacker News Source without granting existing Scouts access", () => {
+    const db = new Database(":memory:");
+    const m = wrap(db);
+    db.exec(SCHEMA_DDL);
+    db.exec(`
+      DELETE FROM source_access WHERE source_id = 'source-hacker-news';
+      DELETE FROM sources WHERE id = 'source-hacker-news';
+      INSERT INTO scouts (id, name, instruction_path, created_at)
+      VALUES ('existing-scout', 'Existing Scout', 'agents/existing', 1);
+      PRAGMA user_version = 15;
+    `);
+
+    migrate(m, { fresh: false });
+
+    expect(
+      db.query("SELECT kind, name, readiness FROM sources WHERE id = 'source-hacker-news'").get(),
+    ).toEqual({ kind: "hacker_news", name: "Hacker News", readiness: "ready" });
+    expect(
+      db
+        .query(
+          "SELECT scope_key, readiness FROM source_access WHERE source_id = 'source-hacker-news'",
+        )
+        .get(),
+    ).toEqual({ scope_key: "public", readiness: "ready" });
+    expect(
+      db
+        .query("SELECT count(*) AS count FROM scout_sources WHERE scout_id = 'existing-scout'")
+        .get(),
+    ).toEqual({ count: 0 });
+  });
 });

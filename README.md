@@ -22,6 +22,10 @@ Candidate data is stored locally under the OpenRecruit data directory. Existing 
 
 OpenRecruit does not store provider credentials, cookies, unnecessary personal data, or provider transcripts in recruiting records. Source access is explicit and bounded. The POC never submits applications or sends external messages.
 
+## Hacker News job postings
+
+The canonical Hacker News Source reads public job postings through the unauthenticated [HN Search API](https://hn.algolia.com/api); it needs no credential and is ready by default, but a Scout can use it only after the Source is explicitly selected for that Scout. The agent-facing `HackerNewsJobs` tool has two modes: `who_is_hiring` returns top-level postings from the latest monthly "Ask HN: Who is hiring?" thread, and `job_stories` returns YC startup job posts. Both accept an optional full-text `query`, a `limit` (default 20, hard limit 50), and a `page`. The host owns every outbound URL, records each read as a Source Attempt, and treats postings as untrusted evidence; `record_source_outcome` is the only way a returned posting becomes a durable Signal.
+
 ## Bird-backed X discovery
 
 Bird 0.8.0 is an optional, local executable for the X Source. A Candidate must configure an absolute executable path in Settings, pass the read-only readiness check, and confirm the detected executable and authenticated public X account. The local browser session is a prerequisite for Bird, but OpenRecruit never stores or displays its cookies, cookie locations, child environment, executable output, or raw Bird payload.

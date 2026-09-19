@@ -53,6 +53,11 @@ import { assertSafeMaterial } from "./contract";
 import { RecruitingError, type RecruitingFailureCategory } from "./errors";
 import { purgeUnavailableSignals } from "./evidence";
 import {
+  HACKER_NEWS_OPERATION,
+  HACKER_NEWS_SOURCE_ID,
+  HACKER_NEWS_SOURCE_KIND,
+} from "./hacker-news";
+import {
   type FeedItem,
   type FeedProvider,
   feedUrlFromConfig,
@@ -412,6 +417,12 @@ export class ScoutRunApplication {
         "Web Search is a canonical Source and cannot be created as a duplicate",
       );
     }
+    if (kind === HACKER_NEWS_SOURCE_KIND) {
+      throw new RecruitingError(
+        "VALIDATION",
+        "Hacker News is a canonical Source and cannot be created as a duplicate",
+      );
+    }
     const config = sanitizeSourceConfig(command.config ?? {});
     if (kind === "x") {
       let parsed: ReturnType<typeof xConfigFromSource>;
@@ -624,6 +635,14 @@ export class ScoutRunApplication {
       // Firecrawl credential readiness is owned by SettingsService. The Source
       // seam only projects that safe state; it never performs a provider call
       // or moves the credential into Recruiting persistence.
+      return (
+        this.getSourceAccess(source.id) ??
+        toSourceAccessSummary(requireSourceAccess(this.db, source.id))
+      );
+    }
+    if (source.id === HACKER_NEWS_SOURCE_ID) {
+      // The public HN Search API needs no credential or feed URL; readiness is
+      // the seeded Source Access state plus any Candidate disablement.
       return (
         this.getSourceAccess(source.id) ??
         toSourceAccessSummary(requireSourceAccess(this.db, source.id))
@@ -2948,11 +2967,12 @@ export class ScoutRunApplication {
       .orderBy(asc(sources.createdAt), asc(sources.id))
       .all()
       .sort((left, right) => {
-        // The canonical Source is seeded at time zero so migrations can be
+        // Canonical Sources are seeded at time zero so migrations can be
         // deterministic; keep user-created Sources in their historical order
-        // in the Candidate-facing list.
-        if (left.id === WEB_SEARCH_SOURCE_ID) return 1;
-        if (right.id === WEB_SEARCH_SOURCE_ID) return -1;
+        // ahead of them in the Candidate-facing list.
+        const canonical = [HACKER_NEWS_SOURCE_ID, WEB_SEARCH_SOURCE_ID];
+        const rank = canonical.indexOf(left.id) - canonical.indexOf(right.id);
+        if (rank !== 0) return rank;
         return left.createdAt - right.createdAt || left.id.localeCompare(right.id);
       })
       .map((row) => this.toSourceSummary(row));
@@ -3468,10 +3488,14 @@ export class ScoutRunApplication {
           ? details.returnedUrls.filter((url): url is string => typeof url === "string")
           : [],
       );
-      if (details?.operation !== "web_fetch" || attempt.completedAt === null) {
+      const operation = details?.operation;
+      if (
+        (operation !== "web_fetch" && operation !== HACKER_NEWS_OPERATION) ||
+        attempt.completedAt === null
+      ) {
         throw new RecruitingError(
           "CONFLICT",
-          "Selected evidence must come from a completed OpenRecruit WebFetch Attempt",
+          "Selected evidence must come from a completed OpenRecruit WebFetch or HackerNewsJobs Attempt",
         );
       }
       const items: FeedItem[] = command.items.map((item) => {
@@ -3479,7 +3503,7 @@ export class ScoutRunApplication {
         if (!returnedUrls.has(canonicalUrl)) {
           throw new RecruitingError(
             "VALIDATION",
-            "Selected evidence URL was not returned by this WebFetch Attempt",
+            "Selected evidence URL was not returned by this Source Attempt",
           );
         }
         const title = typeof item.title === "string" ? item.title.trim().slice(0, 500) : "";
@@ -3499,7 +3523,7 @@ export class ScoutRunApplication {
           title,
           content,
           publicationAt,
-          metadata: { provider: "web_fetch", state: "available" },
+          metadata: { provider: operation, state: "available" },
         };
       });
       const source = tx.select().from(sources).where(eq(sources.id, attempt.sourceId)).get();
@@ -3517,7 +3541,7 @@ export class ScoutRunApplication {
       if (!source || !access) {
         throw new RecruitingError(
           "NOT_FOUND",
-          "Source metadata for the WebFetch Attempt was not found",
+          "Source metadata for the Source Attempt was not found",
         );
       }
       const at = this.now();
