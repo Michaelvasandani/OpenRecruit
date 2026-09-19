@@ -1,4 +1,4 @@
-import { listingPublishedAfter, PUBLIC_URL_DISCOVERY_INSTRUCTIONS } from "@shared/agent";
+import { discoveryInstructions, hasDiscoveryPlaybook, listingPublishedAfter } from "@shared/agent";
 import type { ScoutHarness } from "@shared/recruiting";
 import { RecruitingError } from "./errors";
 
@@ -100,6 +100,8 @@ export function recruitingProviderInstructions(input: {
   policyMaterial: string;
   runId: string;
   now?: number;
+  /** Kinds of the Sources pinned to the Run; omit when unknown. */
+  sourceKinds?: readonly string[];
 }): string {
   assertSafeMaterial(input.strategyMaterial, "Discovery Strategy");
   assertSafeMaterial(input.policyMaterial, "Scout Policy");
@@ -111,7 +113,7 @@ export function recruitingProviderInstructions(input: {
     "Do not use unrestricted SQL, arbitrary HTTP, posting, messaging, applications, or access-control bypasses.",
     "Preserve bounded budgets and record safe structured outcomes; never persist provider transcripts.",
     "",
-    recruitingRunWorkflowInstructions(input.runId),
+    recruitingRunWorkflowInstructions(input.runId, input.sourceKinds),
     "",
     "Discovery Strategy:",
     input.strategyMaterial,
@@ -134,19 +136,42 @@ function runClockLines(policyMaterial: string, now: number | undefined): string[
   ];
 }
 
-export function recruitingRunWorkflowInstructions(runId: string): string {
+/** The Run workflow names only the tools of the Sources pinned to the Run, so
+ * a Scout is never steered toward a Source the Candidate did not select. */
+export function recruitingRunWorkflowInstructions(
+  runId: string,
+  sourceKinds?: readonly string[],
+): string {
+  const has = (kind: string) => hasDiscoveryPlaybook(kind, sourceKinds);
+  const sourceSteps = [
+    has("ashby")
+      ? "For each discovered Ashby posting URL, call AshbyInspectJobs for employer facts, publication time, listed state, and experience evidence."
+      : "",
+    has("hacker_news")
+      ? "Call HackerNewsJobs to read Hacker News job postings, then call record_source_outcome for the selected postings to create Signals and Fresh Leads."
+      : "",
+    has("web_search")
+      ? "Use OpenRecruit WebSearch and WebFetch for the Web Search Source so those Source Attempts are recorded, then call record_source_outcome for selected attributable evidence to create Signals and Fresh Leads."
+      : "",
+    has("x") ? "Use XSearch and XRead for the X Source so those Source Attempts are recorded." : "",
+    has("ashby") || has("x")
+      ? "Call RecordSignal for each selected XSearch, XRead, or AshbyInspectJobs reference to create a Signal."
+      : "",
+  ].filter(Boolean);
+  const steps = [
+    "Call read_run_context and list_selected_sources before discovery.",
+    ...sourceSteps,
+    "Primary evidence is preferred, not mandatory. Promote specific, current, attributable, actionable secondary evidence with an explicit verification caveat; reject generic or unsupported reposts.",
+    "Call record_checkpoint as work progresses.",
+    "Always call complete_run with the final outcome before ending the turn.",
+  ];
+  const [first, ...rest] = steps;
   return [
     `Recruiting Run workflow for ${runId}:`,
-    "1. Call read_run_context and list_selected_sources before discovery.",
+    `1. ${first}`,
     "",
-    PUBLIC_URL_DISCOVERY_INSTRUCTIONS,
+    discoveryInstructions(sourceKinds),
     "",
-    "2. For each discovered Ashby posting URL, call AshbyInspectJobs for employer facts, publication time, listed state, and experience evidence.",
-    "3. Use OpenRecruit WebSearch and WebFetch for selected Web Search Sources, HackerNewsJobs for a selected Hacker News Source, and XSearch and XRead for selected X Sources, so those Source Attempts are recorded.",
-    "4. Call record_source_outcome for selected attributable Web Search or Hacker News evidence to create Signals and Fresh Leads.",
-    "5. Primary evidence is preferred, not mandatory. Promote specific, current, attributable, actionable secondary evidence with an explicit verification caveat; reject generic or unsupported reposts.",
-    "6. Call RecordSignal for each selected XSearch, XRead, or AshbyInspectJobs reference to create a Signal.",
-    "7. Call record_checkpoint as work progresses.",
-    "8. Always call complete_run with the final outcome before ending the turn.",
+    ...rest.map((step, index) => `${index + 2}. ${step}`),
   ].join("\n");
 }

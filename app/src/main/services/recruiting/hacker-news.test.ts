@@ -293,7 +293,7 @@ describe("HackerNewsJobs", () => {
         sourceAttemptId: result.sourceAttemptId,
         items: [{ canonicalUrl: "https://news.ycombinator.com/item?id=4103" }],
       }),
-    ).toThrow("not worth keeping");
+    ).toThrow("judged not worth keeping");
 
     const recorded = app.recordSourceOutcomeForScout({
       scoutId: scout.id,
@@ -329,6 +329,59 @@ describe("HackerNewsJobs", () => {
         items: [{ canonicalUrl: "https://news.ycombinator.com/item?id=4103" }],
       }).signalIds,
     ).toHaveLength(1);
+  });
+
+  test("the host enforces the Scout Policy listing window without spending Jev on it", async () => {
+    const judge = fakeJudge(() => judgment(0.9));
+    const provider = new DeterministicHackerNewsProvider({
+      [THREADS_URL]: THREADS,
+      [commentsUrl("")]: COMMENTS,
+    });
+    const day = 86_400_000;
+    // 4101 was published at t=1,100s; ten days later a 7-day window excludes it.
+    const app = new RecruitingApplication(makeDb(), () => 1_100_000 + 10 * day, {
+      hackerNewsProvider: provider,
+      postingFitJudge: judge,
+    });
+    const draft = app.importProfile({
+      name: "Candidate",
+      roleTarget: "Engineer",
+      cvText: "Built useful systems.",
+      careerInterests: "Robotics",
+      idempotencyKey: "hn-window-import",
+    });
+    const profile = app.confirmProfile({
+      profileId: draft.id,
+      expectedRevision: draft.revision,
+      idempotencyKey: "hn-window-confirm",
+    });
+    const scout = app.createScout({
+      name: "HN Window Scout",
+      harness: "claude",
+      instructionPath: "agents/hn-window",
+      defaultProfileId: profile.id,
+      sourceIds: [HACKER_NEWS_SOURCE_ID],
+      policyMaterial: "Only surface job listings published within the past 7 days.",
+      idempotencyKey: "hn-window-scout",
+    }).value;
+    app.launchScoutRun({ scoutId: scout.id, idempotencyKey: "hn-window-run" });
+
+    const result = await app.hackerNewsJobs({ scoutId: scout.id });
+
+    expect(result.results[0]?.screening).toEqual({
+      decision: "exclude",
+      reasons: [{ rule: "published_after", outcome: "fail", code: "published_before_window" }],
+    });
+    // 4103 has no timestamp: it is judged, and the unknown date asks for review.
+    expect(result.results[1]?.screening?.decision).toBe("review");
+    expect(judge.inputs.map((input) => input.title)).toEqual(["Beta | Designer"]);
+    expect(() =>
+      app.recordSourceOutcomeForScout({
+        scoutId: scout.id,
+        sourceAttemptId: result.sourceAttemptId,
+        items: [{ canonicalUrl: "https://news.ycombinator.com/item?id=4101" }],
+      }),
+    ).toThrow("outside the Scout Policy window");
   });
 
   test("rejects a Scout that has not selected the Hacker News Source", async () => {

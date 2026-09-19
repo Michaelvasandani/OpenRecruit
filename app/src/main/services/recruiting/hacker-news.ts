@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { listingPublishedAfter } from "@shared/agent";
 import type { SourceAttemptSummary } from "@shared/recruiting";
 import { and, asc, eq, inArray } from "drizzle-orm";
 import type { Db } from "../../db/client";
@@ -17,7 +18,9 @@ import {
   judgedFitReasons,
   PostingScreener,
   type ScreeningDecision,
+  type ScreeningReason,
   screeningContextForRun,
+  snapshotMaterial,
 } from "./posting-screen";
 
 export const HACKER_NEWS_SOURCE_ID = "source-hacker-news";
@@ -72,8 +75,9 @@ export type HackerNewsJobPosting = {
   publishedAt: number | null;
   /** Jev's reading of the posting, when a TypeSafe key is configured. */
   fitJudgment: PostingFitJudgment | null;
-  /** Whether the posting is worth keeping for this Candidate and Scout. Null
-   * when no judge is configured; an excluded posting cannot become a Signal. */
+  /** Whether the posting is worth keeping for this Candidate and Scout: the
+   * Scout Policy's listing window plus Jev's judgment. Null when neither
+   * applies; an excluded posting cannot become a Signal. */
   screening: ScreeningDecision | null;
 };
 
@@ -363,9 +367,11 @@ export class HackerNewsApplication {
     };
   }
 
-  /** Jev decides whether each posting is worth keeping, judged against the
-   * Run's pinned Candidate Profile, Discovery Strategy, and Scout Policy. A
-   * judging failure leaves the posting for review; it never fails the read. */
+  /** The host enforces the Scout Policy's listing window on its own clock,
+   * then Jev decides whether each remaining posting is worth keeping, judged
+   * against the Run's pinned Candidate Profile, Discovery Strategy, and Scout
+   * Policy. A judging failure leaves the posting for review; it never fails
+   * the read. */
   private async screen(
     postings: UnscreenedPosting[],
     run: {
@@ -375,31 +381,42 @@ export class HackerNewsApplication {
     },
     signal?: AbortSignal,
   ): Promise<HackerNewsJobPosting[]> {
-    if (!this.screener.isConfigured()) {
-      return postings.map((posting) => ({ ...posting, fitJudgment: null, screening: null }));
-    }
+    const cutoff = listingPublishedAfter(snapshotMaterial(run.policySnapshot), this.now());
+    const windowReason = (posting: UnscreenedPosting): ScreeningReason | null =>
+      cutoff === null
+        ? null
+        : posting.publishedAt === null
+          ? { rule: "published_after", outcome: "review", code: "publication_time_not_stated" }
+          : posting.publishedAt >= cutoff
+            ? { rule: "published_after", outcome: "pass", code: "published_in_window" }
+            : { rule: "published_after", outcome: "fail", code: "published_before_window" };
     const context = screeningContextForRun(run);
+    // Jev is not spent on postings the listing window already excludes.
     const judgments = await this.screener.judgeAll(
-      postings.map((posting) => ({
-        key: posting.id,
-        title: posting.title,
-        // HN postings are free text: the organization and location are in the body.
-        organization: null,
-        department: null,
-        team: null,
-        employmentType: null,
-        location: null,
-        descriptionPlain: posting.content,
-      })),
+      postings
+        .filter((posting) => windowReason(posting)?.outcome !== "fail")
+        .map((posting) => ({
+          key: posting.id,
+          title: posting.title,
+          // HN postings are free text: the organization and location are in the body.
+          organization: null,
+          department: null,
+          team: null,
+          employmentType: null,
+          location: null,
+          descriptionPlain: posting.content,
+        })),
       context,
       signal,
     );
     return postings.map((posting) => {
       const judgment = judgments.get(posting.id);
+      const window = windowReason(posting);
+      const reasons = [...(window ? [window] : []), ...judgedFitReasons(judgment, context)];
       return {
         ...posting,
         fitJudgment: typeof judgment === "object" ? judgment : null,
-        screening: decide(judgedFitReasons(judgment, context)),
+        screening: cutoff === null && !this.screener.isConfigured() ? null : decide(reasons),
       };
     });
   }
@@ -435,7 +452,7 @@ export class HackerNewsApplication {
       if (posting.excluded) {
         throw new RecruitingError(
           "CONFLICT",
-          "Jev judged this Hacker News posting not worth keeping for this Scout; it cannot be promoted to a Signal",
+          "The host screened out this Hacker News posting (outside the Scout Policy window, or judged not worth keeping); it cannot be promoted to a Signal",
         );
       }
       const { excluded: _excluded, ...evidence } = posting;

@@ -753,6 +753,7 @@ export class RecruitingApplication {
         policyMaterial: materialFromSnapshot(run.policySnapshot),
         runId: run.id,
         now: this.now(),
+        sourceKinds: run.sourceIds.flatMap((id) => this.getSource(id)?.kind ?? []),
       }),
     ].join("\n");
     this.wake.enqueue(scout.legacyAgentId ?? scout.id, prompt);

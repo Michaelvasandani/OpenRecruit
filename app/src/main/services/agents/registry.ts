@@ -7,12 +7,12 @@ import type {
   ExecutionState,
   HarnessId,
 } from "@shared/agent";
-import { PUBLIC_URL_DISCOVERY_INSTRUCTIONS } from "@shared/agent";
+import { discoveryInstructions } from "@shared/agent";
 import { templateOf } from "@shared/analytics";
-import { eq } from "drizzle-orm";
+import { eq, or } from "drizzle-orm";
 import { nanoid } from "nanoid";
 import { type Db, OPENTRADE_HOME } from "../../db/client";
-import { agents as agentsTable } from "../../db/schema";
+import { agents as agentsTable, scoutSources, scouts, sources } from "../../db/schema";
 import { analytics } from "../analytics";
 import { bus } from "../event-bus";
 import { harnessFor } from "../harness";
@@ -22,8 +22,8 @@ const AGENTS_DIR = join(OPENTRADE_HOME, "agents");
 const DISCOVERY_START = "<!-- openrecruit:public-url-discovery:start -->";
 const DISCOVERY_END = "<!-- openrecruit:public-url-discovery:end -->";
 
-function discoveryBlock(): string {
-  return `${DISCOVERY_START}\n${PUBLIC_URL_DISCOVERY_INSTRUCTIONS}\n${DISCOVERY_END}`;
+function discoveryBlock(sourceKinds?: readonly string[]): string {
+  return `${DISCOVERY_START}\n${discoveryInstructions(sourceKinds)}\n${DISCOVERY_END}`;
 }
 
 function slugify(name: string): string {
@@ -154,20 +154,41 @@ export class AgentRegistry {
 
     const prefix = readFileSync(prefixPath, "utf8").trim();
     const current = readFileSync(instructionsPath, "utf8");
+    const block = discoveryBlock(this.selectedSourceKinds(id));
     const marked = new RegExp(
       `${DISCOVERY_START.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}[\\s\\S]*?${DISCOVERY_END.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}`,
     );
     let next: string;
     if (marked.test(current)) {
-      next = current.replace(marked, discoveryBlock());
+      // A function replacement keeps `$` in the playbooks literal.
+      next = current.replace(marked, () => block);
     } else if (current.trimStart().startsWith(prefix)) {
       const leading = current.indexOf(prefix);
       const suffix = current.slice(leading + prefix.length).trimStart();
-      next = `${current.slice(0, leading)}${prefix}\n\n${discoveryBlock()}${suffix ? `\n\n${suffix}` : "\n"}`;
+      next = `${current.slice(0, leading)}${prefix}\n\n${block}${suffix ? `\n\n${suffix}` : "\n"}`;
     } else {
-      next = `${current.trimEnd()}\n\n${discoveryBlock()}\n`;
+      next = `${current.trimEnd()}\n\n${block}\n`;
     }
     if (next !== current) writeFileSync(instructionsPath, next);
+  }
+
+  /** Kinds of the Sources selected for this agent's Scout, so its instructions
+   * carry only those playbooks. Undefined (every playbook) when the agent has
+   * no Scout or no selection yet. */
+  private selectedSourceKinds(agentId: string): string[] | undefined {
+    try {
+      const kinds = this.db
+        .select({ kind: sources.kind })
+        .from(scouts)
+        .innerJoin(scoutSources, eq(scoutSources.scoutId, scouts.id))
+        .innerJoin(sources, eq(sources.id, scoutSources.sourceId))
+        .where(or(eq(scouts.legacyAgentId, agentId), eq(scouts.id, agentId)))
+        .all()
+        .map((row) => row.kind);
+      return kinds.length > 0 ? [...new Set(kinds)] : undefined;
+    } catch {
+      return undefined; // recruiting tables absent (older DB): keep every playbook
+    }
   }
 
   create(input: CreateAgentInput): Agent {
