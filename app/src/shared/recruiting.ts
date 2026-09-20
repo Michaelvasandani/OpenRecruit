@@ -691,6 +691,38 @@ export const ReviewSidebarProjection = z.object({
 });
 export type ReviewSidebarProjection = z.infer<typeof ReviewSidebarProjection>;
 
+/** One job Signal, flattened for the Job Board sheet. Company is best-effort:
+ * Signals carry no structured organization, so it is derived from the posting
+ * URL or title and is null when neither names one. */
+export const JobBoardRow = z.object({
+  signalId: z.string().min(1),
+  title: z.string(),
+  company: z.string().nullable(),
+  /** The X handle that posted the Signal, when it came from a post. */
+  author: z.string().nullable(),
+  url: z.string().nullable(),
+  excerpt: z.string(),
+  sourceId: z.string().min(1),
+  sourceKind: z.string().min(1),
+  sourceName: z.string().min(1),
+  scouts: z.array(z.object({ id: z.string().min(1), name: z.string().min(1) })),
+  /** Jev's probability that the posting fits the Scout's brief; null when unjudged. */
+  fit: z.number().nullable(),
+  experienceLevel: z.string().nullable(),
+  minimumYears: z.number().nullable(),
+  publicationAt: z.number().int().nullable(),
+  observedAt: z.number().int(),
+  freshness: z.enum(["fresh", "stale"]),
+});
+export type JobBoardRow = z.infer<typeof JobBoardRow>;
+
+export const ReviewJobBoardProjection = z.object({
+  revision: z.number().int().nonnegative(),
+  generatedAt: z.number().int(),
+  rows: z.array(JobBoardRow),
+});
+export type ReviewJobBoardProjection = z.infer<typeof ReviewJobBoardProjection>;
+
 export const ReviewScoutRunCenterProjection = z.object({
   revision: z.number().int().nonnegative(),
   generatedAt: z.number().int(),

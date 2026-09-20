@@ -4,6 +4,8 @@ import {
   type FitEvaluationSummary,
   type OpportunitySummary,
   type RecruitingInvalidation,
+  type ReviewJobBoardProjection,
+  ReviewJobBoardProjection as ReviewJobBoardProjectionSchema,
   type ReviewLeadPanelProjection,
   ReviewLeadPanelProjection as ReviewLeadPanelProjectionSchema,
   type ReviewScoutRunCenterProjection,
@@ -69,6 +71,7 @@ import {
   type RecordInvestigationAttemptCommand,
   type StartInvestigationAttemptCommand,
 } from "./investigations";
+import { toJobBoardRow } from "./job-board";
 import { PendingEvidenceStore } from "./pending-evidence";
 import { PostingScreener } from "./posting-screen";
 import type { ConfirmProfileCommand, ImportProfileCommand, UpdateDraftCommand } from "./profile";
@@ -1014,6 +1017,32 @@ export class RecruitingApplication {
    * renderer never has to synthesize operational authority from several
    * independently fetched tables.
    */
+  /** Every current job Signal as one flat sheet. A Signal that a later
+   * observation superseded is dropped so each posting appears once. */
+  reviewJobBoard(): ReviewJobBoardProjection {
+    const signals = this.listSignals();
+    const superseded = new Set(signals.flatMap((signal) => signal.supersededSignalId ?? []));
+    const lookups = {
+      sources: new Map(this.listSources().map((source) => [source.id, source])),
+      // Read the table directly: archived Scouts still attribute their Signals.
+      scouts: new Map(
+        this.db
+          .select({ id: scouts.id, name: scouts.name })
+          .from(scouts)
+          .all()
+          .map((scout) => [scout.id, scout.name]),
+      ),
+    };
+    return ReviewJobBoardProjectionSchema.parse({
+      revision: this.revision(),
+      generatedAt: this.now(),
+      rows: signals
+        .filter((signal) => !superseded.has(signal.id))
+        .map((signal) => toJobBoardRow(signal, lookups))
+        .sort((left, right) => right.observedAt - left.observedAt),
+    });
+  }
+
   reviewSidebar(): ReviewSidebarProjection {
     const generatedAt = this.now();
     const sources = this.listSources();
