@@ -24,8 +24,16 @@ export function AgentSidebar() {
   const openNewAgent = useUIStore((s) => s.openNewAgent);
   const backendConnected = useConnectionStore((s) => s.backendConnected);
   const [pendingDelete, setPendingDelete] = useState<Agent | null>(null);
+  const [pendingScoutDelete, setPendingScoutDelete] = useState<{
+    id: string;
+    name: string;
+    hasActiveRun: boolean;
+  } | null>(null);
 
   const archiveAgent = trpc.agents.archive.useMutation();
+  const deleteScout = trpc.recruiting.deleteScout.useMutation({
+    onSettled: () => void utils.recruiting.review.sidebar.invalidate(),
+  });
 
   trpc.recruiting.onChanged.useSubscription(undefined, {
     onData: (event) => {
@@ -54,6 +62,14 @@ export function AgentSidebar() {
     if (selectedId === agent.id) select(null);
     archiveAgent.mutate({ id: agent.id });
     setPendingDelete(null);
+  };
+
+  const confirmScoutDelete = () => {
+    const scout = pendingScoutDelete;
+    if (!scout) return;
+    if (selectedScoutId === scout.id) selectScout(null);
+    deleteScout.mutate({ scoutId: scout.id });
+    setPendingScoutDelete(null);
   };
 
   return (
@@ -123,46 +139,65 @@ export function AgentSidebar() {
           <p className="px-2 py-1 text-sm text-muted-foreground">No Scouts yet.</p>
         )}
         {scouts.map((entry) => (
-          <button
-            type="button"
+          <div
             key={entry.scout.id}
-            onClick={() => {
-              selectScout(entry.scout.id);
-              setView("runs");
-            }}
             className={cn(
-              "flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-sm text-sidebar-foreground hover:bg-sidebar-accent",
+              "group flex w-full items-center rounded-md pl-2 pr-1 text-sm text-sidebar-foreground hover:bg-sidebar-accent",
               view === "runs" &&
                 selectedScoutId === entry.scout.id &&
                 "bg-sidebar-accent font-medium",
+              !backendConnected && "pointer-events-none opacity-50",
             )}
-            title={entry.scout.instructionPath}
           >
-            <span
-              className={cn(
-                "size-2 rounded-full",
-                entry.activeRun ? "bg-amber-500" : "bg-emerald-500",
+            <button
+              type="button"
+              onClick={() => {
+                selectScout(entry.scout.id);
+                setView("runs");
+              }}
+              className="flex min-w-0 flex-1 items-center gap-2 py-1.5 text-left"
+              title={entry.scout.instructionPath}
+            >
+              <span
+                className={cn(
+                  "size-2 rounded-full",
+                  entry.activeRun ? "bg-amber-500" : "bg-emerald-500",
+                )}
+                aria-hidden="true"
+              />
+              <span className="min-w-0 flex-1 truncate">
+                <span className="block truncate">{entry.scout.name}</span>
+                <span className="block truncate text-[10px] text-muted-foreground">
+                  {entry.activeRun?.status ?? entry.latestRun?.status ?? "No Run"} · last{" "}
+                  {entry.lastRunAt ? new Date(entry.lastRunAt).toLocaleDateString() : "—"} · next{" "}
+                  {entry.nextRunAt ? new Date(entry.nextRunAt).toLocaleDateString() : "manual"}
+                </span>
+              </span>
+              <span className="text-[10px] uppercase text-muted-foreground">
+                {entry.freshLeadCount > 0 ? `${entry.freshLeadCount} fresh` : entry.scout.harness}
+                <span className="block normal-case">
+                  src {entry.sourceReadiness.ready}/{entry.sourceReadiness.total}
+                </span>
+              </span>
+              {entry.dueRevisitCount > 0 && (
+                <span className="text-[10px] text-warning">{entry.dueRevisitCount} due</span>
               )}
-              aria-hidden="true"
-            />
-            <span className="min-w-0 flex-1 truncate">
-              <span className="block truncate">{entry.scout.name}</span>
-              <span className="block truncate text-[10px] text-muted-foreground">
-                {entry.activeRun?.status ?? entry.latestRun?.status ?? "No Run"} · last{" "}
-                {entry.lastRunAt ? new Date(entry.lastRunAt).toLocaleDateString() : "—"} · next{" "}
-                {entry.nextRunAt ? new Date(entry.nextRunAt).toLocaleDateString() : "manual"}
-              </span>
-            </span>
-            <span className="text-[10px] uppercase text-muted-foreground">
-              {entry.freshLeadCount > 0 ? `${entry.freshLeadCount} fresh` : entry.scout.harness}
-              <span className="block normal-case">
-                src {entry.sourceReadiness.ready}/{entry.sourceReadiness.total}
-              </span>
-            </span>
-            {entry.dueRevisitCount > 0 && (
-              <span className="text-[10px] text-warning">{entry.dueRevisitCount} due</span>
-            )}
-          </button>
+            </button>
+            <button
+              type="button"
+              aria-label={`Delete ${entry.scout.name}`}
+              onClick={() =>
+                setPendingScoutDelete({
+                  id: entry.scout.id,
+                  name: entry.scout.name,
+                  hasActiveRun: entry.activeRun !== null,
+                })
+              }
+              className="shrink-0 rounded p-1 text-muted-foreground opacity-0 hover:bg-sidebar-border hover:text-foreground focus-visible:opacity-100 group-hover:opacity-100"
+            >
+              <X className="size-3.5" />
+            </button>
+          </div>
         ))}
         {reviewSidebar.data && reviewSidebar.data.sourceReadiness.total > 0 && (
           <p className="px-2 pt-1 text-[10px] text-muted-foreground">
@@ -290,6 +325,23 @@ export function AgentSidebar() {
         destructive
         onConfirm={confirmDelete}
         onCancel={() => setPendingDelete(null)}
+      />
+
+      <ConfirmDialog
+        open={pendingScoutDelete !== null}
+        title="Delete Scout?"
+        body={
+          <>
+            <span className="font-medium text-foreground">{pendingScoutDelete?.name}</span> will be
+            removed along with its schedule
+            {pendingScoutDelete?.hasActiveRun ? ", and its active Run will be cancelled" : ""}.
+            Leads it already found are kept.
+          </>
+        }
+        confirmLabel="Delete"
+        destructive
+        onConfirm={confirmScoutDelete}
+        onCancel={() => setPendingScoutDelete(null)}
       />
     </div>
   );

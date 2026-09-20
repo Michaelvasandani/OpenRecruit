@@ -703,6 +703,47 @@ export const recruitingRouter = router({
     )
     .mutation(({ ctx, input }) => command(() => ctx.recruiting.archiveScout(input))),
 
+  /** The sidebar's Delete control. A Scout is never hard-deleted — its Runs,
+   * Signals, and Leads keep a foreign-key reference for auditability — so this
+   * cancels the active Run, retires the backing harness and its schedules, and
+   * archives the Scout. */
+  deleteScout: publicProcedure
+    .input(z.object({ scoutId: z.string().min(1) }))
+    .mutation(({ ctx, input }) =>
+      command(() => {
+        const scout = ctx.recruiting.getScout(input.scoutId);
+        if (!scout) {
+          throw new RecruitingError("NOT_FOUND", `Scout ${input.scoutId} was not found`);
+        }
+        if (scout.lifecycleState !== "active") return { ok: true };
+        const activeRunId = ctx.recruiting.getScoutRunCenter(scout.id).activeRunId;
+        if (activeRunId !== null) {
+          ctx.recruiting.advanceScoutRun({
+            runId: activeRunId,
+            status: "cancelled",
+            safeFailure: "Scout was deleted.",
+            idempotencyKey: `delete-scout:${scout.id}:cancel:${activeRunId}`,
+          });
+        }
+        if (scout.legacyAgentId) {
+          // Same teardown as `agents.archive`, so no PTY, wake, or schedule
+          // keeps running for a deleted Scout.
+          ctx.terminal.kill(scout.legacyAgentId);
+          ctx.wake.stop(scout.legacyAgentId);
+          ctx.scheduler.removeAgent(scout.legacyAgentId);
+          ctx.registry.archive(scout.legacyAgentId);
+        }
+        // Re-read: cancelling the Run may have advanced the Scout's revision.
+        const current = ctx.recruiting.getScout(scout.id) ?? scout;
+        ctx.recruiting.archiveScout({
+          scoutId: scout.id,
+          expectedRevision: current.revision,
+          idempotencyKey: `delete-scout:${scout.id}`,
+        });
+        return { ok: true };
+      }),
+    ),
+
   revision: publicProcedure.query(({ ctx }) => ctx.recruiting.revision()),
 
   onChanged: publicProcedure.subscription(({ ctx }) =>
