@@ -1,5 +1,14 @@
 import type { Agent } from "@shared/agent";
-import { CalendarClock, FileUser, Loader2, PlayCircle, Plus, Settings, X } from "lucide-react";
+import {
+  BriefcaseBusiness,
+  CalendarClock,
+  FileUser,
+  Loader2,
+  PlayCircle,
+  Plus,
+  Settings,
+  X,
+} from "lucide-react";
 import { type CSSProperties, useEffect, useState } from "react";
 import { useAgents } from "../../hooks/useAgents";
 import { trpc } from "../../lib/trpc";
@@ -96,6 +105,20 @@ export function AgentSidebar() {
           )}
         >
           <CalendarClock className="size-4" /> Scheduled
+        </button>
+        <button
+          type="button"
+          onClick={() => setView("jobs")}
+          disabled={!backendConnected}
+          className={cn(
+            "flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-sm hover:bg-sidebar-accent",
+            view === "jobs"
+              ? "bg-sidebar-accent font-medium text-sidebar-foreground"
+              : "text-muted-foreground",
+            !backendConnected && "pointer-events-none opacity-50",
+          )}
+        >
+          <BriefcaseBusiness className="size-4" /> Job Board
         </button>
         <button
           type="button"

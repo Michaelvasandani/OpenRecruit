@@ -19,6 +19,7 @@ export const recruitingRouter = router({
    * lists. */
   review: router({
     sidebar: publicProcedure.query(({ ctx }) => ctx.recruiting.reviewSidebar()),
+    jobBoard: publicProcedure.query(({ ctx }) => ctx.recruiting.reviewJobBoard()),
     scoutRunCenter: publicProcedure
       .input(z.object({ scoutId: z.string().min(1) }))
       .query(({ ctx, input }) => ctx.recruiting.reviewScoutRunCenter(input.scoutId)),

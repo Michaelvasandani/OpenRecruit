@@ -9,6 +9,7 @@ import { backendStarted } from "./lib/trpc";
 import { cn } from "./lib/utils";
 import { BackendFailed } from "./screens/BackendFailed";
 import { CandidateProfilesScreen } from "./screens/CandidateProfiles";
+import { JobBoardScreen } from "./screens/JobBoard";
 import { Onboarding } from "./screens/Onboarding";
 import { ReviewWorkspaceScreen } from "./screens/ReviewWorkspace";
 import { ScheduledScreen } from "./screens/Scheduled";
@@ -54,6 +55,7 @@ export function App() {
         {view === "settings" && <SettingsScreen />}
         {view === "profiles" && <CandidateProfilesScreen />}
         {view === "runs" && <ReviewWorkspaceScreen />}
+        {view === "jobs" && <JobBoardScreen />}
       </div>
       <NewAgentDialog />
     </div>

@@ -1,7 +1,7 @@
 import { create } from "zustand";
 
 /** Top-level pane: the agent workspace, the full-screen Scheduled view, or Settings. */
-export type AppView = "agents" | "scheduled" | "settings" | "profiles" | "runs";
+export type AppView = "agents" | "scheduled" | "settings" | "profiles" | "runs" | "jobs";
 
 interface UIState {
   selectedAgentId: string | null;

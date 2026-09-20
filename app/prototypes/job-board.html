@@ -1,0 +1,384 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>OpenRecruit — Job Board prototypes</title>
+  <!--
+    PROTOTYPE — THROWAWAY CODE, NOT PRODUCTION UI.
+    Three variants of a new "Job Board" section that shows every job Signal the
+    Scouts found, switchable via ?variant=A|B|C (or the ← → keys).
+    Representative local-only data; nothing is persisted and nothing mutates.
+    Fields mirror SignalSummary / SignalEvidence.fitJudgment in src/shared/recruiting.ts.
+  -->
+  <style>
+    :root {
+      --bg: #161616;
+      --surface: #1e1e1e;
+      --raised: #262626;
+      --sidebar: #1a1a1a;
+      --ink: #ececec;
+      --muted: #9a9a9a;
+      --faint: #6d6d6d;
+      --line: #2e2e2e;
+      --line-strong: #3a3a3a;
+      --green: #4cc38a;
+      --green-soft: rgb(76 195 138 / 14%);
+      --amber: #e2a336;
+      --amber-soft: rgb(226 163 54 / 14%);
+      --blue: #6ea8fe;
+      --blue-soft: rgb(110 168 254 / 14%);
+      --violet: #b197fc;
+      --violet-soft: rgb(177 151 252 / 14%);
+      --red: #f0716b;
+      --radius: 10px;
+    }
+    * { box-sizing: border-box; }
+    html, body { height: 100%; margin: 0; }
+    body {
+      overflow: hidden;
+      background: var(--bg);
+      color: var(--ink);
+      font-family: Inter, ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      font-size: 13px;
+      -webkit-font-smoothing: antialiased;
+    }
+    button, input, select { font: inherit; color: inherit; }
+    button { cursor: pointer; }
+    a { color: var(--blue); text-decoration: none; }
+    a:hover { text-decoration: underline; }
+
+    .app { display: flex; height: 100%; }
+    .sidebar { width: 220px; flex: 0 0 220px; background: var(--sidebar); border-right: 1px solid var(--line); padding: 44px 8px 8px; display: flex; flex-direction: column; gap: 2px; }
+    .nav-label { padding: 12px 8px 6px; color: var(--faint); font-size: 10px; font-weight: 700; letter-spacing: .11em; text-transform: uppercase; }
+    .nav-item { display: flex; align-items: center; gap: 8px; padding: 6px 8px; border-radius: 6px; color: var(--muted); }
+    .nav-item.active { background: var(--raised); color: var(--ink); font-weight: 600; }
+    .nav-item .count { margin-left: auto; font-size: 10px; background: var(--green-soft); color: var(--green); padding: 1px 6px; border-radius: 99px; }
+    .nav-item .dot { width: 7px; height: 7px; border-radius: 50%; background: var(--green); }
+    .new-tag { font-size: 9px; letter-spacing: .08em; color: var(--violet); border: 1px solid var(--violet); border-radius: 4px; padding: 0 4px; }
+
+    main { flex: 1; min-width: 0; display: flex; flex-direction: column; }
+    .prototype { display: none; flex: 1; min-height: 0; }
+    body[data-variant="A"] #variant-a,
+    body[data-variant="B"] #variant-b,
+    body[data-variant="C"] #variant-c { display: flex; flex-direction: column; }
+
+    .page-header { padding: 40px 24px 14px; border-bottom: 1px solid var(--line); display: flex; align-items: flex-end; gap: 16px; }
+    .page-header h1 { margin: 0; font-size: 20px; font-weight: 650; letter-spacing: -.01em; }
+    .page-header p { margin: 3px 0 0; color: var(--muted); }
+    .page-header .spacer { flex: 1; }
+    .search { background: var(--surface); border: 1px solid var(--line-strong); border-radius: 8px; padding: 7px 10px; width: 260px; outline: none; }
+    .search:focus { border-color: var(--blue); }
+
+    /* shared atoms */
+    .logo { flex: 0 0 auto; width: 36px; height: 36px; border-radius: 8px; display: grid; place-items: center; font-weight: 700; font-size: 14px; color: #111; }
+    .logo.sm { width: 24px; height: 24px; border-radius: 6px; font-size: 11px; }
+    .chip { display: inline-flex; align-items: center; gap: 4px; padding: 1px 7px; border-radius: 99px; font-size: 11px; background: var(--raised); color: var(--muted); white-space: nowrap; }
+    .chip.src-ashby { background: var(--violet-soft); color: var(--violet); }
+    .chip.src-hn { background: var(--amber-soft); color: var(--amber); }
+    .chip.src-x { background: var(--blue-soft); color: var(--blue); }
+    .chip.src-web { background: var(--green-soft); color: var(--green); }
+    .chip.fresh { background: var(--green-soft); color: var(--green); }
+    .fit { font-variant-numeric: tabular-nums; font-weight: 650; }
+    .fit.hi { color: var(--green); } .fit.mid { color: var(--amber); } .fit.lo { color: var(--faint); }
+    .fitbar { height: 4px; border-radius: 99px; background: var(--raised); overflow: hidden; }
+    .fitbar > i { display: block; height: 100%; border-radius: 99px; }
+    .btn { border: 1px solid var(--line-strong); background: var(--surface); border-radius: 7px; padding: 6px 12px; }
+    .btn:hover { background: var(--raised); }
+    .btn.primary { background: var(--ink); color: #111; border-color: var(--ink); font-weight: 600; }
+    .btn.ghost { border-color: transparent; background: transparent; color: var(--muted); }
+    .empty { padding: 40px; text-align: center; color: var(--faint); }
+
+    /* ───────── A — Split board ───────── */
+    #variant-a .body { flex: 1; min-height: 0; display: grid; grid-template-columns: 190px minmax(320px, 1fr) minmax(360px, 1.1fr); }
+    .filters { border-right: 1px solid var(--line); padding: 14px 14px; overflow-y: auto; }
+    .filters h4 { margin: 14px 0 6px; font-size: 10px; letter-spacing: .1em; text-transform: uppercase; color: var(--faint); }
+    .filters h4:first-child { margin-top: 0; }
+    .filters label { display: flex; align-items: center; gap: 7px; padding: 3px 0; color: var(--muted); cursor: pointer; }
+    .filters label span { margin-left: auto; font-size: 11px; color: var(--faint); }
+    .filters input[type=range] { width: 100%; accent-color: var(--green); }
+    .a-list { overflow-y: auto; border-right: 1px solid var(--line); }
+    .a-list .bar { position: sticky; top: 0; background: var(--bg); padding: 9px 16px; border-bottom: 1px solid var(--line); color: var(--muted); display: flex; z-index: 1; }
+    .a-list .bar select { margin-left: auto; background: transparent; border: 0; color: var(--muted); }
+    .a-row { display: flex; gap: 12px; padding: 13px 16px; border-bottom: 1px solid var(--line); cursor: pointer; border-left: 2px solid transparent; }
+    .a-row:hover { background: var(--surface); }
+    .a-row.sel { background: var(--surface); border-left-color: var(--green); }
+    .a-row .t { font-weight: 600; font-size: 14px; }
+    .a-row .c { color: var(--muted); margin: 1px 0 6px; }
+    .a-row .meta { display: flex; flex-wrap: wrap; gap: 5px; }
+    .a-row .right { margin-left: auto; text-align: right; flex: 0 0 auto; color: var(--faint); font-size: 11px; }
+    .a-row .right .fit { font-size: 15px; display: block; }
+    .a-detail { overflow-y: auto; padding: 22px 26px 80px; }
+    .a-detail .head { display: flex; gap: 14px; align-items: center; }
+    .a-detail h2 { margin: 0; font-size: 19px; }
+    .a-detail .sub { color: var(--muted); margin-top: 2px; }
+    .a-detail .actions { display: flex; gap: 8px; margin: 16px 0; }
+    .a-detail .facts { display: grid; grid-template-columns: repeat(3, 1fr); gap: 1px; background: var(--line); border: 1px solid var(--line); border-radius: var(--radius); overflow: hidden; margin-bottom: 18px; }
+    .a-detail .facts div { background: var(--surface); padding: 10px 12px; }
+    .a-detail .facts small { display: block; color: var(--faint); font-size: 10px; letter-spacing: .08em; text-transform: uppercase; margin-bottom: 3px; }
+    .a-detail h3 { font-size: 11px; letter-spacing: .1em; text-transform: uppercase; color: var(--faint); margin: 20px 0 6px; }
+    .a-detail p { line-height: 1.6; color: #cfcfcf; margin: 0 0 8px; }
+    .why { background: var(--green-soft); border-radius: var(--radius); padding: 11px 13px; color: #cfe9dc; line-height: 1.5; }
+
+    /* ───────── B — Dense table ───────── */
+    #variant-b .toolbar { display: flex; gap: 6px; padding: 10px 24px; border-bottom: 1px solid var(--line); flex-wrap: wrap; align-items: center; }
+    .pill { border: 1px solid var(--line-strong); background: transparent; border-radius: 99px; padding: 4px 11px; color: var(--muted); }
+    .pill.on { background: var(--ink); color: #111; border-color: var(--ink); font-weight: 600; }
+    #variant-b .toolbar .sep { width: 1px; height: 18px; background: var(--line-strong); margin: 0 6px; }
+    #variant-b .wrap { flex: 1; overflow: auto; padding-bottom: 80px; }
+    table { width: 100%; border-collapse: collapse; }
+    thead th { position: sticky; top: 0; background: var(--bg); text-align: left; font-size: 10px; letter-spacing: .09em; text-transform: uppercase; color: var(--faint); padding: 9px 12px; border-bottom: 1px solid var(--line-strong); cursor: pointer; user-select: none; white-space: nowrap; z-index: 1; }
+    thead th:first-child, tbody td:first-child { padding-left: 24px; }
+    thead th.sorted { color: var(--ink); }
+    tbody td { padding: 9px 12px; border-bottom: 1px solid var(--line); vertical-align: middle; white-space: nowrap; }
+    tbody tr.job { cursor: pointer; }
+    tbody tr.job:hover td { background: var(--surface); }
+    tbody tr.group td { background: var(--sidebar); color: var(--muted); font-weight: 600; padding-top: 7px; padding-bottom: 7px; }
+    td.role { display: flex; align-items: center; gap: 9px; font-weight: 600; white-space: normal; min-width: 240px; }
+    td .fitcell { display: flex; align-items: center; gap: 8px; width: 110px; }
+    td .fitcell .fitbar { flex: 1; }
+    tr.expand td { background: var(--surface); white-space: normal; padding: 14px 24px 16px 57px; color: #cfcfcf; line-height: 1.55; }
+    tr.expand .actions { margin-top: 10px; display: flex; gap: 8px; }
+    .muted { color: var(--muted); }
+
+    /* ───────── C — Pipeline ───────── */
+    #variant-c .lanes { flex: 1; min-height: 0; display: grid; grid-template-columns: repeat(4, minmax(230px, 1fr)); gap: 12px; padding: 16px 24px 80px; overflow-x: auto; }
+    .lane { display: flex; flex-direction: column; min-height: 0; background: var(--sidebar); border: 1px solid var(--line); border-radius: 12px; }
+    .lane header { display: flex; align-items: center; gap: 8px; padding: 11px 13px; font-weight: 650; }
+    .lane header i { width: 8px; height: 8px; border-radius: 50%; }
+    .lane header span { margin-left: auto; color: var(--faint); font-weight: 500; }
+    .lane .cards { overflow-y: auto; padding: 0 8px 8px; display: flex; flex-direction: column; gap: 8px; }
+    .card { background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius); padding: 11px 12px; }
+    .card:hover { border-color: var(--line-strong); }
+    .card .top { display: flex; gap: 9px; align-items: center; margin-bottom: 7px; }
+    .card .co { color: var(--muted); font-size: 12px; }
+    .card .t { font-weight: 600; line-height: 1.3; }
+    .card .meta { display: flex; flex-wrap: wrap; gap: 4px; margin: 8px 0; }
+    .card .fitline { display: flex; align-items: center; gap: 8px; font-size: 11px; color: var(--faint); }
+    .card .fitline .fitbar { flex: 1; }
+    .card .moves { display: flex; gap: 4px; margin-top: 9px; border-top: 1px solid var(--line); padding-top: 8px; }
+    .card .moves button { flex: 1; border: 0; background: var(--raised); border-radius: 6px; padding: 4px 0; font-size: 11px; color: var(--muted); }
+    .card .moves button:hover { color: var(--ink); background: var(--line-strong); }
+    .c-strip { display: flex; gap: 22px; padding: 12px 24px 0; color: var(--muted); }
+    .c-strip b { color: var(--ink); font-size: 16px; margin-right: 5px; font-variant-numeric: tabular-nums; }
+
+    /* switcher */
+    .switcher { position: fixed; left: 50%; bottom: 18px; transform: translateX(-50%); display: flex; align-items: center; gap: 8px; background: #f2f2f2; color: #111; border-radius: 12px; padding: 5px; box-shadow: 0 12px 40px rgb(0 0 0 / 55%); z-index: 50; }
+    .switcher button { width: 31px; height: 31px; border: 0; border-radius: 8px; background: transparent; color: #111; font-size: 16px; }
+    .switcher button:hover { background: rgb(0 0 0 / 10%); }
+    .switch-label { padding: 0 8px; min-width: 190px; text-align: center; line-height: 1.25; }
+    .switch-label span { display: block; font-size: 10px; color: #666; }
+  </style>
+</head>
+<body data-variant="A">
+<div class="app">
+  <aside class="sidebar">
+    <div class="nav-label" style="padding-top:0">OpenRecruit</div>
+    <div class="nav-item">◷ Scheduled</div>
+    <div class="nav-item">＋ New Scout</div>
+    <div class="nav-item active">▤ Job Board <span class="new-tag">NEW</span><span class="count" id="nav-count"></span></div>
+    <div class="nav-label">Scouts</div>
+    <div class="nav-item"><i class="dot"></i> Please Ashby</div>
+    <div class="nav-item"><i class="dot"></i> HN SCOUT 2</div>
+    <div class="nav-item"><i class="dot"></i> ASHBY SF</div>
+    <div class="nav-item"><i class="dot"></i> X Founders</div>
+    <div class="nav-label">&nbsp;</div>
+    <div class="nav-item">▷ Scout Runs</div>
+    <div class="nav-item">☺ Candidate Profiles</div>
+  </aside>
+
+  <main>
+    <!-- A -->
+    <section class="prototype" id="variant-a">
+      <div class="page-header">
+        <div><h1>Job Board</h1><p id="a-sub"></p></div>
+        <div class="spacer"></div>
+        <input class="search" id="a-search" placeholder="Search roles, companies, skills…" />
+      </div>
+      <div class="body">
+        <div class="filters" id="a-filters"></div>
+        <div class="a-list" id="a-list"></div>
+        <div class="a-detail" id="a-detail"></div>
+      </div>
+    </section>
+
+    <!-- B -->
+    <section class="prototype" id="variant-b">
+      <div class="page-header">
+        <div><h1>Job Board</h1><p>Every job Signal in one sortable sheet. Click a column to sort, a row to expand.</p></div>
+        <div class="spacer"></div>
+        <input class="search" id="b-search" placeholder="Filter…" />
+      </div>
+      <div class="toolbar" id="b-toolbar"></div>
+      <div class="wrap"><table><thead id="b-head"></thead><tbody id="b-body"></tbody></table></div>
+    </section>
+
+    <!-- C -->
+    <section class="prototype" id="variant-c">
+      <div class="page-header">
+        <div><h1>Job Board</h1><p>Scouts fill the first lane. You move jobs to the right as you act on them.</p></div>
+        <div class="spacer"></div>
+        <input class="search" id="c-search" placeholder="Search…" />
+      </div>
+      <div class="c-strip" id="c-strip"></div>
+      <div class="lanes" id="c-lanes"></div>
+    </section>
+  </main>
+</div>
+
+<div class="switcher" aria-label="Prototype switcher">
+  <button id="prev" aria-label="Previous variant">‹</button>
+  <div class="switch-label"><strong id="variant-name"></strong><span>Use ← → keys to compare</span></div>
+  <button id="next" aria-label="Next variant">›</button>
+</div>
+
+<script>
+  // ── Representative data (shape ≈ SignalSummary + evidence.fitJudgment) ──
+  const H = 3600e3, now = Date.now();
+  const JOBS = [
+    { co: "Ramp", color: "#f5e663", title: "Software Engineer, Frontend Platform", loc: "New York / Remote US", src: "ashby", scout: "Please Ashby", fit: .93, level: "Mid", yrs: 3, age: 2, stage: "new", comp: "$165k – $210k", sum: "Own the design system and performance of Ramp's core web app. React, TypeScript, and a strong product sense. Small team with direct access to design.", why: "Matches your React + design-system work and the target role ‘Product Engineer’. Experience requirement (3 yrs) is within range." },
+    { co: "Linear", color: "#8e9bff", title: "Product Engineer", loc: "Remote — US/EU", src: "ashby", scout: "Please Ashby", fit: .91, level: "Senior", yrs: 5, age: 5, stage: "new", comp: "$180k – $230k", sum: "Build end-to-end features in Linear's issue tracker. High craft bar, full ownership from idea to ship. TypeScript across client and sync engine.", why: "Strong overlap with developer-tools interest. Seniority is a slight stretch (5 yrs asked)." },
+    { co: "Browserbase", color: "#ff9d5c", title: "Founding Engineer (Infra)", loc: "San Francisco", src: "hn", scout: "HN SCOUT 2", fit: .84, level: "Mid", yrs: null, age: 9, stage: "new", comp: "$150k – $200k + equity", sum: "From ‘Who is hiring?’ — headless browser infrastructure for AI agents. Looking for generalists comfortable with Go, Kubernetes and Chrome internals.", why: "Early-stage + AI-agent infrastructure fits your discovery angles. No explicit years requirement." },
+    { co: "Vercel", color: "#f2f2f2", title: "Developer Experience Engineer", loc: "Remote — US", src: "ashby", scout: "Please Ashby", fit: .88, level: "Mid", yrs: 4, age: 20, stage: "saved", comp: "$170k – $220k", sum: "Improve onboarding, docs, and templates for the Next.js ecosystem. Mix of engineering, writing and community work.", why: "Target role match: ‘Developer Experience Engineer’." },
+    { co: "Modal", color: "#7ee787", title: "Software Engineer, Product", loc: "New York", src: "ashby", scout: "ASHBY SF", fit: .79, level: "Mid", yrs: 2, age: 26, stage: "new", comp: "$160k – $200k", sum: "Dashboard, CLI and SDK surface for Modal's serverless GPU platform. Python + TypeScript.", why: "Developer tools company; location is NYC only, which you listed as acceptable." },
+    { co: "Attio", color: "#c4b5fd", title: "Frontend Engineer", loc: "London / Remote EU", src: "web", scout: "Please Ashby", fit: .52, level: "Mid", yrs: 3, age: 30, stage: "new", comp: "£90k – £120k", sum: "Rich, spreadsheet-like CRM interfaces in React. Heavy on performance and real-time collaboration.", why: "Good skills match, but the location is outside your ‘Remote — US’ preference." },
+    { co: "Cartesia", color: "#67e8f9", title: "Full-stack Engineer, Playground", loc: "San Francisco", src: "hn", scout: "HN SCOUT 2", fit: .81, level: "Junior", yrs: 1, age: 33, stage: "saved", comp: "$140k – $185k", sum: "From ‘Who is hiring?’ — build the playground and API console for real-time voice models.", why: "Early-stage, applied AI, low experience bar." },
+    { co: "Anysphere", color: "#fca5a5", title: "Software Engineer", loc: "San Francisco", src: "x", scout: "X Founders", fit: .76, level: "Senior", yrs: null, age: 40, stage: "new", comp: "Not listed", sum: "Founder post: ‘We're hiring engineers who want to rethink how code gets written. DM me or apply on the site.’", why: "Inferred opportunity from a founder post — no formal listing attached yet." },
+    { co: "Retool", color: "#fdba74", title: "Product Engineer, AI", loc: "San Francisco / Remote US", src: "ashby", scout: "ASHBY SF", fit: .86, level: "Mid", yrs: 3, age: 49, stage: "applied", comp: "$175k – $215k", sum: "Ship AI-powered building blocks inside Retool. Work closely with customers.", why: "Target role match with remote option." },
+    { co: "Supabase", color: "#6ee7b7", title: "Dashboard Engineer", loc: "Remote — Global", src: "web", scout: "Please Ashby", fit: .83, level: "Mid", yrs: 3, age: 52, stage: "new", comp: "$130k – $170k", sum: "Own parts of the Supabase Studio dashboard. Open source, fully remote, async culture.", why: "Open-source developer tooling; fully remote." },
+    { co: "PostHog", color: "#fde047", title: "Product Engineer", loc: "Remote — US/EU", src: "hn", scout: "HN SCOUT 2", fit: .87, level: "Mid", yrs: 3, age: 70, stage: "applied", comp: "$150k – $205k", sum: "Small autonomous teams, engineers decide what to build. TypeScript, Python, ClickHouse.", why: "Exact title match and transparent comp." },
+    { co: "Stripe", color: "#a5b4fc", title: "Staff Engineer, Payments Infra", loc: "Seattle", src: "web", scout: "Please Ashby", fit: .31, level: "Staff", yrs: 10, age: 75, stage: "passed", comp: "$250k+", sum: "Lead multi-year infrastructure efforts across payments routing.", why: "Seniority (10+ yrs) is well beyond your profile." },
+    { co: "Replit", color: "#fb923c", title: "Software Engineer, Agent", loc: "Foster City / Remote", src: "x", scout: "X Founders", fit: .74, level: "Mid", yrs: 2, age: 96, stage: "new", comp: "$160k – $220k", sum: "Work on Replit Agent — planning, tool use, and the editing UX around it.", why: "AI developer tools; hybrid expectation is unclear." },
+    { co: "Clerk", color: "#93c5fd", title: "SDK Engineer", loc: "Remote — US", src: "ashby", scout: "ASHBY SF", fit: .68, level: "Mid", yrs: 4, age: 120, stage: "passed", comp: "$155k – $190k", sum: "Maintain and extend Clerk's JavaScript SDKs across frameworks.", why: "Decent match, but the role is narrower than your stated interests." },
+  ].map((j, i) => ({ ...j, id: "sig_" + i, url: "https://jobs.example.com/" + j.co.toLowerCase() }));
+
+  const SRC = { ashby: "Ashby", hn: "Hacker News", x: "X", web: "Web Search" };
+  const STAGES = [["new", "New from Scouts", "var(--green)"], ["saved", "Shortlisted", "var(--blue)"], ["applied", "Applied", "var(--violet)"], ["passed", "Passed", "var(--faint)"]];
+  const ago = h => h < 1 ? "just now" : h < 24 ? h + "h ago" : Math.round(h / 24) + "d ago";
+  const fitCls = f => f >= .8 ? "hi" : f >= .6 ? "mid" : "lo";
+  const fitCol = f => f >= .8 ? "var(--green)" : f >= .6 ? "var(--amber)" : "var(--faint)";
+  const pct = f => Math.round(f * 100) + "%";
+  const logo = (j, sm) => `<div class="logo ${sm ? "sm" : ""}" style="background:${j.color}">${j.co[0]}</div>`;
+  const srcChip = j => `<span class="chip src-${j.src}">${SRC[j.src]}</span>`;
+  const bar = f => `<div class="fitbar"><i style="width:${f * 100}%;background:${fitCol(f)}"></i></div>`;
+  const match = (j, q) => !q || (j.title + j.co + j.loc + j.sum + j.scout).toLowerCase().includes(q.toLowerCase());
+  const $ = id => document.getElementById(id);
+  $("nav-count").textContent = JOBS.filter(j => j.age < 24).length + " new";
+
+  // ── A — Split board ──
+  const A = { q: "", src: new Set(Object.keys(SRC)), scouts: new Set(JOBS.map(j => j.scout)), minFit: 50, sort: "fit", sel: JOBS[0].id };
+  function aJobs() {
+    return JOBS.filter(j => match(j, A.q) && A.src.has(j.src) && A.scouts.has(j.scout) && j.fit * 100 >= A.minFit)
+      .sort((a, b) => A.sort === "fit" ? b.fit - a.fit : a.age - b.age);
+  }
+  function renderA() {
+    const count = (k, v) => JOBS.filter(j => j[k] === v).length;
+    const scouts = [...new Set(JOBS.map(j => j.scout))];
+    $("a-filters").innerHTML =
+      `<h4>Minimum fit · ${A.minFit}%</h4><input type="range" min="0" max="95" step="5" value="${A.minFit}" id="a-fit">` +
+      `<h4>Source</h4>` + Object.keys(SRC).map(s => `<label><input type="checkbox" data-k="src" data-v="${s}" ${A.src.has(s) ? "checked" : ""}>${SRC[s]}<span>${count("src", s)}</span></label>`).join("") +
+      `<h4>Scout</h4>` + scouts.map(s => `<label><input type="checkbox" data-k="scouts" data-v="${s}" ${A.scouts.has(s) ? "checked" : ""}>${s}<span>${count("scout", s)}</span></label>`).join("");
+    $("a-fit").oninput = e => { A.minFit = +e.target.value; renderA(); };
+    $("a-filters").querySelectorAll("input[type=checkbox]").forEach(c => c.onchange = () => { c.checked ? A[c.dataset.k].add(c.dataset.v) : A[c.dataset.k].delete(c.dataset.v); renderA(); });
+
+    const jobs = aJobs();
+    if (!jobs.find(j => j.id === A.sel)) A.sel = jobs[0]?.id;
+    $("a-sub").textContent = `${jobs.length} of ${JOBS.length} jobs found by ${scouts.length} Scouts`;
+    $("a-list").innerHTML = `<div class="bar">${jobs.length} jobs<select id="a-sort"><option value="fit">Best fit</option><option value="age" ${A.sort === "age" ? "selected" : ""}>Newest</option></select></div>` +
+      (jobs.map(j => `<div class="a-row ${j.id === A.sel ? "sel" : ""}" data-id="${j.id}">${logo(j)}
+        <div><div class="t">${j.title}</div><div class="c">${j.co} · ${j.loc}</div>
+        <div class="meta">${srcChip(j)}<span class="chip">${j.level}</span>${j.age < 24 ? '<span class="chip fresh">New</span>' : ""}</div></div>
+        <div class="right"><span class="fit ${fitCls(j.fit)}">${pct(j.fit)}</span>${ago(j.age)}</div></div>`).join("") || `<div class="empty">No jobs match these filters.</div>`);
+    $("a-sort").onchange = e => { A.sort = e.target.value; renderA(); };
+    $("a-list").querySelectorAll(".a-row").forEach(r => r.onclick = () => { A.sel = r.dataset.id; renderA(); });
+
+    const j = JOBS.find(x => x.id === A.sel);
+    $("a-detail").innerHTML = !j ? `<div class="empty">Select a job.</div>` : `
+      <div class="head">${logo(j)}<div><h2>${j.title}</h2><div class="sub">${j.co} · ${j.loc}</div></div></div>
+      <div class="actions"><button class="btn primary">Open posting ↗</button><button class="btn">☆ Shortlist</button><button class="btn ghost">Not interested</button></div>
+      <div class="facts">
+        <div><small>Fit</small><span class="fit ${fitCls(j.fit)}">${pct(j.fit)}</span></div>
+        <div><small>Experience</small>${j.level}${j.yrs ? ` · ${j.yrs}+ yrs` : ""}</div>
+        <div><small>Compensation</small>${j.comp}</div>
+        <div><small>Source</small>${SRC[j.src]}</div>
+        <div><small>Found by</small>${j.scout}</div>
+        <div><small>Observed</small>${ago(j.age)}</div>
+      </div>
+      <h3>Why this surfaced</h3><div class="why">${j.why}</div>
+      <h3>From the posting</h3><p>${j.sum}</p>
+      <p><a href="#">${j.url}</a></p>`;
+  }
+  $("a-search").oninput = e => { A.q = e.target.value; renderA(); };
+
+  // ── B — Dense table ──
+  const B = { q: "", src: "all", group: false, sort: "fit", dir: -1, open: null };
+  const COLS = [["title", "Role"], ["co", "Company"], ["fit", "Fit"], ["loc", "Location"], ["level", "Level"], ["comp", "Comp"], ["src", "Source"], ["scout", "Scout"], ["age", "Found"]];
+  function renderB() {
+    $("b-toolbar").innerHTML = [["all", "All sources"], ...Object.entries(SRC)].map(([k, v]) => `<button class="pill ${B.src === k ? "on" : ""}" data-src="${k}">${v}</button>`).join("") +
+      `<span class="sep"></span><button class="pill ${B.group ? "on" : ""}" id="b-group">Group by Scout</button>`;
+    $("b-toolbar").querySelectorAll("[data-src]").forEach(b => b.onclick = () => { B.src = b.dataset.src; renderB(); });
+    $("b-group").onclick = () => { B.group = !B.group; renderB(); };
+    $("b-head").innerHTML = "<tr>" + COLS.map(([k, v]) => `<th data-k="${k}" class="${B.sort === k ? "sorted" : ""}">${v}${B.sort === k ? (B.dir < 0 ? " ↓" : " ↑") : ""}</th>`).join("") + "</tr>";
+    $("b-head").querySelectorAll("th").forEach(th => th.onclick = () => { B.sort === th.dataset.k ? B.dir *= -1 : (B.sort = th.dataset.k, B.dir = th.dataset.k === "fit" ? -1 : 1); renderB(); });
+
+    const jobs = JOBS.filter(j => match(j, B.q) && (B.src === "all" || j.src === B.src))
+      .sort((a, b) => (a[B.sort] > b[B.sort] ? 1 : a[B.sort] < b[B.sort] ? -1 : 0) * B.dir);
+    const row = j => `<tr class="job" data-id="${j.id}">
+        <td class="role">${logo(j, true)}${j.title}${j.age < 24 ? ' <span class="chip fresh">New</span>' : ""}</td>
+        <td>${j.co}</td><td><div class="fitcell"><span class="fit ${fitCls(j.fit)}">${pct(j.fit)}</span>${bar(j.fit)}</div></td>
+        <td class="muted">${j.loc}</td><td class="muted">${j.level}${j.yrs ? ` · ${j.yrs}y` : ""}</td><td class="muted">${j.comp}</td>
+        <td>${srcChip(j)}</td><td class="muted">${j.scout}</td><td class="muted">${ago(j.age)}</td></tr>` +
+      (B.open === j.id ? `<tr class="expand"><td colspan="${COLS.length}"><b>Why this surfaced —</b> ${j.why}<br><br>${j.sum}
+        <div class="actions"><button class="btn primary">Open posting ↗</button><button class="btn">☆ Shortlist</button><button class="btn ghost">Not interested</button></div></td></tr>` : "");
+    let html = "";
+    if (B.group) for (const s of [...new Set(jobs.map(j => j.scout))]) {
+      const g = jobs.filter(j => j.scout === s);
+      html += `<tr class="group"><td colspan="${COLS.length}">${s} · ${g.length} jobs</td></tr>` + g.map(row).join("");
+    } else html = jobs.map(row).join("");
+    $("b-body").innerHTML = html || `<tr><td colspan="${COLS.length}" class="empty">No jobs match.</td></tr>`;
+    $("b-body").querySelectorAll("tr.job").forEach(r => r.onclick = () => { B.open = B.open === r.dataset.id ? null : r.dataset.id; renderB(); });
+  }
+  $("b-search").oninput = e => { B.q = e.target.value; renderB(); };
+
+  // ── C — Pipeline ──
+  const C = { q: "" };
+  function renderC() {
+    const jobs = JOBS.filter(j => match(j, C.q));
+    $("c-strip").innerHTML = STAGES.map(([k, v]) => `<span><b>${jobs.filter(j => j.stage === k).length}</b>${v}</span>`).join("");
+    $("c-lanes").innerHTML = STAGES.map(([k, v, col], i) => {
+      const lane = jobs.filter(j => j.stage === k).sort((a, b) => b.fit - a.fit);
+      return `<div class="lane"><header><i style="background:${col}"></i>${v}<span>${lane.length}</span></header><div class="cards">` +
+        (lane.map(j => `<div class="card"><div class="top">${logo(j, true)}<span class="co">${j.co}</span><span class="co" style="margin-left:auto">${ago(j.age)}</span></div>
+          <div class="t">${j.title}</div>
+          <div class="meta">${srcChip(j)}<span class="chip">${j.loc}</span><span class="chip">${j.level}</span></div>
+          <div class="fitline"><span class="fit ${fitCls(j.fit)}">${pct(j.fit)}</span>${bar(j.fit)}<span>${j.scout}</span></div>
+          <div class="moves">${i > 0 ? `<button data-id="${j.id}" data-to="${STAGES[i - 1][0]}">← ${STAGES[i - 1][1].split(" ")[0]}</button>` : ""}
+          ${i < 3 ? `<button data-id="${j.id}" data-to="${STAGES[i + 1][0]}">${STAGES[i + 1][1]} →</button>` : ""}
+          ${i < 2 ? `<button data-id="${j.id}" data-to="passed">Pass</button>` : ""}</div></div>`).join("") || `<div class="empty">Nothing here.</div>`) + `</div></div>`;
+    }).join("");
+    $("c-lanes").querySelectorAll("[data-to]").forEach(b => b.onclick = () => { JOBS.find(j => j.id === b.dataset.id).stage = b.dataset.to; renderC(); });
+  }
+  $("c-search").oninput = e => { C.q = e.target.value; renderC(); };
+
+  // ── Switcher ──
+  const variants = { A: "Split board", B: "Sortable sheet", C: "Pipeline" };
+  const keys = Object.keys(variants);
+  let current = (new URLSearchParams(location.search).get("variant") || "A").toUpperCase();
+  if (!variants[current]) current = "A";
+  function show(key) {
+    current = key;
+    document.body.dataset.variant = key;
+    $("variant-name").textContent = `${key} — ${variants[key]}`;
+    const url = new URL(location.href); url.searchParams.set("variant", key); history.replaceState(null, "", url);
+    document.title = `OpenRecruit — ${key}: ${variants[key]}`;
+  }
+  const step = d => show(keys[(keys.indexOf(current) + d + keys.length) % keys.length]);
+  $("prev").onclick = () => step(-1); $("next").onclick = () => step(1);
+  addEventListener("keydown", e => {
+    if (e.target.matches("input, textarea, select, [contenteditable]")) return;
+    if (e.key === "ArrowLeft") step(-1); if (e.key === "ArrowRight") step(1);
+  });
+  renderA(); renderB(); renderC(); show(current);
+</script>
+</body>
+</html>
