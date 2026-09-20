@@ -52,6 +52,10 @@ _Avoid_: Bird Source, Twitter Source
 A canonical Source of public Hacker News job postings: top-level postings in the monthly "Who is hiring?" thread and YC startup job stories. It needs no Candidate authorization.
 _Avoid_: HN scraper, Algolia Source
 
+**Job Board Source**:
+A canonical Source for one public applicant-tracking board (Greenhouse, Lever, SmartRecruiters, Workable, Rippling, Workday). The harness discovers posting URLs by web search; the host verifies them against the board's public API. Each board is its own Source so a Scout opts in per board. It needs no Candidate authorization.
+_Avoid_: ATS scraper, job board crawler
+
 **Public Source Access**:
 Source Access limited to evidence publicly visible on the Source. Candidate authorization may enable retrieval but does not grant Scouts access to private account surfaces.
 _Avoid_: logged-in access, cookie access

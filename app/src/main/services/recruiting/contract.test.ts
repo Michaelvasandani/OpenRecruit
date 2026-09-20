@@ -57,6 +57,25 @@ describe("provider-neutral Recruiting contract", () => {
     expect(instructions).toMatch(/\n2\. Call HackerNewsJobs[^\n]*\n3\. Primary evidence/);
   });
 
+  test("selected job boards share one playbook that names only those boards", () => {
+    const instructions = recruitingProviderInstructions({
+      runId: "run-boards",
+      strategyMaterial: "Find matching public roles.",
+      policyMaterial: "Use selected Sources only.",
+      sourceKinds: ["greenhouse", "workday"],
+    });
+    expect(instructions).toContain("### Job boards (Greenhouse, Workday)");
+    expect(instructions).toContain("site:job-boards.greenhouse.io");
+    expect(instructions).toContain("site:myworkdayjobs.com");
+    expect(instructions).toContain("Workday boards cannot be enumerated");
+    expect(instructions).not.toContain("jobs.lever.co");
+    expect(instructions).not.toMatch(/ashby/i);
+    // Boards have their own evidence path, so Web Search is not a fallback.
+    expect(instructions).not.toContain("OpenRecruit WebSearch");
+    expect(instructions).toMatch(/\n2\. Pass every posting URL[^\n]*JobPostingInspect/);
+    expect(instructions).toMatch(/\n3\. Call RecordSignal[^\n]*JobPostingInspect/);
+  });
+
   test("fails closed for unrestricted or externally communicative capabilities", () => {
     expect(PROHIBITED_RECRUITING_CAPABILITIES).toEqual(
       expect.arrayContaining([

@@ -141,6 +141,64 @@ const SOURCE_DISCOVERY_PLAYBOOKS: Record<string, string[]> = {
   ],
 };
 
+/** Public applicant-tracking boards behind the one JobPostingInspect tool,
+ * keyed by Source kind. `enumerable` boards can list a company's postings. */
+export const ATS_BOARDS: Record<string, { label: string; site: string; enumerable: boolean }> = {
+  greenhouse: { label: "Greenhouse", site: "job-boards.greenhouse.io", enumerable: true },
+  lever: { label: "Lever", site: "jobs.lever.co", enumerable: true },
+  smartrecruiters: { label: "SmartRecruiters", site: "jobs.smartrecruiters.com", enumerable: true },
+  workable: { label: "Workable", site: "apply.workable.com", enumerable: true },
+  rippling: { label: "Rippling", site: "ats.rippling.com", enumerable: false },
+  workday: { label: "Workday", site: "myworkdayjobs.com", enumerable: false },
+};
+
+export function isAtsBoardKind(kind: string): boolean {
+  return Object.hasOwn(ATS_BOARDS, kind);
+}
+
+/** One playbook for every selected board: the boards differ only in the
+ * search operator, so the Scout reads the method once. */
+function atsBoardsPlaybook(kinds: readonly string[]): string[] {
+  const boards = kinds.map((kind) => ATS_BOARDS[kind]);
+  const enumerable = boards.filter((board) => board.enumerable).map((board) => board.label);
+  const searchOnly = boards.filter((board) => !board.enumerable).map((board) => board.label);
+  return [
+    `### Job boards (${boards.map((board) => board.label).join(", ")})`,
+    "",
+    "Use harness-native web search—Claude WebSearch or Codex built-in web search—to discover public posting URLs on each selected board, then verify them with JobPostingInspect. Search each board with its own site operator:",
+    ...boards.map((board) => `- ${board.label}: site:${board.site}`),
+    ...(kinds.includes("greenhouse")
+      ? ["Older Greenhouse boards live on boards.greenhouse.io; search that host too."]
+      : []),
+    "Derive a query ladder from the Candidate Profile, Discovery Strategy, target role, location, and preferences. Run multiple simple searches per board with one title or seniority phrase per query; avoid large OR expressions. Start with location-constrained queries such as:",
+    '- site:<board site> "New Grad" "<location>"',
+    '- site:<board site> "Early Career" "<location>"',
+    '- site:<board site> "Junior Software Engineer" "<location>"',
+    '- site:<board site> "Software Engineer" "<location>"',
+    "Repeat without the location when location-constrained searches return too few or zero results, then use the normalized location from JobPostingInspect.",
+    "Do not put freshness terms such as past week in search queries; the host enforces freshness from each board's own publication time through the publishedAfter policy.",
+    "Never infer today's date yourself. read_run_context returns the host clock (clock.now) and the listing cutoff (clock.listingPublishedAfter); pass that cutoff as publishedAfter. The host also applies the pinned cutoff when publishedAfter is omitted.",
+    "Deduplicate the discovered posting URLs and pass them to JobPostingInspect together, across boards, with includeDescription: true and the Scout Policy's publishedAfter, listedOnly, and experience constraints. One call accepts any mix of the selected boards.",
+    ...(enumerable.length > 0
+      ? [
+          `Every discovered posting reveals a company board. For ${enumerable.join(", ")}, pass the company board URL (for example https://${boards.find((board) => board.enumerable)?.site}/<company>) as boards to enumerate every currently listed posting published inside the window; search results skew toward older postings, so enumeration finds fresh ones search has not indexed.`,
+        ]
+      : []),
+    ...(searchOnly.length > 0
+      ? [
+          `${searchOnly.join(" and ")} boards cannot be enumerated; rely on more search queries for ${searchOnly.length > 1 ? "them" : "it"}.`,
+        ]
+      : []),
+    "Search indexes lag behind the boards: a job_not_found error means the posting was removed, not that the tool failed. Skip it.",
+    "Judge posting age from JobPostingInspect's ageDays and publishedAtIso, never from search snippets.",
+    "Do not require a seniority phrase in the title: many early-career roles are titled plainly (Software Engineer) and only the description shows the experience required.",
+    "The host judges every posting against this Scout's Discovery Strategy and excludes postings that are a different kind of job (scout_fit). If the Candidate confirmed target roles beyond the saved Strategy, pass them as policy.targetRoles.",
+    "When a result carries fitJudgment, prefer it over experienceRequirements: pattern-matched years can come from benefits or company boilerplate.",
+    "A zero-result search is a reason to broaden the query, not evidence that no matching postings exist.",
+    "Promote each selected result's evidenceReference with RecordSignal.",
+  ];
+}
+
 /** Whether a Source kind's playbook applies to the selected Sources. Kinds
  * without a playbook of their own (feeds, custom Sources) keep the host's Web
  * Search evidence path, so such a Scout always has a way to record evidence. */
@@ -149,7 +207,9 @@ export function hasDiscoveryPlaybook(kind: string, sourceKinds?: readonly string
   if (sourceKinds.includes(kind)) return true;
   return (
     kind === "web_search" &&
-    sourceKinds.some((selected) => !(selected in SOURCE_DISCOVERY_PLAYBOOKS))
+    sourceKinds.some(
+      (selected) => !(selected in SOURCE_DISCOVERY_PLAYBOOKS) && !isAtsBoardKind(selected),
+    )
   );
 }
 
@@ -160,6 +220,9 @@ export function discoveryInstructions(sourceKinds?: readonly string[]): string {
   const kinds = Object.keys(SOURCE_DISCOVERY_PLAYBOOKS).filter((kind) =>
     hasDiscoveryPlaybook(kind, sourceKinds),
   );
+  const boardKinds = Object.keys(ATS_BOARDS).filter((kind) =>
+    hasDiscoveryPlaybook(kind, sourceKinds),
+  );
   return [
     "## Source discovery",
     "",
@@ -168,6 +231,7 @@ export function discoveryInstructions(sourceKinds?: readonly string[]): string {
       : "Use only the playbooks for Sources that list_selected_sources returns; ignore the others.",
     "Reserve each Source's tools for that explicitly selected Source.",
     ...kinds.flatMap((kind) => ["", ...(SOURCE_DISCOVERY_PLAYBOOKS[kind] as string[])]),
+    ...(boardKinds.length > 0 ? ["", ...atsBoardsPlaybook(boardKinds)] : []),
   ].join("\n");
 }
 

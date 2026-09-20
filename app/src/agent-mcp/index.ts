@@ -132,6 +132,40 @@ function obj(
   return { type: "object", properties, required };
 }
 
+/** The Scout Policy constraints every posting-inspection tool accepts. */
+const POSTING_POLICY_SCHEMA = {
+  type: "object",
+  properties: {
+    publishedAfter: {
+      type: "string",
+      format: "date-time",
+      description:
+        "Inclusive earliest employer Publication Time. Use clock.listingPublishedAfter from read_run_context; the host raises an omitted or earlier value to the pinned cutoff.",
+    },
+    listedOnly: {
+      type: "boolean",
+      default: false,
+      description: "Mark explicitly unlisted postings as excluded.",
+    },
+    maximumExplicitRequiredYears: {
+      type: "number",
+      minimum: 0,
+      maximum: 100,
+      description: "Exclude only postings with an unambiguous required minimum above this value.",
+    },
+    targetRoles: {
+      type: "array",
+      items: { type: "string", maxLength: 80 },
+      maxItems: 12,
+      description:
+        "Role names the Candidate confirmed beyond the saved Discovery Strategy. The host " +
+        "already judges every posting against the Scout's Discovery Strategy; pass these " +
+        "so broader or renamed target roles are not excluded as outside the brief.",
+    },
+  },
+  additionalProperties: false,
+};
+
 const TOOLS: ToolDef[] = [
   {
     name: "WebSearch",
@@ -289,39 +323,7 @@ const TOOLS: ToolDef[] = [
             default: false,
             description: "Include full plain-text and HTML descriptions in the response.",
           },
-          policy: {
-            type: "object",
-            properties: {
-              publishedAfter: {
-                type: "string",
-                format: "date-time",
-                description:
-                  "Inclusive earliest employer Publication Time. Use clock.listingPublishedAfter from read_run_context; the host raises an omitted or earlier value to the pinned cutoff.",
-              },
-              listedOnly: {
-                type: "boolean",
-                default: false,
-                description: "Mark explicitly unlisted postings as excluded.",
-              },
-              maximumExplicitRequiredYears: {
-                type: "number",
-                minimum: 0,
-                maximum: 100,
-                description:
-                  "Exclude only postings with an unambiguous required minimum above this value.",
-              },
-              targetRoles: {
-                type: "array",
-                items: { type: "string", maxLength: 80 },
-                maxItems: 12,
-                description:
-                  "Role names the Candidate confirmed beyond the saved Discovery Strategy. The host " +
-                  "already judges every posting against the Scout's Discovery Strategy; pass these " +
-                  "so broader or renamed target roles are not excluded as outside the brief.",
-              },
-            },
-            additionalProperties: false,
-          },
+          policy: POSTING_POLICY_SCHEMA,
         },
         [],
       ),
@@ -329,6 +331,63 @@ const TOOLS: ToolDef[] = [
     },
     run: async (a) => {
       const { status, json } = await callHost("POST", "/ashby/inspect", {
+        ...(a.urls === undefined ? {} : { urls: a.urls }),
+        ...(a.boards === undefined ? {} : { boards: a.boards }),
+        ...(a.includeDescription === undefined ? {} : { includeDescription: a.includeDescription }),
+        ...(a.policy === undefined ? {} : { policy: a.policy }),
+      });
+      if (status !== 200) throw new Error(describeError(json));
+      return JSON.stringify(json, null, 2);
+    },
+  },
+  {
+    name: "JobPostingInspect",
+    description:
+      "Verify up to 50 job posting URLs on Greenhouse, Lever, SmartRecruiters, Workable, Rippling, " +
+      "or Workday against each board's public API, in any mix, and/or enumerate up to 10 company " +
+      "boards (Greenhouse, Lever, SmartRecruiters, Workable) for every currently listed posting " +
+      "published inside the Scout Policy window (newest first). Only boards selected as Sources " +
+      "for this Scout are inspected; other URLs return per-input errors. Returns normalized, " +
+      "untrusted posting facts with provider, publishedAtIso and ageDays computed on the host " +
+      "clock, experience evidence, policy decisions, a fitJudgment when the Candidate has " +
+      "configured TypeSafe in Settings (it supersedes the pattern-matched " +
+      "experienceRequirements), and opaque references for RecordSignal. The host enforces the " +
+      "pinned listing cutoff even when publishedAfter is omitted (see appliedPolicy), and " +
+      "RecordSignal rejects excluded postings. A job_not_found error means the posting was " +
+      "removed after the search index saw it. Use harness-native web search to discover URLs.",
+    inputSchema: {
+      ...obj(
+        {
+          urls: {
+            type: "array",
+            minItems: 1,
+            maxItems: 50,
+            items: { type: "string", format: "uri", pattern: "^https://" },
+            description: "Job posting URLs on supported boards, selected for verification.",
+          },
+          boards: {
+            type: "array",
+            minItems: 1,
+            maxItems: 10,
+            items: { type: "string", format: "uri", pattern: "^https://" },
+            description:
+              "Company board URLs to enumerate for fresh listed postings, e.g. " +
+              "https://job-boards.greenhouse.io/<board> or https://jobs.lever.co/<board>. " +
+              "Rippling and Workday boards cannot be enumerated.",
+          },
+          includeDescription: {
+            type: "boolean",
+            default: false,
+            description: "Include full plain-text and HTML descriptions in the response.",
+          },
+          policy: POSTING_POLICY_SCHEMA,
+        },
+        [],
+      ),
+      additionalProperties: false,
+    },
+    run: async (a) => {
+      const { status, json } = await callHost("POST", "/job-postings/inspect", {
         ...(a.urls === undefined ? {} : { urls: a.urls }),
         ...(a.boards === undefined ? {} : { boards: a.boards }),
         ...(a.includeDescription === undefined ? {} : { includeDescription: a.includeDescription }),
@@ -611,7 +670,7 @@ const TOOLS: ToolDef[] = [
   {
     name: "RecordSignal",
     description:
-      "Explicitly promote one host-issued XSearch, XRead, or AshbyInspectJobs evidence reference into a durable Signal. " +
+      "Explicitly promote one host-issued XSearch, XRead, AshbyInspectJobs, or JobPostingInspect evidence reference into a durable Signal. " +
       "The reference must come from the current Scout Run; the host persists its exact normalized evidence.",
     inputSchema: {
       ...obj(

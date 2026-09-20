@@ -2,6 +2,7 @@ import {
   compileScoutSetup,
   createDefaultScoutSetup,
   type HarnessId,
+  isAtsBoardKind,
   parseScoutListDraft,
   type ScoutDiscoveryAngle,
   ScoutSetup,
@@ -446,6 +447,13 @@ function SourcesStep({
                     are optional.
                   </span>
                 )}
+                {isAtsBoardKind(source.kind) && (
+                  <span className="mt-2 block text-[11px] text-muted-foreground">
+                    The selected harness uses its built-in web search to discover public{" "}
+                    {source.name} job URLs, then JobPostingInspect verifies each posting against{" "}
+                    {source.name}'s public API.
+                  </span>
+                )}
                 {!ready && source.nextAction && (
                   <span className="mt-2 block text-[11px] text-muted-foreground">
                     {source.nextAction}
@@ -875,6 +883,7 @@ function readable(value: string): string {
 
 function toolsForSource(kind: string): string[] {
   if (kind === "ashby") return ["Built-in web search", "AshbyInspectJobs", "RecordSignal"];
+  if (isAtsBoardKind(kind)) return ["Built-in web search", "JobPostingInspect", "RecordSignal"];
   if (kind === "web_search") return ["WebSearch", "WebFetch"];
   if (kind === "hacker_news") return ["HackerNewsJobs"];
   if (kind === "x") return ["XSearch", "XRead", "RecordSignal"];

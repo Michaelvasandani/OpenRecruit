@@ -35,6 +35,12 @@ const DESCENDING_FIRST = new Set<SortKey>(["fit", "publicationAt", "observedAt"]
 
 const SOURCE_TONES: Record<string, string> = {
   ashby: "bg-violet-500/15 text-violet-400",
+  greenhouse: "bg-green-500/15 text-green-500",
+  lever: "bg-slate-500/15 text-slate-400",
+  smartrecruiters: "bg-teal-500/15 text-teal-500",
+  workable: "bg-cyan-500/15 text-cyan-500",
+  rippling: "bg-yellow-500/15 text-yellow-600",
+  workday: "bg-orange-500/15 text-orange-500",
   hacker_news: "bg-amber-500/15 text-amber-500",
   x: "bg-sky-500/15 text-sky-400",
   web_search: "bg-emerald-500/15 text-emerald-500",

@@ -72,6 +72,12 @@ import {
   type StartInvestigationAttemptCommand,
 } from "./investigations";
 import { toJobBoardRow } from "./job-board";
+import {
+  type JobPostingInspectCommand,
+  JobPostingInspectionApplication,
+  type JobPostingInspectionOptions,
+  type JobPostingInspectionResult,
+} from "./job-posting-inspect";
 import { PendingEvidenceStore } from "./pending-evidence";
 import { PostingScreener } from "./posting-screen";
 import type { ConfirmProfileCommand, ImportProfileCommand, UpdateDraftCommand } from "./profile";
@@ -343,7 +349,8 @@ export type RecruitingApplicationOptions = ScoutRunApplicationOptions &
     webSearchApiKey?: () => string | undefined;
     webFetchProvider?: WebFetchProvider;
     webFetchResolveHostname?: (hostname: string) => Promise<readonly string[]>;
-  } & AshbyInspectionApplicationOptions;
+  } & AshbyInspectionApplicationOptions &
+  Pick<JobPostingInspectionOptions, "atsHttp">;
 
 export type ArchiveScoutCommand = {
   scoutId: string;
@@ -396,6 +403,7 @@ export class RecruitingApplication {
   private readonly webFetchApplication: WebFetchApplication;
   private readonly hackerNewsApplication: HackerNewsApplication;
   private readonly ashbyInspectionApplication: AshbyInspectionApplication;
+  private readonly jobPostingInspectionApplication: JobPostingInspectionApplication;
   private wake?: WakeTransport;
 
   constructor(
@@ -430,6 +438,11 @@ export class RecruitingApplication {
     });
     this.ashbyInspectionApplication = new AshbyInspectionApplication(db, now, {
       ashbyProvider: options.ashbyProvider,
+      postingScreener,
+      pendingEvidence,
+    });
+    this.jobPostingInspectionApplication = new JobPostingInspectionApplication(db, now, {
+      atsHttp: options.atsHttp,
       postingScreener,
       pendingEvidence,
     });
@@ -574,6 +587,10 @@ export class RecruitingApplication {
 
   ashbyInspect(command: AshbyInspectCommand): Promise<AshbyInspectionResult> {
     return this.ashbyInspectionApplication.inspect(command);
+  }
+
+  jobPostingInspect(command: JobPostingInspectCommand): Promise<JobPostingInspectionResult> {
+    return this.jobPostingInspectionApplication.inspect(command);
   }
 
   webSearch(command: WebSearchRequest & { scoutId: string }): Promise<WebSearchResponse> {
