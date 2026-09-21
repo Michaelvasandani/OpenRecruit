@@ -3,7 +3,7 @@ import { RecruitingError } from "./errors";
 import type { FeedItem } from "./source";
 
 /** The host-owned Source module that read the evidence. */
-export type PendingEvidenceIssuer = "bird" | "ashby";
+export type PendingEvidenceIssuer = "bird" | "ashby" | "ats";
 
 export type PendingEvidence = {
   issuer: PendingEvidenceIssuer;
@@ -20,7 +20,11 @@ export type PendingEvidence = {
 
 type StoredEvidence = PendingEvidence & { contentFingerprint: string };
 
-const ISSUER_LABEL: Record<PendingEvidenceIssuer, string> = { bird: "X", ashby: "Ashby" };
+const ISSUER_LABEL: Record<PendingEvidenceIssuer, string> = {
+  bird: "X",
+  ashby: "Ashby",
+  ats: "job board",
+};
 
 /**
  * The one short-lived store behind every RecordSignal evidence reference. A

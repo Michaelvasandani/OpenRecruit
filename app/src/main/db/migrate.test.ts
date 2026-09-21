@@ -492,4 +492,42 @@ describe("db migrations", () => {
         .get(),
     ).toEqual({ count: 0 });
   });
+  test("v18 seeds the job board Sources without granting existing Scouts access", () => {
+    const db = new Database(":memory:");
+    const m = wrap(db);
+    db.exec(SCHEMA_DDL);
+    const boards = ["greenhouse", "lever", "smartrecruiters", "workable", "rippling", "workday"];
+    db.exec(`
+      DELETE FROM source_access WHERE source_id IN (${boards.map((kind) => `'source-${kind}'`).join(", ")});
+      DELETE FROM sources WHERE kind IN (${boards.map((kind) => `'${kind}'`).join(", ")});
+      INSERT INTO scouts (id, name, instruction_path, created_at)
+      VALUES ('existing-scout', 'Existing Scout', 'agents/existing', 1);
+      PRAGMA user_version = 17;
+    `);
+
+    migrate(m, { fresh: false });
+
+    expect(
+      db
+        .query(
+          `SELECT s.id, s.kind, s.readiness, a.scope_key, a.readiness AS access
+           FROM sources s JOIN source_access a ON a.source_id = s.id
+           WHERE s.kind IN (${boards.map((kind) => `'${kind}'`).join(", ")}) ORDER BY s.id`,
+        )
+        .all(),
+    ).toEqual(
+      [...boards].sort().map((kind) => ({
+        id: `source-${kind}`,
+        kind,
+        readiness: "ready",
+        scope_key: "public",
+        access: "ready",
+      })),
+    );
+    expect(
+      db
+        .query("SELECT count(*) AS count FROM scout_sources WHERE scout_id = 'existing-scout'")
+        .get(),
+    ).toEqual({ count: 0 });
+  });
 });

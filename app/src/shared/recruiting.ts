@@ -172,7 +172,17 @@ export const SignalEvidence = z.object({
 });
 export type SignalEvidence = z.infer<typeof SignalEvidence>;
 
-export const SignalProvider = z.enum(["x-api-v2", "bird", "ashby"]);
+export const SignalProvider = z.enum([
+  "x-api-v2",
+  "bird",
+  "ashby",
+  "greenhouse",
+  "lever",
+  "smartrecruiters",
+  "workable",
+  "rippling",
+  "workday",
+]);
 export type SignalProvider = z.infer<typeof SignalProvider>;
 
 export const SignalSummary = z.object({

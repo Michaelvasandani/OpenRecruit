@@ -160,7 +160,7 @@ class AshbyReferenceError extends Error {
   }
 }
 
-type ExperienceRequirement = {
+export type ExperienceRequirement = {
   minimumYears: number | null;
   maximumYears: number | null;
   domain: string | null;
@@ -1019,7 +1019,7 @@ function parseBoard(input: string): string {
 /** The pinned Scout Policy window is authoritative: the reasoning harness may
  * narrow it, but an omitted or earlier publishedAfter is raised to the cutoff
  * computed on the host clock. */
-function applyPinnedPolicy(
+export function applyPinnedPolicy(
   requested: AshbyInspectCommand["policy"],
   policySnapshot: string | null,
   now: number,
@@ -1149,7 +1149,7 @@ function validateRequestedRecord(record: Record<string, unknown>): void {
   }
 }
 
-function extractExperienceRequirements(description: string): {
+export function extractExperienceRequirements(description: string): {
   status: "explicit" | "ambiguous" | "not_stated";
   requirements: ExperienceRequirement[];
 } {
@@ -1186,8 +1186,8 @@ function extractExperienceRequirements(description: string): {
     : { status: "not_stated", requirements };
 }
 
-function evaluatePolicy(
-  posting: NormalizedPosting,
+export function evaluatePolicy(
+  posting: { publishedAt: number | null; isListed: boolean },
   experienceStatus: "explicit" | "ambiguous" | "not_stated",
   requirements: ExperienceRequirement[],
   policy: AshbyInspectCommand["policy"],
@@ -1312,7 +1312,7 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === "object" && !Array.isArray(value);
 }
 
-function snapshotSourceIds(value: string | null): string[] | null {
+export function snapshotSourceIds(value: string | null): string[] | null {
   if (!value) return null;
   try {
     const parsed = JSON.parse(value) as { sourceIds?: unknown };

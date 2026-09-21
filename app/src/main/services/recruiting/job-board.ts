@@ -17,6 +17,16 @@ function titleCaseSlug(slug: string): string {
     .join(" ");
 }
 
+/** Posting URLs whose first capture is the company's board slug or tenant. */
+const BOARD_SLUG_URLS = [
+  /^https:\/\/(?:job-boards|boards)(?:\.eu)?\.greenhouse\.io\/([^/?#]+)/i,
+  /^https:\/\/jobs\.lever\.co\/([^/?#]+)/i,
+  /^https:\/\/jobs\.smartrecruiters\.com\/([^/?#]+)/i,
+  /^https:\/\/apply\.workable\.com\/([^/?#]+)/i,
+  /^https:\/\/ats\.rippling\.com\/([^/?#]+)/i,
+  /^https:\/\/([a-z0-9-]+)\.wd\d+\.myworkdayjobs\.com\//i,
+];
+
 const COMPANY_SUFFIX = /\s@\s+([^@]+)$/;
 
 /** Best-effort organization for a job Signal. Order: an explicit "@ Company"
@@ -32,6 +42,8 @@ export function deriveCompany(title: string, url: string | null): string | null 
   if (url) {
     const ashby = /^https?:\/\/jobs\.ashbyhq\.com\/([^/?#]+)/i.exec(url);
     if (ashby) return titleCaseSlug(decodeURIComponent(ashby[1]));
+    const board = BOARD_SLUG_URLS.map((pattern) => pattern.exec(url)).find(Boolean);
+    if (board) return titleCaseSlug(decodeURIComponent(board[1]));
   }
   return null;
 }

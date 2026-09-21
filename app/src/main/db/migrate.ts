@@ -34,7 +34,7 @@ export interface MigrationDb {
 }
 
 /** Bump on every schema change, with a matching entry in MIGRATIONS. */
-export const SCHEMA_VERSION = 17;
+export const SCHEMA_VERSION = 18;
 
 const MIGRATIONS: Record<number, (db: MigrationDb) => void> = {
   // v2 — headless turn limit: per-agent unattended-turn counter + on/off toggle.
@@ -289,6 +289,104 @@ const MIGRATIONS: Record<number, (db: MigrationDb) => void> = {
           'source-hacker-news-access', 'source-hacker-news', '', 'public', 'public',
           'ready', NULL, NULL, NULL, NULL, NULL,
           NULL, NULL, NULL, NULL, 0, 0
+        );
+      `);
+    }
+  },
+  // v18 — public applicant-tracking board Sources behind JobPostingInspect.
+  // Existing Scouts receive no selection, as with v15 through v17.
+  18: (db) => {
+    if (hasTable(db, "sources") && hasTable(db, "source_access")) {
+      db.exec(`
+        INSERT OR IGNORE INTO sources (
+          id, kind, name, config, readiness, safe_failure, created_at, updated_at
+        ) VALUES (
+          'source-greenhouse', 'greenhouse', 'Greenhouse', '{"provider":"greenhouse"}',
+          'ready', NULL, 0, 0
+        );
+        INSERT OR IGNORE INTO source_access (
+          id, source_id, account_ref, scope_key, access_mode, readiness, safe_failure,
+          last_checked_at, last_success_at, next_action, retry_at, etag, last_modified,
+          cursor, source_identity, created_at, updated_at
+        ) VALUES (
+          'source-greenhouse-access', 'source-greenhouse', '', 'public', 'public',
+          'ready', NULL, NULL, NULL, NULL, NULL,
+          NULL, NULL, NULL, 'greenhouse', 0, 0
+        );
+        INSERT OR IGNORE INTO sources (
+          id, kind, name, config, readiness, safe_failure, created_at, updated_at
+        ) VALUES (
+          'source-lever', 'lever', 'Lever', '{"provider":"lever"}',
+          'ready', NULL, 0, 0
+        );
+        INSERT OR IGNORE INTO source_access (
+          id, source_id, account_ref, scope_key, access_mode, readiness, safe_failure,
+          last_checked_at, last_success_at, next_action, retry_at, etag, last_modified,
+          cursor, source_identity, created_at, updated_at
+        ) VALUES (
+          'source-lever-access', 'source-lever', '', 'public', 'public',
+          'ready', NULL, NULL, NULL, NULL, NULL,
+          NULL, NULL, NULL, 'lever', 0, 0
+        );
+        INSERT OR IGNORE INTO sources (
+          id, kind, name, config, readiness, safe_failure, created_at, updated_at
+        ) VALUES (
+          'source-smartrecruiters', 'smartrecruiters', 'SmartRecruiters', '{"provider":"smartrecruiters"}',
+          'ready', NULL, 0, 0
+        );
+        INSERT OR IGNORE INTO source_access (
+          id, source_id, account_ref, scope_key, access_mode, readiness, safe_failure,
+          last_checked_at, last_success_at, next_action, retry_at, etag, last_modified,
+          cursor, source_identity, created_at, updated_at
+        ) VALUES (
+          'source-smartrecruiters-access', 'source-smartrecruiters', '', 'public', 'public',
+          'ready', NULL, NULL, NULL, NULL, NULL,
+          NULL, NULL, NULL, 'smartrecruiters', 0, 0
+        );
+        INSERT OR IGNORE INTO sources (
+          id, kind, name, config, readiness, safe_failure, created_at, updated_at
+        ) VALUES (
+          'source-workable', 'workable', 'Workable', '{"provider":"workable"}',
+          'ready', NULL, 0, 0
+        );
+        INSERT OR IGNORE INTO source_access (
+          id, source_id, account_ref, scope_key, access_mode, readiness, safe_failure,
+          last_checked_at, last_success_at, next_action, retry_at, etag, last_modified,
+          cursor, source_identity, created_at, updated_at
+        ) VALUES (
+          'source-workable-access', 'source-workable', '', 'public', 'public',
+          'ready', NULL, NULL, NULL, NULL, NULL,
+          NULL, NULL, NULL, 'workable', 0, 0
+        );
+        INSERT OR IGNORE INTO sources (
+          id, kind, name, config, readiness, safe_failure, created_at, updated_at
+        ) VALUES (
+          'source-rippling', 'rippling', 'Rippling', '{"provider":"rippling"}',
+          'ready', NULL, 0, 0
+        );
+        INSERT OR IGNORE INTO source_access (
+          id, source_id, account_ref, scope_key, access_mode, readiness, safe_failure,
+          last_checked_at, last_success_at, next_action, retry_at, etag, last_modified,
+          cursor, source_identity, created_at, updated_at
+        ) VALUES (
+          'source-rippling-access', 'source-rippling', '', 'public', 'public',
+          'ready', NULL, NULL, NULL, NULL, NULL,
+          NULL, NULL, NULL, 'rippling', 0, 0
+        );
+        INSERT OR IGNORE INTO sources (
+          id, kind, name, config, readiness, safe_failure, created_at, updated_at
+        ) VALUES (
+          'source-workday', 'workday', 'Workday', '{"provider":"workday"}',
+          'ready', NULL, 0, 0
+        );
+        INSERT OR IGNORE INTO source_access (
+          id, source_id, account_ref, scope_key, access_mode, readiness, safe_failure,
+          last_checked_at, last_success_at, next_action, retry_at, etag, last_modified,
+          cursor, source_identity, created_at, updated_at
+        ) VALUES (
+          'source-workday-access', 'source-workday', '', 'public', 'public',
+          'ready', NULL, NULL, NULL, NULL, NULL,
+          NULL, NULL, NULL, 'workday', 0, 0
         );
       `);
     }

@@ -1,4 +1,9 @@
-import { discoveryInstructions, hasDiscoveryPlaybook, listingPublishedAfter } from "@shared/agent";
+import {
+  ATS_BOARDS,
+  discoveryInstructions,
+  hasDiscoveryPlaybook,
+  listingPublishedAfter,
+} from "@shared/agent";
 import type { ScoutHarness } from "@shared/recruiting";
 import { RecruitingError } from "./errors";
 
@@ -143,9 +148,18 @@ export function recruitingRunWorkflowInstructions(
   sourceKinds?: readonly string[],
 ): string {
   const has = (kind: string) => hasDiscoveryPlaybook(kind, sourceKinds);
+  const hasBoard = Object.keys(ATS_BOARDS).some(has);
+  const referenceTools = [
+    ...(has("x") ? ["XSearch", "XRead"] : []),
+    ...(has("ashby") ? ["AshbyInspectJobs"] : []),
+    ...(hasBoard ? ["JobPostingInspect"] : []),
+  ];
   const sourceSteps = [
     has("ashby")
       ? "For each discovered Ashby posting URL, call AshbyInspectJobs for employer facts, publication time, listed state, and experience evidence."
+      : "",
+    hasBoard
+      ? "Pass every posting URL discovered on the selected job boards to JobPostingInspect for employer facts, publication time, listed state, and experience evidence."
       : "",
     has("hacker_news")
       ? "Call HackerNewsJobs to read Hacker News job postings, then call record_source_outcome for the selected postings to create Signals and Fresh Leads."
@@ -154,8 +168,8 @@ export function recruitingRunWorkflowInstructions(
       ? "Use OpenRecruit WebSearch and WebFetch for the Web Search Source so those Source Attempts are recorded, then call record_source_outcome for selected attributable evidence to create Signals and Fresh Leads."
       : "",
     has("x") ? "Use XSearch and XRead for the X Source so those Source Attempts are recorded." : "",
-    has("ashby") || has("x")
-      ? "Call RecordSignal for each selected XSearch, XRead, or AshbyInspectJobs reference to create a Signal."
+    referenceTools.length > 0
+      ? `Call RecordSignal for each selected ${listWithOr(referenceTools)} reference to create a Signal.`
       : "",
   ].filter(Boolean);
   const steps = [
@@ -174,4 +188,9 @@ export function recruitingRunWorkflowInstructions(
     "",
     ...rest.map((step, index) => `${index + 2}. ${step}`),
   ].join("\n");
+}
+
+function listWithOr(items: string[]): string {
+  if (items.length <= 2) return items.join(" or ");
+  return `${items.slice(0, -1).join(", ")}, or ${items[items.length - 1]}`;
 }

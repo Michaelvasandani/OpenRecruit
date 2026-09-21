@@ -514,4 +514,96 @@ export const SCHEMA_DDL = `
       'ready', NULL, NULL, NULL, NULL, NULL,
       NULL, NULL, NULL, NULL, 0, 0
     );
+    -- Public applicant-tracking boards share one inspection tool. Discovery
+    -- stays harness-owned; each board is its own Source so a Scout opts in.
+    INSERT OR IGNORE INTO sources (
+      id, kind, name, config, readiness, safe_failure, created_at, updated_at
+    ) VALUES (
+      'source-greenhouse', 'greenhouse', 'Greenhouse', '{"provider":"greenhouse"}',
+      'ready', NULL, 0, 0
+    );
+    INSERT OR IGNORE INTO source_access (
+      id, source_id, account_ref, scope_key, access_mode, readiness, safe_failure,
+      last_checked_at, last_success_at, next_action, retry_at, etag, last_modified,
+      cursor, source_identity, created_at, updated_at
+    ) VALUES (
+      'source-greenhouse-access', 'source-greenhouse', '', 'public', 'public',
+      'ready', NULL, NULL, NULL, NULL, NULL,
+      NULL, NULL, NULL, 'greenhouse', 0, 0
+    );
+    INSERT OR IGNORE INTO sources (
+      id, kind, name, config, readiness, safe_failure, created_at, updated_at
+    ) VALUES (
+      'source-lever', 'lever', 'Lever', '{"provider":"lever"}',
+      'ready', NULL, 0, 0
+    );
+    INSERT OR IGNORE INTO source_access (
+      id, source_id, account_ref, scope_key, access_mode, readiness, safe_failure,
+      last_checked_at, last_success_at, next_action, retry_at, etag, last_modified,
+      cursor, source_identity, created_at, updated_at
+    ) VALUES (
+      'source-lever-access', 'source-lever', '', 'public', 'public',
+      'ready', NULL, NULL, NULL, NULL, NULL,
+      NULL, NULL, NULL, 'lever', 0, 0
+    );
+    INSERT OR IGNORE INTO sources (
+      id, kind, name, config, readiness, safe_failure, created_at, updated_at
+    ) VALUES (
+      'source-smartrecruiters', 'smartrecruiters', 'SmartRecruiters', '{"provider":"smartrecruiters"}',
+      'ready', NULL, 0, 0
+    );
+    INSERT OR IGNORE INTO source_access (
+      id, source_id, account_ref, scope_key, access_mode, readiness, safe_failure,
+      last_checked_at, last_success_at, next_action, retry_at, etag, last_modified,
+      cursor, source_identity, created_at, updated_at
+    ) VALUES (
+      'source-smartrecruiters-access', 'source-smartrecruiters', '', 'public', 'public',
+      'ready', NULL, NULL, NULL, NULL, NULL,
+      NULL, NULL, NULL, 'smartrecruiters', 0, 0
+    );
+    INSERT OR IGNORE INTO sources (
+      id, kind, name, config, readiness, safe_failure, created_at, updated_at
+    ) VALUES (
+      'source-workable', 'workable', 'Workable', '{"provider":"workable"}',
+      'ready', NULL, 0, 0
+    );
+    INSERT OR IGNORE INTO source_access (
+      id, source_id, account_ref, scope_key, access_mode, readiness, safe_failure,
+      last_checked_at, last_success_at, next_action, retry_at, etag, last_modified,
+      cursor, source_identity, created_at, updated_at
+    ) VALUES (
+      'source-workable-access', 'source-workable', '', 'public', 'public',
+      'ready', NULL, NULL, NULL, NULL, NULL,
+      NULL, NULL, NULL, 'workable', 0, 0
+    );
+    INSERT OR IGNORE INTO sources (
+      id, kind, name, config, readiness, safe_failure, created_at, updated_at
+    ) VALUES (
+      'source-rippling', 'rippling', 'Rippling', '{"provider":"rippling"}',
+      'ready', NULL, 0, 0
+    );
+    INSERT OR IGNORE INTO source_access (
+      id, source_id, account_ref, scope_key, access_mode, readiness, safe_failure,
+      last_checked_at, last_success_at, next_action, retry_at, etag, last_modified,
+      cursor, source_identity, created_at, updated_at
+    ) VALUES (
+      'source-rippling-access', 'source-rippling', '', 'public', 'public',
+      'ready', NULL, NULL, NULL, NULL, NULL,
+      NULL, NULL, NULL, 'rippling', 0, 0
+    );
+    INSERT OR IGNORE INTO sources (
+      id, kind, name, config, readiness, safe_failure, created_at, updated_at
+    ) VALUES (
+      'source-workday', 'workday', 'Workday', '{"provider":"workday"}',
+      'ready', NULL, 0, 0
+    );
+    INSERT OR IGNORE INTO source_access (
+      id, source_id, account_ref, scope_key, access_mode, readiness, safe_failure,
+      last_checked_at, last_success_at, next_action, retry_at, etag, last_modified,
+      cursor, source_identity, created_at, updated_at
+    ) VALUES (
+      'source-workday-access', 'source-workday', '', 'public', 'public',
+      'ready', NULL, NULL, NULL, NULL, NULL,
+      NULL, NULL, NULL, 'workday', 0, 0
+    );
 `;

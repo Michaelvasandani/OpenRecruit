@@ -49,6 +49,7 @@ import {
 import { bus } from "../event-bus";
 import type { BirdAccess } from "../settings";
 import { BIRD_SUPPORTED_VERSION } from "../settings/bird";
+import { isAtsProvider } from "./ats-boards";
 import { assertSafeMaterial } from "./contract";
 import { RecruitingError, type RecruitingFailureCategory } from "./errors";
 import { purgeUnavailableSignals } from "./evidence";
@@ -418,6 +419,12 @@ export class ScoutRunApplication {
       throw new RecruitingError(
         "VALIDATION",
         "Hacker News is a canonical Source and cannot be created as a duplicate",
+      );
+    }
+    if (isAtsProvider(kind)) {
+      throw new RecruitingError(
+        "VALIDATION",
+        "Job boards are canonical Sources and cannot be created as duplicates",
       );
     }
     const config = sanitizeSourceConfig(command.config ?? {});
@@ -2481,7 +2488,9 @@ export class ScoutRunApplication {
           "CONFLICT",
           pending.issuer === "ashby"
             ? "The evidence reference was not issued by a completed Ashby inspection"
-            : "The evidence reference was not issued by a completed Bird XSearch or XRead Attempt",
+            : pending.issuer === "ats"
+              ? "The evidence reference was not issued by a completed job posting inspection"
+              : "The evidence reference was not issued by a completed Bird XSearch or XRead Attempt",
         );
       }
       const at = this.now();
@@ -3735,7 +3744,8 @@ function persistSignals(db: RecruitingDb, input: SignalPersistenceInput): boolea
       const provider =
         candidateProvider === "x-api-v2" ||
         candidateProvider === "bird" ||
-        candidateProvider === "ashby"
+        candidateProvider === "ashby" ||
+        isAtsProvider(candidateProvider)
           ? candidateProvider
           : null;
       const isX = provider === "x-api-v2" || provider === "bird";
@@ -3746,14 +3756,16 @@ function persistSignals(db: RecruitingDb, input: SignalPersistenceInput): boolea
             ? "x-api-v2"
             : provider === "ashby"
               ? "ashby-posting-v1"
-              : "rss-atom-v1";
+              : provider !== null
+                ? `${provider}-posting-v1`
+                : "rss-atom-v1";
       const processor =
         provider === "bird"
           ? "openrecruit-bird"
           : provider === "x-api-v2"
             ? "openrecruit-x-api"
-            : provider === "ashby"
-              ? "openrecruit-ashby"
+            : provider !== null
+              ? `openrecruit-${provider}`
               : "openrecruit-rss-atom";
       db.insert(signals)
         .values({
@@ -4048,6 +4060,9 @@ function issuedByCompletedAttempt(
 ): boolean {
   if (pending.issuer === "ashby") {
     return source.kind === "ashby" && pending.item.metadata?.provider === "ashby";
+  }
+  if (pending.issuer === "ats") {
+    return isAtsProvider(source.kind) && pending.item.metadata?.provider === source.kind;
   }
   const details = parseJson(requestedScope);
   const scope = details && typeof details === "object" ? (details as Record<string, unknown>) : {};
