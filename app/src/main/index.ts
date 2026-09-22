@@ -256,11 +256,18 @@ async function testConnection(sshTarget: string): Promise<ConnectionTestResult> 
 
 /** Persist a new connection and relaunch: the renderer's endpoint is fixed at window
  *  creation, so switching backends is a restart, not a live swap. */
-function applyConnection(config: ConnectionConfig): void {
+async function applyConnection(config: ConnectionConfig): Promise<void> {
   writeConnectionConfig(config);
   quitting = true;
   tunnel?.stop();
   tunnel = null;
+  // Moving to a remote host: stop the local one, or its scheduler would keep running
+  // the same Scouts here — two hosts firing one Scout is exactly what remote mode
+  // exists to avoid. Same pid revalidation as quitCompletely.
+  const local = connectionStatus.config.mode === "local" ? currentHost : null;
+  if (config.mode === "remote" && local && local.pid > 0) {
+    if (readManifest()?.pid === local.pid && isAlive(local.pid)) await terminateHost(local);
+  }
   app.relaunch();
   app.quit();
 }
