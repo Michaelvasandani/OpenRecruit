@@ -254,33 +254,13 @@ async function testConnection(sshTarget: string): Promise<ConnectionTestResult> 
   }
 }
 
-/** Persist a new connection and relaunch: the renderer's endpoint is fixed at window
- *  creation, so switching backends is a restart, not a live swap. */
-async function applyConnection(config: ConnectionConfig): Promise<void> {
-  writeConnectionConfig(config);
-  quitting = true;
-  tunnel?.stop();
-  tunnel = null;
-  // Moving to a remote host: stop the local one, or its scheduler would keep running
-  // the same Scouts here — two hosts firing one Scout is exactly what remote mode
-  // exists to avoid. Same pid revalidation as quitCompletely.
-  const local = connectionStatus.config.mode === "local" ? currentHost : null;
-  if (config.mode === "remote" && local && local.pid > 0) {
-    if (readManifest()?.pid === local.pid && isAlive(local.pid)) await terminateHost(local);
-  }
-  app.relaunch();
-  app.quit();
-}
-
-async function main() {
-  // Surface the app version to the detached host for same-build adoption.
-  process.env.OPENTRADE_VERSION = app.getVersion();
-
-  const connection = readConnectionConfig();
+/**
+ * Boot against a connection: reach its host (or record why not) and open the window.
+ * Shared by startup and a Settings → Connection change. The renderer's endpoint is
+ * fixed at window creation, so a change means a new window, not a live swap.
+ */
+async function bootConnection(connection: ConnectionConfig): Promise<void> {
   connectionStatus = { config: connection, appVersion: app.getVersion() };
-
-  // Reach the backend host. This is the only way the GUI reaches state now —
-  // services live in the host, not here.
   let host: HostManifest;
   try {
     host = await connectHost(connection);
@@ -296,6 +276,39 @@ async function main() {
     host = { pid: 0, faucetPort: 0, trpcPort: 0, token: "", startedAt: 0 };
   }
   currentHost = host;
+  openWindow(host);
+  if (host.trpcPort) wireNotifications(host);
+}
+
+/** Persist a new connection and boot against it in place: tear down the current
+ *  window, relay and tunnel, then `bootConnection` again. Not `app.relaunch()`: under
+ *  `electron-vite dev` the renderer dev server dies with this process, and a relaunched
+ *  launcher would have nothing to load. */
+async function applyConnection(config: ConnectionConfig): Promise<void> {
+  writeConnectionConfig(config);
+  relayClient?.close();
+  relayClient = null;
+  relayTrpc = null;
+  tunnel?.stop();
+  tunnel = null;
+  // Moving to a remote host: stop the local one, or its scheduler would keep running
+  // the same Scouts here — two hosts firing one Scout is exactly what remote mode
+  // exists to avoid. Same pid revalidation as quitCompletely.
+  const local = connectionStatus.config.mode === "local" ? currentHost : null;
+  if (config.mode === "remote" && local && local.pid > 0) {
+    if (readManifest()?.pid === local.pid && isAlive(local.pid)) await terminateHost(local);
+  }
+  for (const w of BrowserWindow.getAllWindows()) w.close();
+  await bootConnection(config);
+}
+
+async function main() {
+  // Surface the app version to the detached host for same-build adoption.
+  process.env.OPENTRADE_VERSION = app.getVersion();
+
+  // Reach the backend host and open the window. This is the only way the GUI reaches
+  // state now — services live in the host, not here.
+  await bootConnection(readConnectionConfig());
 
   // Connection bridge (shared/connection.ts): launcher state the renderer reads to
   // explain a failed remote boot and edits from Settings → Connection.
@@ -318,9 +331,6 @@ async function main() {
   // Settings → General "Quit completely": same path as the tray row.
   ipcMain.handle(SHELL_IPC.quitCompletely, () => quitCompletely());
 
-  openWindow(host);
-
-  if (host.trpcPort) wireNotifications(host);
   // The menu bar item first appears from the initial `settings.onChanged` push (sub-
   // second; emit-on-subscribe), NOT eagerly here: seeding from the default-on setting
   // flashed the tray for users who disabled it — and while that flash lasted, ⌘Q
