@@ -1,5 +1,6 @@
-import { Bell, Bot, Info, type LucideIcon, SlidersHorizontal } from "lucide-react";
+import { Bell, Bot, Info, type LucideIcon, Server, SlidersHorizontal } from "lucide-react";
 import { type CSSProperties, useState } from "react";
+import { ConnectionPanel } from "../components/settings/ConnectionPanel";
 import { SettingNumber } from "../components/settings/SettingNumber";
 import { SettingsRow } from "../components/settings/SettingsRow";
 import { SettingsSection } from "../components/settings/SettingsSection";
@@ -12,10 +13,11 @@ import { trpc } from "../lib/trpc";
 import { cn } from "../lib/utils";
 import { useUIStore } from "../stores/ui";
 
-type CategoryId = "general" | "agents" | "notifications" | "about";
+type CategoryId = "general" | "agents" | "connection" | "notifications" | "about";
 const CATEGORIES: { id: CategoryId; label: string; icon: LucideIcon }[] = [
   { id: "general", label: "General", icon: SlidersHorizontal },
   { id: "agents", label: "Scouts and agents", icon: Bot },
+  { id: "connection", label: "Connection", icon: Server },
   { id: "notifications", label: "Notifications", icon: Bell },
   { id: "about", label: "About", icon: Info },
 ];
@@ -67,6 +69,7 @@ export function SettingsScreen() {
           <div className="mx-auto max-w-2xl p-6">
             {category === "general" && <GeneralPanel />}
             {category === "agents" && <AgentsPanel />}
+            {category === "connection" && <ConnectionPanel />}
             {category === "notifications" && <NotificationsPanel />}
             {category === "about" && <AboutPanel />}
           </div>

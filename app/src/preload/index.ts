@@ -1,3 +1,4 @@
+import { CONNECTION_IPC, type ConnectionConfig } from "@shared/connection";
 import { SHELL_IPC } from "@shared/shell";
 import { contextBridge, ipcRenderer } from "electron";
 
@@ -33,4 +34,15 @@ contextBridge.exposeInMainWorld("__opentradeShell", {
   },
   /** Full quit: stop the backend host, then exit the launcher (Settings → General). */
   quitCompletely: (): Promise<void> => ipcRenderer.invoke(SHELL_IPC.quitCompletely),
+});
+
+/**
+ * Connection bridge (shared/connection.ts): which backend the launcher is pointed at.
+ * Launcher state — it has to be known before any host is reachable — so it rides
+ * ipcRenderer like the shell bridge.
+ */
+contextBridge.exposeInMainWorld("__opentradeConnection", {
+  status: () => ipcRenderer.invoke(CONNECTION_IPC.status),
+  test: (sshTarget: string) => ipcRenderer.invoke(CONNECTION_IPC.test, sshTarget),
+  apply: (config: ConnectionConfig) => ipcRenderer.invoke(CONNECTION_IPC.apply, config),
 });
