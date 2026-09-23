@@ -334,7 +334,8 @@ const TOOLS: ToolDef[] = [
       "pattern-matched experienceRequirements), " +
       "and opaque references for RecordSignal. The host enforces the pinned listing cutoff even " +
       "when publishedAfter is omitted (see appliedPolicy), and RecordSignal rejects excluded " +
-      "postings. Use OpenRecruit WebSearch to discover job URLs and boards.",
+      "postings. Discover job URLs and boards with OpenRecruit WebSearch when the Web Search " +
+      "Source is selected, otherwise with harness-native web search.",
     inputSchema: {
       ...obj(
         {
@@ -393,7 +394,8 @@ const TOOLS: ToolDef[] = [
       "experienceRequirements), and opaque references for RecordSignal. The host enforces the " +
       "pinned listing cutoff even when publishedAfter is omitted (see appliedPolicy), and " +
       "RecordSignal rejects excluded postings. A job_not_found error means the posting was " +
-      "removed after the search index saw it. Use OpenRecruit WebSearch to discover URLs.",
+      "removed after the search index saw it. Discover URLs with OpenRecruit WebSearch when the " +
+      "Web Search Source is selected, otherwise with harness-native web search.",
     inputSchema: {
       ...obj(
         {

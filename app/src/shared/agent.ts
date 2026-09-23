@@ -85,23 +85,46 @@ const EFFORT_LABELS: Record<ScoutSetup["effort"], string> = {
   thorough: "Use a thorough pass with multiple query variations and careful verification.",
 };
 
-/** How a job-board playbook calls OpenRecruit WebSearch so discovery reaches
- * past the first page of results. */
-const JOB_BOARD_SEARCH_PARAMETERS = [
-  "Call WebSearch with compact: true, limit: 100, sortByDate: true, and publishedAfter set to clock.listingPublishedAfter from read_run_context (or recency: week). One such search returns up to 100 distinct, recently dated results.",
-  "The date filter uses the search engine's page date, which is only a hint; judge posting age from the inspect tools, never from search results.",
-  "Keep job locations as words in the query. WebSearch's location parameter only changes where the search runs from and does not filter by job location, so leave it unset.",
-];
+/** Which search a job-board playbook discovers postings with: OpenRecruit
+ * WebSearch (Firecrawl) only when the Candidate selected the Web Search
+ * Source, otherwise the harness's own search. `either` is for instructions
+ * written before the selected Sources are known. */
+export type JobBoardDiscoverySearch = "web_search" | "native" | "either";
+
+export function jobBoardDiscoverySearch(sourceKinds?: readonly string[]): JobBoardDiscoverySearch {
+  if (!sourceKinds?.length) return "either";
+  return sourceKinds.includes("web_search") ? "web_search" : "native";
+}
+
+const NATIVE_SEARCH = "harness-native web search (Claude WebSearch or Codex built-in web search)";
+
+/** How a job-board playbook discovers posting URLs. OpenRecruit WebSearch
+ * reaches past the first page and filters by date; native search does not. */
+function jobBoardSearchLines(what: string, search: JobBoardDiscoverySearch): string[] {
+  const native = `Use ${NATIVE_SEARCH} to discover ${what}.`;
+  if (search === "native") return [native];
+  return [
+    search === "web_search"
+      ? `Discover ${what} with OpenRecruit WebSearch, because the Web Search Source is selected. Do not use ${NATIVE_SEARCH}: it returns only the first page of about ten results and keeps surfacing the same well-known companies.`
+      : `When list_selected_sources includes the Web Search Source, discover ${what} with OpenRecruit WebSearch as below, not ${NATIVE_SEARCH}. Otherwise use ${NATIVE_SEARCH}.`,
+    "Call WebSearch with compact: true, limit: 100, sortByDate: true, and publishedAfter set to clock.listingPublishedAfter from read_run_context (or recency: week). One such search returns up to 100 distinct, recently dated results.",
+    "WebSearch's jobBoards field lists the company boards behind the results, deduplicated; pass them as boards to the inspect tool.",
+    "The date filter uses the search engine's page date, which is only a hint; judge posting age from the inspect tools, never from search results.",
+    "Keep job locations as words in the query. WebSearch's location parameter only changes where the search runs from and does not filter by job location, so leave it unset.",
+  ];
+}
 
 /** Per-Source discovery playbooks, keyed by Source kind. A Scout is only shown
  * the playbooks for the Sources selected for it, so an HN-only Scout never
  * reads Ashby guidance (and vice versa). */
-const SOURCE_DISCOVERY_PLAYBOOKS: Record<string, string[]> = {
-  ashby: [
+const SOURCE_DISCOVERY_PLAYBOOKS: Record<
+  string,
+  string[] | ((search: JobBoardDiscoverySearch) => string[])
+> = {
+  ashby: (search) => [
     "### Ashby",
     "",
-    "Discover public Ashby URLs with OpenRecruit WebSearch, not harness-native web search (Claude WebSearch or Codex built-in web search): built-in search returns only the first page of about ten results and keeps surfacing the same well-known companies. The Ashby Source allows WebSearch for site:jobs.ashbyhq.com searches even when the Web Search Source is not selected.",
-    ...JOB_BOARD_SEARCH_PARAMETERS,
+    ...jobBoardSearchLines("public Ashby URLs", search),
     "For Ashby, derive a query ladder from the Candidate Profile, Discovery Strategy, target role, location, and preferences. Candidate-provided company or board seeds are optional.",
     "Run multiple simple Ashby searches with one title or seniority phrase per query; avoid large OR expressions. Start with location-constrained queries such as:",
     '- site:jobs.ashbyhq.com "New Grad" "<location>"',
@@ -114,9 +137,9 @@ const SOURCE_DISCOVERY_PLAYBOOKS: Record<string, string[]> = {
     '- site:jobs.ashbyhq.com "Machine Learning Engineer" "<location>"',
     '- site:jobs.ashbyhq.com "Agent Engineer" "<location>"',
     "Repeat without the location when location-constrained searches return too few or zero results, then use Ashby's normalized location during inspection.",
-    "Do not put freshness terms such as past week in search queries; the date filter is a WebSearch parameter, and posting freshness is enforced with Ashby's publishedAt through the publishedAfter policy.",
+    "Do not put freshness terms such as past week in search queries; enforce freshness with Ashby's publishedAt through the publishedAfter policy.",
     "Never infer today's date yourself. read_run_context returns the host clock (clock.now) and the listing cutoff (clock.listingPublishedAfter); pass that cutoff as publishedAfter. The host also applies the pinned cutoff whenever publishedAfter is omitted or earlier, and RecordSignal rejects postings the policy excluded.",
-    "Every discovered posting reveals a company board, and WebSearch returns them deduplicated as jobBoards. Pass those board handles or board URLs as boards to AshbyInspectJobs to enumerate every currently listed posting on the board that was published inside the window; search results skew old, so board enumeration is the main way to find fresh postings.",
+    "Every discovered posting reveals a company board. Pass those board handles or board URLs as boards to AshbyInspectJobs to enumerate every currently listed posting on the board that was published inside the window; search results skew old, so board enumeration is the main way to find fresh postings.",
     "Judge posting age from AshbyInspectJobs' ageDays and publishedAt, never from search snippets.",
     "Do not require the target technology in every title; a broader role title may match through its description.",
     "Do not require a seniority phrase in the title either: many early-career roles are titled plainly (Software Engineer) and only the description shows the experience required. Enumerate the board and rely on each result's policy decision and fitJudgment rather than skipping plain titles.",
@@ -167,31 +190,31 @@ export function isAtsBoardKind(kind: string): boolean {
 
 /** One playbook for every selected board: the boards differ only in the
  * search operator, so the Scout reads the method once. */
-function atsBoardsPlaybook(kinds: readonly string[]): string[] {
+function atsBoardsPlaybook(kinds: readonly string[], search: JobBoardDiscoverySearch): string[] {
   const boards = kinds.map((kind) => ATS_BOARDS[kind]);
   const enumerable = boards.filter((board) => board.enumerable).map((board) => board.label);
   const searchOnly = boards.filter((board) => !board.enumerable).map((board) => board.label);
   return [
     `### Job boards (${boards.map((board) => board.label).join(", ")})`,
     "",
-    "Discover public posting URLs on each selected board with OpenRecruit WebSearch, not harness-native web search (Claude WebSearch or Codex built-in web search), then verify them with JobPostingInspect. Built-in search returns only the first page of about ten results. A selected job-board Source allows WebSearch for its own board sites even when the Web Search Source is not selected. Search each board with its own site operator:",
+    ...jobBoardSearchLines("public posting URLs on each selected board", search),
+    "Verify discovered postings with JobPostingInspect. Search each board with its own site operator:",
     ...boards.map((board) => `- ${board.label}: site:${board.site}`),
     ...(kinds.includes("greenhouse")
       ? ["Older Greenhouse boards live on boards.greenhouse.io; search that host too."]
       : []),
-    ...JOB_BOARD_SEARCH_PARAMETERS,
     "Derive a query ladder from the Candidate Profile, Discovery Strategy, target role, location, and preferences. Run multiple simple searches per board with one title or seniority phrase per query; avoid large OR expressions. Start with location-constrained queries such as:",
     '- site:<board site> "New Grad" "<location>"',
     '- site:<board site> "Early Career" "<location>"',
     '- site:<board site> "Junior Software Engineer" "<location>"',
     '- site:<board site> "Software Engineer" "<location>"',
     "Repeat without the location when location-constrained searches return too few or zero results, then use the normalized location from JobPostingInspect.",
-    "Do not put freshness terms such as past week in search queries; the date filter is a WebSearch parameter, and the host enforces posting freshness from each board's own publication time through the publishedAfter policy.",
+    "Do not put freshness terms such as past week in search queries; the host enforces freshness from each board's own publication time through the publishedAfter policy.",
     "Never infer today's date yourself. read_run_context returns the host clock (clock.now) and the listing cutoff (clock.listingPublishedAfter); pass that cutoff as publishedAfter. The host also applies the pinned cutoff when publishedAfter is omitted.",
     "Deduplicate the discovered posting URLs and pass them to JobPostingInspect together, across boards, with includeDescription: true and the Scout Policy's publishedAfter, listedOnly, and experience constraints. One call accepts any mix of the selected boards.",
     ...(enumerable.length > 0
       ? [
-          `Every discovered posting reveals a company board, and WebSearch returns them deduplicated as jobBoards. For ${enumerable.join(", ")}, pass the company board URL (for example https://${boards.find((board) => board.enumerable)?.site}/<company>) as boards to enumerate every currently listed posting published inside the window; search results skew toward older postings, so enumeration finds fresh ones search has not indexed.`,
+          `Every discovered posting reveals a company board. For ${enumerable.join(", ")}, pass the company board URL (for example https://${boards.find((board) => board.enumerable)?.site}/<company>) as boards to enumerate every currently listed posting published inside the window; search results skew toward older postings, so enumeration finds fresh ones search has not indexed.`,
         ]
       : []),
     ...(searchOnly.length > 0
@@ -233,6 +256,13 @@ export function discoveryInstructions(sourceKinds?: readonly string[]): string {
   const boardKinds = Object.keys(ATS_BOARDS).filter((kind) =>
     hasDiscoveryPlaybook(kind, sourceKinds),
   );
+  const search = jobBoardDiscoverySearch(sourceKinds);
+  const playbook = (kind: string) => {
+    const entry = SOURCE_DISCOVERY_PLAYBOOKS[kind] as
+      | string[]
+      | ((s: JobBoardDiscoverySearch) => string[]);
+    return typeof entry === "function" ? entry(search) : entry;
+  };
   return [
     "## Source discovery",
     "",
@@ -240,8 +270,8 @@ export function discoveryInstructions(sourceKinds?: readonly string[]): string {
       ? "These are the playbooks for the Sources selected for this Scout. Use only these Sources; do not mention, suggest, or fall back to any other Source unless the Candidate selects it."
       : "Use only the playbooks for Sources that list_selected_sources returns; ignore the others.",
     "Reserve each Source's tools for that explicitly selected Source.",
-    ...kinds.flatMap((kind) => ["", ...(SOURCE_DISCOVERY_PLAYBOOKS[kind] as string[])]),
-    ...(boardKinds.length > 0 ? ["", ...atsBoardsPlaybook(boardKinds)] : []),
+    ...kinds.flatMap((kind) => ["", ...playbook(kind)]),
+    ...(boardKinds.length > 0 ? ["", ...atsBoardsPlaybook(boardKinds, search)] : []),
   ].join("\n");
 }
 

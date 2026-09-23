@@ -10,8 +10,7 @@ import {
   sourceAttempts,
   sources,
 } from "../../db/schema";
-import { ASHBY_SOURCE_ID } from "./ashby";
-import { ATS_ADAPTERS, ATS_PROVIDERS, type AtsProvider, routeBoard } from "./ats-boards";
+import { type AtsProvider, routeBoard } from "./ats-boards";
 import { RecruitingError, type RecruitingFailureCategory } from "./errors";
 
 const ACTIVE_RUN_STATUSES = ["queued", "preflight", "running", "finalizing"] as const;
@@ -29,25 +28,6 @@ const ASHBY_BOARD_PATTERN = /^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/;
 const ISO_DATE_PATTERN =
   /^\d{4}-\d{2}-\d{2}(?:T\d{2}:\d{2}(?::\d{2}(?:\.\d+)?)?(?:Z|[+-]\d{2}:\d{2}))?$/;
 const LOCATION_PATTERN = /^[\p{L}\p{N}][\p{L}\p{N} ,.'-]*$/u;
-
-/** Hosts a job-board Source may search for discovery without the Web Search
- * Source, keyed by the job-board Source id. */
-const JOB_BOARD_SEARCH_HOSTS: Record<string, readonly string[]> = {
-  [ASHBY_SOURCE_ID]: [ASHBY_HOST],
-  ...Object.fromEntries(
-    ATS_PROVIDERS.map((provider) => [
-      ATS_ADAPTERS[provider].sourceId,
-      provider === "greenhouse"
-        ? [
-            "job-boards.greenhouse.io",
-            "boards.greenhouse.io",
-            "job-boards.eu.greenhouse.io",
-            "boards.eu.greenhouse.io",
-          ]
-        : [ATS_ADAPTERS[provider].searchSite],
-    ]),
-  ),
-};
 
 export const WEB_SEARCH_RECENCIES = ["day", "week", "month", "year"] as const;
 export type WebSearchRecency = (typeof WEB_SEARCH_RECENCIES)[number];
@@ -409,20 +389,16 @@ export class WebSearchApplication {
     if (!run) throw new RecruitingError("CONFLICT", `Scout ${scout.id} has no active Scout Run`);
     const source = this.db.select().from(sources).where(eq(sources.id, "source-web-search")).get();
     if (!source) throw new RecruitingError("NOT_FOUND", "Web Search Source was not found");
-    const selectedSourceIds =
-      parseSnapshotSourceIds(run.overrideSnapshot) ??
-      this.db
-        .select({ sourceId: scoutSources.sourceId })
-        .from(scoutSources)
-        .where(eq(scoutSources.scoutId, scout.id))
-        .all()
-        .map((row) => row.sourceId);
-    const selected = selectedSourceIds.includes(source.id);
-    // A Scout with a job-board Source may search that board for discovery
-    // without also selecting the Web Search Source.
-    const boardHosts = selected
-      ? []
-      : [...new Set(selectedSourceIds.flatMap((id) => JOB_BOARD_SEARCH_HOSTS[id] ?? []))];
+    const snapshotSourceIds = parseSnapshotSourceIds(run.overrideSnapshot);
+    const selected = snapshotSourceIds
+      ? snapshotSourceIds.includes(source.id)
+      : Boolean(
+          this.db
+            .select({ sourceId: scoutSources.sourceId })
+            .from(scoutSources)
+            .where(and(eq(scoutSources.scoutId, scout.id), eq(scoutSources.sourceId, source.id)))
+            .get(),
+        );
     const access = this.db
       .select()
       .from(sourceAccess)
@@ -499,15 +475,9 @@ export class WebSearchApplication {
         error instanceof RecruitingError ? error.message : "WebSearch request was rejected";
       return reject(message, "VALIDATION", "invalid_input");
     }
-    if (!selected && boardHosts.length === 0)
+    if (!selected)
       return reject(
         "Web Search is not enabled for this Scout",
-        "CONFLICT",
-        "disabled_source_access",
-      );
-    if (!selected && !isBoardDiscoveryQuery(normalized.includeDomains, boardHosts))
-      return reject(
-        `Web Search is not enabled for this Scout. Job-board discovery searches must restrict site: to a selected board (${boardHosts.join(", ")})`,
         "CONFLICT",
         "disabled_source_access",
       );
@@ -783,15 +753,6 @@ function searchDate(at: number): string {
   const date = new Date(at);
   const pad = (value: number) => String(value).padStart(2, "0");
   return `${pad(date.getUTCMonth() + 1)}/${pad(date.getUTCDate())}/${date.getUTCFullYear()}`;
-}
-
-function isBoardDiscoveryQuery(domains: string[], boardHosts: string[]): boolean {
-  return (
-    domains.length > 0 &&
-    domains.every((domain) =>
-      boardHosts.some((host) => domain === host || domain.endsWith(`.${host}`)),
-    )
-  );
 }
 
 /** The company boards behind the results, deduplicated, so a discovery search

@@ -99,7 +99,7 @@ describe("AgentRegistry — CLAUDE.md composition", () => {
       const md = claudeMdFor(template);
       expect(md).toContain("# OpenRecruit Local Scout");
       expect(md).toContain("Candidate");
-      expect(md).toContain("Discover public Ashby URLs with OpenRecruit WebSearch");
+      expect(md).toContain("Claude WebSearch or Codex built-in web search");
       expect(md).toContain("Candidate-provided company or board seeds are optional");
       expect(md).toContain("AshbyInspectJobs");
     }
@@ -123,7 +123,7 @@ describe("AgentRegistry — CLAUDE.md composition", () => {
     r.refreshInstructions(agent.id);
 
     const refreshed = readFileSync(path, "utf8");
-    expect(refreshed).toContain("Discover public Ashby URLs with OpenRecruit WebSearch");
+    expect(refreshed).toContain("Claude WebSearch or Codex built-in web search");
     expect(refreshed).toContain("# Candidate specialty\nPreserve this exactly.");
   });
 });
@@ -193,7 +193,7 @@ describe("AgentRegistry — codex scaffold divergence", () => {
     const agents = readFileSync(join(dir, "AGENTS.md"), "utf8");
     expect(agents).toContain("# OpenRecruit Local Scout");
     expect(agents).toContain("Codex");
-    expect(agents).toContain("Discover public Ashby URLs with OpenRecruit WebSearch");
+    expect(agents).toContain("Claude WebSearch or Codex built-in web search");
     expect(agents).toContain("AshbyInspectJobs");
 
     // Claude-shaped template files skipped; codex config generated instead.

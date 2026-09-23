@@ -795,8 +795,19 @@ describe("WebSearch discovery filters", () => {
 });
 
 describe("WebSearch for job-board Scouts", () => {
-  test("allows site-restricted discovery on a selected board without the Web Search Source", async () => {
+  test("requires the Web Search Source even for site-restricted board searches", async () => {
     const { app, provider, scout } = fixture([ASHBY_SOURCE_ID]);
+    await expect(
+      app.webSearch({
+        scoutId: scout.id,
+        query: 'site:jobs.ashbyhq.com "Forward Deployed Engineer"',
+      }),
+    ).rejects.toThrow("Web Search is not enabled for this Scout");
+    expect(provider.requests).toHaveLength(0);
+  });
+
+  test("allows board searches when the Web Search Source is selected alongside a board", async () => {
+    const { app, provider, scout } = fixture([ASHBY_SOURCE_ID, WEB_SEARCH_SOURCE_ID]);
     const result = await app.webSearch({
       scoutId: scout.id,
       query: 'site:jobs.ashbyhq.com "Forward Deployed Engineer"',
@@ -804,38 +815,9 @@ describe("WebSearch for job-board Scouts", () => {
       recency: "week",
       compact: true,
     });
-    expect(result.results.map((item) => item.canonicalUrl)).toEqual([
-      "https://jobs.ashbyhq.com/acme/role",
+    expect(result.jobBoards).toEqual([
+      { source: "ashby", board: "acme", boardUrl: "https://jobs.ashbyhq.com/acme", resultCount: 1 },
     ]);
     expect(provider.requests).toHaveLength(1);
-  });
-
-  test("rejects searches that leave the selected boards", async () => {
-    const { app, provider, scout, run } = fixture([ASHBY_SOURCE_ID]);
-    for (const query of [
-      '"Forward Deployed Engineer"',
-      'site:example.com "Forward Deployed Engineer"',
-      'site:jobs.ashbyhq.com site:example.com "Forward Deployed Engineer"',
-      'site:jobs.lever.co "Forward Deployed Engineer"',
-    ]) {
-      await expect(app.webSearch({ scoutId: scout.id, query })).rejects.toThrow(
-        /site: to a selected board \(jobs\.ashbyhq\.com\)/,
-      );
-    }
-    expect(provider.requests).toHaveLength(0);
-    expect(app.listSourceAttempts(run.id)).toEqual(
-      expect.arrayContaining([
-        expect.objectContaining({ sourceId: WEB_SEARCH_SOURCE_ID, outcome: "rejected" }),
-      ]),
-    );
-  });
-
-  test("allows subdomains of a selected board host", async () => {
-    const { app, provider, scout } = fixture(["source-workday"]);
-    await app.webSearch({
-      scoutId: scout.id,
-      query: 'site:acme.wd5.myworkdayjobs.com "Software Engineer"',
-    });
-    expect(provider.requests[0]?.query).toBe('site:acme.wd5.myworkdayjobs.com "Software Engineer"');
   });
 });

@@ -26,8 +26,12 @@ describe("provider-neutral Recruiting contract", () => {
       policyMaterial: "Use selected Sources only.",
     });
     expect(instructions).toContain("OpenRecruit WebSearch and WebFetch");
-    expect(instructions).toContain("Discover public Ashby URLs with OpenRecruit WebSearch");
-    expect(instructions).toContain("compact: true, limit: 100, sortByDate: true");
+    expect(instructions).toContain("harness-native web search");
+    expect(instructions).toContain("Claude WebSearch or Codex built-in web search");
+    // Selected Sources unknown: Firecrawl only when Web Search turns out selected.
+    expect(instructions).toContain(
+      "When list_selected_sources includes the Web Search Source, discover public Ashby URLs with OpenRecruit WebSearch",
+    );
     expect(instructions).toContain("Candidate-provided company or board seeds are optional");
     expect(instructions).toContain(
       "Reserve each Source's tools for that explicitly selected Source",
@@ -70,13 +74,38 @@ describe("provider-neutral Recruiting contract", () => {
     expect(instructions).toContain("Workday boards cannot be enumerated");
     expect(instructions).not.toContain("jobs.lever.co");
     expect(instructions).not.toMatch(/ashby/i);
-    // Boards discover through WebSearch but keep their own evidence path, so
-    // the Web Search Source's playbook and WebFetch are not a fallback.
-    expect(instructions).not.toContain("### Web Search");
-    expect(instructions).not.toContain("WebFetch");
-    expect(instructions).toMatch(/\n2\. Discover job-board postings with OpenRecruit WebSearch/);
-    expect(instructions).toMatch(/\n3\. Pass every posting URL[^\n]*JobPostingInspect/);
-    expect(instructions).toMatch(/\n4\. Call RecordSignal[^\n]*JobPostingInspect/);
+    // Boards have their own evidence path, so Web Search is not a fallback:
+    // without the Web Search Source, boards discover with native search.
+    expect(instructions).not.toContain("OpenRecruit WebSearch");
+    expect(instructions).toContain("Use harness-native web search");
+    expect(instructions).toMatch(/\n2\. Pass every posting URL[^\n]*JobPostingInspect/);
+    expect(instructions).toMatch(/\n3\. Call RecordSignal[^\n]*JobPostingInspect/);
+  });
+
+  test("job boards discover through Firecrawl only when Web Search is selected", () => {
+    const withWebSearch = recruitingProviderInstructions({
+      runId: "run-boards-web",
+      strategyMaterial: "Find matching public roles.",
+      policyMaterial: "Use selected Sources only.",
+      sourceKinds: ["ashby", "greenhouse", "web_search"],
+    });
+    expect(withWebSearch).toContain(
+      "Discover public Ashby URLs with OpenRecruit WebSearch, because the Web Search Source is selected",
+    );
+    expect(withWebSearch).toContain("compact: true, limit: 100, sortByDate: true");
+    expect(withWebSearch).toMatch(/\n2\. Discover job-board postings with OpenRecruit WebSearch/);
+
+    const withoutWebSearch = recruitingProviderInstructions({
+      runId: "run-boards-native",
+      strategyMaterial: "Find matching public roles.",
+      policyMaterial: "Use selected Sources only.",
+      sourceKinds: ["ashby", "greenhouse"],
+    });
+    expect(withoutWebSearch).toContain(
+      "Use harness-native web search (Claude WebSearch or Codex built-in web search) to discover public Ashby URLs.",
+    );
+    expect(withoutWebSearch).not.toContain("OpenRecruit WebSearch");
+    expect(withoutWebSearch).not.toContain("compact: true");
   });
 
   test("fails closed for unrestricted or externally communicative capabilities", () => {

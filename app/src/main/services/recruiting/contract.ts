@@ -2,6 +2,7 @@ import {
   ATS_BOARDS,
   discoveryInstructions,
   hasDiscoveryPlaybook,
+  jobBoardDiscoverySearch,
   listingPublishedAfter,
 } from "@shared/agent";
 import type { ScoutHarness } from "@shared/recruiting";
@@ -155,7 +156,7 @@ export function recruitingRunWorkflowInstructions(
     ...(hasBoard ? ["JobPostingInspect"] : []),
   ];
   const sourceSteps = [
-    has("ashby") || hasBoard
+    (has("ashby") || hasBoard) && jobBoardDiscoverySearch(sourceKinds) === "web_search"
       ? "Discover job-board postings with OpenRecruit WebSearch, date-filtered with up to 100 compact results per search, so those Source Attempts are recorded."
       : "",
     has("ashby")
