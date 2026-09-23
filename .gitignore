@@ -30,3 +30,4 @@ dev.sh
 .env.example
 
 /scripts/
+dist-host/

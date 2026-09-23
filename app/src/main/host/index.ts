@@ -174,6 +174,7 @@ async function main() {
     pid: process.pid,
     faucetPort: localApi.port,
     trpcPort: trpc.port,
+    terminalPort: terminal.port,
     token,
     startedAt: Date.now(),
     // App version this host was built from. The launcher refuses to adopt a host
@@ -181,7 +182,7 @@ async function main() {
     // still running old code) and respawns a fresh one. See manifest.ensureHost.
     version: process.env.OPENTRADE_VERSION ?? "0.0.0",
   });
-  hostLog.info(`host ready: faucet=${localApi.port} trpc=${trpc.port}`);
+  hostLog.info(`host ready: faucet=${localApi.port} trpc=${trpc.port} terminal=${terminal.port}`);
 
   // Telemetry lifecycle: the host is up. `app_updated` fires once per version
   // transition (the reliable "an update actually landed" signal for the detached

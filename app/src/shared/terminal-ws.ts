@@ -36,3 +36,16 @@ export const TERM_WS_CLOSE = {
   /** Backpressure valve tripped: consumer too slow, buffered output too large. */
   SLOW_CONSUMER: 4408,
 } as const;
+
+/**
+ * Point a host-issued terminal URL at `localPort` instead — how a launcher tunnelling
+ * to a remote host reaches the terminal WebSocket, whose real port exists only on the
+ * other machine. Only the port changes; path and query (session, token) are kept.
+ * A `localPort` of 0 means "no override" and returns the URL untouched.
+ */
+export function withTerminalPort(url: string, localPort: number): string {
+  if (!localPort) return url;
+  const u = new URL(url);
+  u.port = String(localPort);
+  return u.toString();
+}

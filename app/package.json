@@ -18,6 +18,7 @@
     "package:signed": "set -a; [ -f ../.env ] && . ../.env; set +a; bun run package",
     "pack:dir": "bun run prepackage && electron-vite build && electron-builder --dir --config electron-builder.yml",
     "rebuild": "electron-builder install-app-deps",
+    "bundle:host": "node scripts/build-host-bundle.mjs",
     "make-icon": "node scripts/make-icon.mjs",
     "db:generate": "drizzle-kit generate"
   },

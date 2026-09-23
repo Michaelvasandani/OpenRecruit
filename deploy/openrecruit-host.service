@@ -1,0 +1,23 @@
+# systemd USER unit for the OpenRecruit backend host (installed by deploy/install.sh).
+# A user unit, not a system one: the host must run as the login user whose
+# ~/.claude holds the Claude login and whose ~/.opentrade holds the database.
+# `loginctl enable-linger <user>` keeps it running with nobody logged in.
+[Unit]
+Description=OpenRecruit backend host
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+WorkingDirectory=%h/openrecruit-host
+# OPENTRADE_VERSION (written by the bundle script) + any operator overrides.
+EnvironmentFile=%h/openrecruit-host/deploy/host.env
+EnvironmentFile=-%h/.config/openrecruit/host.env
+ExecStart=/usr/bin/env node app/out/main/host.js
+Restart=on-failure
+RestartSec=5
+# The host's SIGTERM handler stops in-flight runs and clears their spawn markers;
+# give it time before systemd escalates to SIGKILL.
+TimeoutStopSec=20
+
+[Install]
+WantedBy=default.target

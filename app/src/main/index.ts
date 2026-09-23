@@ -1,5 +1,13 @@
 import { join } from "node:path";
 import type { Agent } from "@shared/agent";
+import {
+  CONNECTION_IPC,
+  type ConnectionConfig,
+  type ConnectionStatus,
+  type ConnectionTestResult,
+  connectionConfigSchema,
+  sshTargetSchema,
+} from "@shared/connection";
 import type { HostNotification, NotificationKind, RecentNotification } from "@shared/notify";
 import { type AppSettings, DEFAULT_SETTINGS } from "@shared/settings";
 import { SHELL_IPC } from "@shared/shell";
@@ -15,6 +23,8 @@ import {
   readManifest,
   terminateHost,
 } from "./host/manifest";
+import { readConnectionConfig, writeConnectionConfig } from "./remote/config";
+import { readRemoteManifest, SshTunnel } from "./remote/tunnel";
 import { AppTray } from "./tray";
 import type { AppRouter } from "./trpc/routers";
 import { createMainWindow } from "./window";
@@ -24,6 +34,10 @@ let relayClient: ReturnType<typeof createWSClient> | null = null;
 let relayTrpc: ReturnType<typeof createTRPCClient<AppRouter>> | null = null;
 /** The adopted host, kept so a notification/tray click can recreate a closed window. */
 let currentHost: HostManifest | null = null;
+/** Which backend this launcher booted against (shared/connection.ts), for the renderer. */
+let connectionStatus: ConnectionStatus = { config: { mode: "local" }, appVersion: "0.0.0" };
+/** Live SSH forward to a remote host; null in local mode. */
+let tunnel: SshTunnel | null = null;
 /** Live AppSettings mirror driven by `settings.onChanged`; gates notification display
  *  and the menu bar item. Seeded with defaults (all on) so both work before the first
  *  push arrives. */
@@ -67,7 +81,11 @@ function windowFocused(): boolean {
  * recreated window behaves exactly like the first one.
  */
 function openWindow(host: HostManifest): BrowserWindow {
-  const win = createMainWindow({ trpcPort: host.trpcPort, token: host.token });
+  const win = createMainWindow({
+    trpcPort: host.trpcPort,
+    terminalPort: connectionStatus.config.mode === "remote" ? (host.terminalPort ?? 0) : 0,
+    token: host.token,
+  });
   mainWindow = win;
   win.on("closed", () => {
     if (mainWindow === win) {
@@ -134,6 +152,15 @@ function quitForReal(): void {
 async function quitCompletely(): Promise<void> {
   quitting = true; // set BEFORE the await — a ⌘Q racing the teardown must not retreat
   const host = currentHost;
+  // A remote host is not ours to stop (its pid is a process on ANOTHER machine —
+  // signalling it here would hit whatever local process holds that number). Just
+  // drop the tunnel; the VM keeps running its schedules, which is the point.
+  if (tunnel) {
+    tunnel.stop();
+    tunnel = null;
+    quitForReal();
+    return;
+  }
   // Revalidate the boot-time pid before signalling it: the launcher can sit in the
   // menu bar for days, so the host may have died since and the OS reused the pid —
   // the manifest must still name it AND it must still be alive.
@@ -203,23 +230,104 @@ if (!app.requestSingleInstanceLock()) {
   app.whenReady().then(main);
 }
 
-async function main() {
-  // Surface the app version to the detached host for same-build adoption.
-  process.env.OPENTRADE_VERSION = app.getVersion();
+/**
+ * Reach the configured backend: adopt-or-spawn a local host, or tunnel to a remote
+ * one. Either way the result is a manifest whose `trpcPort` and `terminalPort` are on
+ * 127.0.0.1 — the
+ * renderer never learns which. In remote mode the manifest's pid/faucetPort describe
+ * processes on the other machine and are never acted on here.
+ */
+async function connectHost(config: ConnectionConfig): Promise<HostManifest> {
+  if (config.mode === "local") {
+    return ensureHost(join(__dirname, "host.js"), app.getVersion());
+  }
+  const t = new SshTunnel(config.sshTarget);
+  const remote = await t.start();
+  tunnel = t;
+  return {
+    ...remote,
+    trpcPort: t.localPort,
+    terminalPort: remote.terminalPort ? t.terminalLocalPort : undefined,
+  };
+}
 
-  // Adopt a running backend host or spawn one (detached, supervised). This is the
-  // only way the GUI reaches state now — services live in the host, not here.
+/** Can a running host be reached at `sshTarget`? A one-shot read, no tunnel. */
+async function testConnection(sshTarget: string): Promise<ConnectionTestResult> {
+  const parsed = sshTargetSchema.safeParse(sshTarget);
+  if (!parsed.success) return { ok: false, error: parsed.error.issues[0].message };
+  try {
+    const m = await readRemoteManifest(parsed.data);
+    return { ok: true, hostVersion: m.version ?? "0.0.0" };
+  } catch (err) {
+    return { ok: false, error: err instanceof Error ? err.message : String(err) };
+  }
+}
+
+/**
+ * Boot against a connection: reach its host (or record why not) and open the window.
+ * Shared by startup and a Settings → Connection change. The renderer's endpoint is
+ * fixed at window creation, so a change means a new window, not a live swap.
+ */
+async function bootConnection(connection: ConnectionConfig): Promise<void> {
+  connectionStatus = { config: connection, appVersion: app.getVersion() };
   let host: HostManifest;
   try {
-    host = await ensureHost(join(__dirname, "host.js"), app.getVersion());
+    host = await connectHost(connection);
+    if (connection.mode === "remote") connectionStatus.hostVersion = host.version ?? "0.0.0";
   } catch (err) {
     console.error("[launcher] backend host unavailable", err);
+    if (connection.mode === "remote") {
+      connectionStatus.error = err instanceof Error ? err.message : String(err);
+    }
     // Still open the window, but with a zeroed port. The renderer reads trpcPort===0
     // as "backend failed to start" and shows a dedicated screen (BackendFailed)
     // instead of hanging on a blank screen.
     host = { pid: 0, faucetPort: 0, trpcPort: 0, token: "", startedAt: 0 };
   }
   currentHost = host;
+  openWindow(host);
+  if (host.trpcPort) wireNotifications(host);
+}
+
+/** Persist a new connection and boot against it in place: tear down the current
+ *  window, relay and tunnel, then `bootConnection` again. Not `app.relaunch()`: under
+ *  `electron-vite dev` the renderer dev server dies with this process, and a relaunched
+ *  launcher would have nothing to load. */
+async function applyConnection(config: ConnectionConfig): Promise<void> {
+  writeConnectionConfig(config);
+  relayClient?.close();
+  relayClient = null;
+  relayTrpc = null;
+  tunnel?.stop();
+  tunnel = null;
+  // Moving to a remote host: stop the local one, or its scheduler would keep running
+  // the same Scouts here — two hosts firing one Scout is exactly what remote mode
+  // exists to avoid. Same pid revalidation as quitCompletely.
+  const local = connectionStatus.config.mode === "local" ? currentHost : null;
+  if (config.mode === "remote" && local && local.pid > 0) {
+    if (readManifest()?.pid === local.pid && isAlive(local.pid)) await terminateHost(local);
+  }
+  for (const w of BrowserWindow.getAllWindows()) w.close();
+  await bootConnection(config);
+}
+
+async function main() {
+  // Surface the app version to the detached host for same-build adoption.
+  process.env.OPENTRADE_VERSION = app.getVersion();
+
+  // Reach the backend host and open the window. This is the only way the GUI reaches
+  // state now — services live in the host, not here.
+  await bootConnection(readConnectionConfig());
+
+  // Connection bridge (shared/connection.ts): launcher state the renderer reads to
+  // explain a failed remote boot and edits from Settings → Connection.
+  ipcMain.handle(CONNECTION_IPC.status, (): ConnectionStatus => connectionStatus);
+  ipcMain.handle(CONNECTION_IPC.test, (_e, target: unknown) =>
+    testConnection(typeof target === "string" ? target : ""),
+  );
+  ipcMain.handle(CONNECTION_IPC.apply, (_e, config: unknown) =>
+    applyConnection(connectionConfigSchema.parse(config)),
+  );
 
   // Shell bridge (§12.6): a renderer created *by* a tray click pulls the agent it
   // should select once it mounts (the push would have preceded its listener).
@@ -232,9 +340,6 @@ async function main() {
   // Settings → General "Quit completely": same path as the tray row.
   ipcMain.handle(SHELL_IPC.quitCompletely, () => quitCompletely());
 
-  openWindow(host);
-
-  if (host.trpcPort) wireNotifications(host);
   // The menu bar item first appears from the initial `settings.onChanged` push (sub-
   // second; emit-on-subscribe), NOT eagerly here: seeding from the default-on setting
   // flashed the tray for users who disabled it — and while that flash lasted, ⌘Q
@@ -290,6 +395,7 @@ app.on("before-quit", (e) => {
   // every interactive PTY on `gui:gone` (§12.2). Headless `-p` scheduled runs are
   // PTY-independent, so they run to completion regardless of the GUI.
   relayClient?.close();
+  tunnel?.stop();
 });
 
 /**
