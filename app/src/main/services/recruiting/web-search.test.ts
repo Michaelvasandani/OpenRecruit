@@ -7,10 +7,15 @@ import { type MigrationDb, migrate } from "../../db/migrate";
 import {
   DeterministicWebSearchProvider,
   FirecrawlWebSearchProvider,
+  normalizeFilters,
   normalizeQuery,
   RecruitingApplication,
   WEB_SEARCH_SOURCE_ID,
+  type WebSearchProvider,
+  type WebSearchProviderRequest,
+  type WebSearchProviderResult,
 } from ".";
+import { ASHBY_SOURCE_ID } from "./ashby";
 
 function makeDb(): Db {
   const sqlite = new Database(":memory:");
@@ -39,16 +44,18 @@ function confirmedProfile(app: RecruitingApplication): string {
   }).id;
 }
 
-function fixture() {
+function fixture(sourceIds: string[] = [WEB_SEARCH_SOURCE_ID]) {
+  const results = [
+    {
+      title: "Forward Deployed Engineer",
+      url: "https://jobs.ashbyhq.com/acme/role#tracking",
+      description: "Join the team building useful systems.",
+      publishedAt: "2026-08-24T12:00:00Z",
+    },
+  ];
   const provider = new DeterministicWebSearchProvider({
-    '"Forward Deployed Engineer"': [
-      {
-        title: "Forward Deployed Engineer",
-        url: "https://jobs.ashbyhq.com/acme/role#tracking",
-        description: "Join the team building useful systems.",
-        publishedAt: "2026-08-24T12:00:00Z",
-      },
-    ],
+    '"Forward Deployed Engineer"': results,
+    'site:jobs.ashbyhq.com "Forward Deployed Engineer"': results,
   });
   const app = new RecruitingApplication(makeDb(), () => 10_000, {
     provider,
@@ -60,7 +67,7 @@ function fixture() {
     harness: "codex",
     instructionPath: "agents/search",
     defaultProfileId: profileId,
-    sourceIds: [WEB_SEARCH_SOURCE_ID],
+    sourceIds,
     idempotencyKey: "web-scout",
   });
   const run = app.launchScoutRun({ scoutId: scout.value.id, idempotencyKey: "web-run" });
@@ -90,7 +97,7 @@ describe("host-owned WebSearch", () => {
         );
       },
     );
-    const result = await provider.search({ query: "job", limit: 10, includeDomains: [] });
+    const result = await provider.search({ query: "job", limit: 10 });
     expect(captured?.url).toBe("https://api.firecrawl.dev/v2/search");
     expect(captured?.init.headers).toMatchObject({ authorization: "Bearer firecrawl-secret" });
     expect(result).toMatchObject({ requestId: "fc-request-1", creditsUsed: 2 });
@@ -118,7 +125,7 @@ describe("host-owned WebSearch", () => {
       },
     );
 
-    const result = await provider.search({ query: "recovered", limit: 10, includeDomains: [] });
+    const result = await provider.search({ query: "recovered", limit: 10 });
 
     expect(calls).toBe(2);
     expect(result).toMatchObject({
@@ -140,9 +147,7 @@ describe("host-owned WebSearch", () => {
       },
     );
 
-    await expect(
-      provider.search({ query: "bad", limit: 10, includeDomains: [] }),
-    ).rejects.toMatchObject({
+    await expect(provider.search({ query: "bad", limit: 10 })).rejects.toMatchObject({
       category: "invalid_request",
       retryCount: 0,
     });
@@ -159,9 +164,7 @@ describe("host-owned WebSearch", () => {
         }),
     );
 
-    await expect(
-      provider.search({ query: "job", limit: 10, includeDomains: [] }),
-    ).rejects.toMatchObject({
+    await expect(provider.search({ query: "job", limit: 10 })).rejects.toMatchObject({
       category: "provider_failure",
       requestId: "safe-malformed",
       creditsUsed: 2,
@@ -182,9 +185,7 @@ describe("host-owned WebSearch", () => {
       async () => responses.shift() ?? new Response("unexpected", { status: 500 }),
     );
 
-    await expect(
-      provider.search({ query: "job", limit: 10, includeDomains: [] }),
-    ).rejects.toMatchObject({
+    await expect(provider.search({ query: "job", limit: 10 })).rejects.toMatchObject({
       category: "provider_failure",
       requestId: "safe-invalid-json",
       retryCount: 1,
@@ -231,13 +232,11 @@ describe("host-owned WebSearch", () => {
       limit: 10,
     });
 
+    // site: stays in the query: Firecrawl caps includeDomains searches at 10.
     expect(provider.requests).toEqual([
-      {
-        query: '"Forward Deployed Engineer"',
-        limit: 10,
-        includeDomains: ["jobs.ashbyhq.com"],
-      },
+      { query: 'site:jobs.ashbyhq.com "Forward Deployed Engineer"', limit: 10 },
     ]);
+    expect(result.appliedDomainRestrictions).toEqual(["jobs.ashbyhq.com"]);
     expect(result.query).toBe('site:jobs.ashbyhq.com "Forward Deployed Engineer"');
     expect(result.results).toEqual([
       expect.objectContaining({
@@ -416,12 +415,13 @@ describe("host-owned WebSearch", () => {
   test("defaults and rejects result limits instead of clamping", async () => {
     const { app, scout, run } = fixture();
     await app.webSearch({ scoutId: scout.id, query: "Forward Deployed Engineer" });
+    await app.webSearch({ scoutId: scout.id, query: "Forward Deployed Engineer", limit: 100 });
     await expect(
       app.webSearch({ scoutId: scout.id, query: "Forward Deployed Engineer", limit: 0 }),
-    ).rejects.toThrow(/between 1 and 25/i);
+    ).rejects.toThrow(/between 1 and 100/i);
     await expect(
-      app.webSearch({ scoutId: scout.id, query: "Forward Deployed Engineer", limit: 26 }),
-    ).rejects.toThrow(/between 1 and 25/i);
+      app.webSearch({ scoutId: scout.id, query: "Forward Deployed Engineer", limit: 101 }),
+    ).rejects.toThrow(/between 1 and 100/i);
     expect(app.listSourceAttempts(run.id)).toEqual(
       expect.arrayContaining([
         expect.objectContaining({ runId: run.id, outcome: "rejected", itemCount: 0 }),
@@ -436,8 +436,7 @@ describe("host-owned WebSearch", () => {
 
     expect(result.query).toBe(query);
     expect(provider.requests[0]).toMatchObject({
-      query: '"Forward Deployed Engineer"',
-      includeDomains: ["jobs.ashbyhq.com"],
+      query: 'site:jobs.ashbyhq.com "Forward Deployed Engineer"',
     });
   });
 
@@ -483,7 +482,7 @@ describe("host-owned WebSearch", () => {
     );
 
     expect(normalized.providerQuery).toBe(
-      '"Forward Deployed Engineer" -intern filetype:pdf inurl:jobs allinurl:careers intitle:Engineer allintitle:Engineering related:ashbyhq.com before:2026 cache:jobs',
+      'site:jobs.ashbyhq.com "Forward Deployed Engineer" -intern filetype:pdf inurl:jobs allinurl:careers intitle:Engineer allintitle:Engineering related:ashbyhq.com before:2026 cache:jobs',
     );
     expect(normalized.unsupportedOperators).toEqual(["before", "cache"]);
   });
@@ -497,7 +496,7 @@ describe("host-owned WebSearch", () => {
 
   test("filters provider results that violate a structured site restriction", async () => {
     const provider = new DeterministicWebSearchProvider({
-      '"Forward Deployed Engineer"': [
+      'site:jobs.ashbyhq.com "Forward Deployed Engineer"': [
         {
           title: "Ashby role",
           url: "https://jobs.ashbyhq.com/acme/role",
@@ -585,5 +584,258 @@ describe("host-owned WebSearch", () => {
     expect(
       results.map(({ result }) => app.getSourceAttempt(result.sourceAttemptId)?.runId),
     ).toEqual(results.map(({ run }) => run.value.id));
+  });
+});
+
+describe("WebSearch discovery filters", () => {
+  const now = Date.parse("2026-09-22T18:00:00Z");
+
+  test("sends limit, tbs, and location in the Firecrawl request body", async () => {
+    let body: Record<string, unknown> | undefined;
+    const provider = new FirecrawlWebSearchProvider(
+      () => "key",
+      async (_url, init) => {
+        body = JSON.parse(String(init?.body));
+        return new Response(JSON.stringify({ data: { web: [] } }), { status: 200 });
+      },
+    );
+    await provider.search({
+      query: 'site:jobs.ashbyhq.com "New Grad"',
+      limit: 100,
+      tbs: "sbd:1,qdr:w",
+      location: "San Francisco,California,United States",
+    });
+    // Never includeDomains: Firecrawl caps those searches at 10 results.
+    expect(body).toEqual({
+      query: 'site:jobs.ashbyhq.com "New Grad"',
+      limit: 100,
+      tbs: "sbd:1,qdr:w",
+      location: "San Francisco,California,United States",
+    });
+
+    await provider.search({ query: "job", limit: 10 });
+    expect(body).toEqual({ query: "job", limit: 10 });
+  });
+
+  test("maps typed filters to tbs on the host clock", () => {
+    expect(normalizeFilters({}, now)).toEqual({ tbs: null, location: null, compact: false });
+    expect(normalizeFilters({ recency: "day" }, now).tbs).toBe("qdr:d");
+    expect(normalizeFilters({ recency: "year", sortByDate: true }, now).tbs).toBe("sbd:1,qdr:y");
+    expect(normalizeFilters({ publishedAfter: "2026-09-01T00:00:00.000Z" }, now).tbs).toBe(
+      "cdr:1,cd_min:09/01/2026,cd_max:09/22/2026",
+    );
+    expect(normalizeFilters({ publishedAfter: "2026-09-15", sortByDate: true }, now).tbs).toBe(
+      "sbd:1,cdr:1,cd_min:09/15/2026,cd_max:09/22/2026",
+    );
+    expect(
+      normalizeFilters({ location: "  Kansas City,Missouri,United States ", compact: true }, now),
+    ).toEqual({ tbs: null, location: "Kansas City,Missouri,United States", compact: true });
+  });
+
+  test("rejects malformed filters with a clear message", () => {
+    const invalid = (request: Record<string, unknown>) =>
+      expect(() => normalizeFilters(request as never, now));
+    invalid({ recency: "hour" }).toThrow(/day, week, month, or year/);
+    invalid({ recency: "week", publishedAfter: "2026-09-01" }).toThrow(/not both/);
+    invalid({ publishedAfter: "last week" }).toThrow(/ISO date/);
+    invalid({ publishedAfter: "2026-13-45" }).toThrow(/ISO date/);
+    invalid({ publishedAfter: "2026-10-01" }).toThrow(/future/);
+    invalid({ sortByDate: "yes" }).toThrow(/sortByDate/);
+    invalid({ compact: 1 }).toThrow(/compact/);
+    invalid({ location: "" }).toThrow(/location/);
+    invalid({ location: "x".repeat(101) }).toThrow(/location/);
+    invalid({ location: "qdr:w,sbd:1" }).toThrow(/location/);
+  });
+
+  test("records the filters on the Source Attempt and passes them to the provider", async () => {
+    const { app, provider, scout, run } = fixture();
+    const result = await app.webSearch({
+      scoutId: scout.id,
+      query: 'site:jobs.ashbyhq.com "Forward Deployed Engineer"',
+      limit: 100,
+      publishedAfter: "1970-01-01",
+      sortByDate: true,
+      location: "San Francisco,California,United States",
+    });
+    expect(provider.requests[0]).toEqual({
+      query: 'site:jobs.ashbyhq.com "Forward Deployed Engineer"',
+      limit: 100,
+      tbs: "sbd:1,cdr:1,cd_min:01/01/1970,cd_max:01/01/1970",
+      location: "San Francisco,California,United States",
+    });
+    expect(result.appliedFilters).toEqual({
+      tbs: "sbd:1,cdr:1,cd_min:01/01/1970,cd_max:01/01/1970",
+      location: "San Francisco,California,United States",
+    });
+    const scope = JSON.parse(app.getSourceAttempt(result.sourceAttemptId)?.requestedScope ?? "{}");
+    expect(scope).toMatchObject({
+      limit: 100,
+      tbs: "sbd:1,cdr:1,cd_min:01/01/1970,cd_max:01/01/1970",
+      location: "San Francisco,California,United States",
+    });
+
+    await expect(
+      app.webSearch({ scoutId: scout.id, query: "query", recency: "hour" as never }),
+    ).rejects.toThrow(/recency/);
+    expect(
+      app
+        .listSourceAttempts(run.id)
+        .map((attempt) => attempt.outcome)
+        .sort(),
+    ).toEqual(["rejected", "succeeded_with_items"]);
+    expect(provider.requests).toHaveLength(1);
+  });
+
+  test("retries an empty date-filtered search once", async () => {
+    const answers: WebSearchProviderResult[][] = [
+      [],
+      [{ title: "Role", url: "https://jobs.ashbyhq.com/acme/role", description: "Role" }],
+    ];
+    const requests: WebSearchProviderRequest[] = [];
+    const provider: WebSearchProvider = {
+      async search(request) {
+        requests.push(request);
+        const results = answers.shift() ?? [];
+        return { requestId: null, creditsUsed: results.length === 0 ? 0 : 2, results };
+      },
+    };
+    const app = new RecruitingApplication(makeDb(), () => 10_000, {
+      provider,
+      webSearchApiKey: () => "test-key",
+    });
+    const scout = app.createScout({
+      name: "Retry Scout",
+      harness: "claude",
+      instructionPath: "agents/retry",
+      defaultProfileId: confirmedProfile(app),
+      sourceIds: [WEB_SEARCH_SOURCE_ID],
+      idempotencyKey: "retry-scout",
+    }).value;
+    const run = app.launchScoutRun({ scoutId: scout.id, idempotencyKey: "retry-run" }).value;
+
+    const dated = await app.webSearch({ scoutId: scout.id, query: "role", recency: "week" });
+    expect(requests).toHaveLength(2);
+    expect(requests[1]).toEqual(requests[0]);
+    expect(dated.results).toHaveLength(1);
+    expect(
+      JSON.parse(app.getSourceAttempt(dated.sourceAttemptId)?.requestedScope ?? "{}"),
+    ).toMatchObject({ emptyResultRetried: true, creditsUsed: 2 });
+
+    // Still empty after the retry: an empty success, not a failure.
+    const empty = await app.webSearch({ scoutId: scout.id, query: "role", recency: "week" });
+    expect(requests).toHaveLength(4);
+    expect(app.getSourceAttempt(empty.sourceAttemptId)).toMatchObject({
+      outcome: "succeeded_empty",
+    });
+
+    // Without a date filter an empty answer is taken as is.
+    await app.webSearch({ scoutId: scout.id, query: "role" });
+    expect(requests).toHaveLength(5);
+    expect(app.listSourceAttempts(run.id)).toHaveLength(3);
+  });
+
+  test("returns compact excerpts and the deduplicated job boards behind the results", async () => {
+    const provider = new DeterministicWebSearchProvider({
+      '"New Grad"': [
+        {
+          title: "New Grad Engineer",
+          url: "https://jobs.ashbyhq.com/acme/0b6a3c1e-2f4d-4c8e-9a7b-1d2e3f4a5b6c",
+          description: "x".repeat(900),
+        },
+        { title: "Acme board", url: "https://jobs.ashbyhq.com/acme", description: "Jobs" },
+        {
+          title: "Beta role",
+          url: "https://job-boards.greenhouse.io/beta/jobs/12345",
+          description: "Role",
+        },
+        { title: "Gamma role", url: "https://jobs.lever.co/gamma/abc-123", description: "Role" },
+        {
+          title: "Workday role",
+          url: "https://delta.wd5.myworkdayjobs.com/en-US/careers/job/SF/Engineer_R1",
+          description: "Role",
+        },
+        { title: "Blog", url: "https://example.com/post", description: "Not a board" },
+      ],
+    });
+    const app = new RecruitingApplication(makeDb(), () => 10_000, {
+      provider,
+      webSearchApiKey: () => "test-key",
+    });
+    const scout = app.createScout({
+      name: "Compact Scout",
+      harness: "claude",
+      instructionPath: "agents/compact",
+      defaultProfileId: confirmedProfile(app),
+      sourceIds: [WEB_SEARCH_SOURCE_ID],
+      idempotencyKey: "compact-scout",
+    }).value;
+    app.launchScoutRun({ scoutId: scout.id, idempotencyKey: "compact-run" });
+
+    const result = await app.webSearch({ scoutId: scout.id, query: '"New Grad"', compact: true });
+    expect(result.results[0]?.excerpt).toHaveLength(200);
+    expect(result.jobBoards).toEqual([
+      {
+        source: "ashby",
+        board: "acme",
+        boardUrl: "https://jobs.ashbyhq.com/acme",
+        resultCount: 2,
+      },
+      {
+        source: "greenhouse",
+        board: "beta",
+        boardUrl: "https://job-boards.greenhouse.io/beta",
+        resultCount: 1,
+      },
+      { source: "lever", board: "gamma", boardUrl: "https://jobs.lever.co/gamma", resultCount: 1 },
+    ]);
+
+    const full = await app.webSearch({ scoutId: scout.id, query: '"New Grad"' });
+    expect(full.results[0]?.excerpt).toHaveLength(900);
+  });
+});
+
+describe("WebSearch for job-board Scouts", () => {
+  test("allows site-restricted discovery on a selected board without the Web Search Source", async () => {
+    const { app, provider, scout } = fixture([ASHBY_SOURCE_ID]);
+    const result = await app.webSearch({
+      scoutId: scout.id,
+      query: 'site:jobs.ashbyhq.com "Forward Deployed Engineer"',
+      limit: 100,
+      recency: "week",
+      compact: true,
+    });
+    expect(result.results.map((item) => item.canonicalUrl)).toEqual([
+      "https://jobs.ashbyhq.com/acme/role",
+    ]);
+    expect(provider.requests).toHaveLength(1);
+  });
+
+  test("rejects searches that leave the selected boards", async () => {
+    const { app, provider, scout, run } = fixture([ASHBY_SOURCE_ID]);
+    for (const query of [
+      '"Forward Deployed Engineer"',
+      'site:example.com "Forward Deployed Engineer"',
+      'site:jobs.ashbyhq.com site:example.com "Forward Deployed Engineer"',
+      'site:jobs.lever.co "Forward Deployed Engineer"',
+    ]) {
+      await expect(app.webSearch({ scoutId: scout.id, query })).rejects.toThrow(
+        /site: to a selected board \(jobs\.ashbyhq\.com\)/,
+      );
+    }
+    expect(provider.requests).toHaveLength(0);
+    expect(app.listSourceAttempts(run.id)).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ sourceId: WEB_SEARCH_SOURCE_ID, outcome: "rejected" }),
+      ]),
+    );
+  });
+
+  test("allows subdomains of a selected board host", async () => {
+    const { app, provider, scout } = fixture(["source-workday"]);
+    await app.webSearch({
+      scoutId: scout.id,
+      query: 'site:acme.wd5.myworkdayjobs.com "Software Engineer"',
+    });
+    expect(provider.requests[0]?.query).toBe('site:acme.wd5.myworkdayjobs.com "Software Engineer"');
   });
 });

@@ -118,7 +118,17 @@ describe("authenticated agent WebSearch route", () => {
         jsonrpc: "2.0",
         id: 1,
         method: "tools/call",
-        params: { name: "WebSearch", arguments: { query: "query" } },
+        params: {
+          name: "WebSearch",
+          arguments: {
+            query: "query",
+            limit: 50,
+            recency: "week",
+            sortByDate: true,
+            location: "San Francisco,California,United States",
+            compact: true,
+          },
+        },
       })}\n`,
     );
     const reader = child.stdout.getReader();
@@ -140,6 +150,12 @@ describe("authenticated agent WebSearch route", () => {
       content: [{ type: "text" }],
     });
     expect(JSON.stringify(response)).toContain("https://example.com/job");
+    expect(provider.requests.at(-1)).toEqual({
+      query: "query",
+      limit: 50,
+      tbs: "sbd:1,qdr:w",
+      location: "San Francisco,California,United States",
+    });
   });
 
   test("rejects missing authentication and invalid limits before provider access", async () => {
@@ -158,7 +174,7 @@ describe("authenticated agent WebSearch route", () => {
         "x-opentrade-token": server.token,
         "x-opentrade-agent": scout.id,
       },
-      body: JSON.stringify({ query: "query", limit: 26 }),
+      body: JSON.stringify({ query: "query", limit: 101 }),
     });
     expect(invalid.status).toBe(400);
     expect(provider.requests).toHaveLength(requestsBeforeInvalid);

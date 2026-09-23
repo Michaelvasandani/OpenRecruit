@@ -155,6 +155,9 @@ export function recruitingRunWorkflowInstructions(
     ...(hasBoard ? ["JobPostingInspect"] : []),
   ];
   const sourceSteps = [
+    has("ashby") || hasBoard
+      ? "Discover job-board postings with OpenRecruit WebSearch, date-filtered with up to 100 compact results per search, so those Source Attempts are recorded."
+      : "",
     has("ashby")
       ? "For each discovered Ashby posting URL, call AshbyInspectJobs for employer facts, publication time, listed state, and experience evidence."
       : "",
