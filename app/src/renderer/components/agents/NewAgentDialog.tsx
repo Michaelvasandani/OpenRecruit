@@ -444,14 +444,18 @@ function SourcesStep({
                   <span className="mt-2 block text-[11px] text-muted-foreground">
                     The selected harness uses its built-in web search to discover public Ashby job
                     URLs, then AshbyInspectJobs verifies each posting. Company or board seed lists
-                    are optional.
+                    are optional. Also select Web Search to discover through Firecrawl instead,
+                    which reaches more and newer companies; Web Search then only searches the
+                    selected job boards.
                   </span>
                 )}
                 {isAtsBoardKind(source.kind) && (
                   <span className="mt-2 block text-[11px] text-muted-foreground">
                     The selected harness uses its built-in web search to discover public{" "}
                     {source.name} job URLs, then JobPostingInspect verifies each posting against{" "}
-                    {source.name}'s public API.
+                    {source.name}'s public API. Also select Web Search to discover through Firecrawl
+                    instead, which reaches more and newer companies; Web Search then only searches
+                    the selected job boards.
                   </span>
                 )}
                 {!ready && source.nextAction && (

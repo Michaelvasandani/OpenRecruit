@@ -8,7 +8,16 @@ import type { StatusArbiter } from "../status/arbiter";
 
 type WebAccessBoundary = {
   resolveScoutForAgent(agentId: string): string | null;
-  webSearch(input: { scoutId: string; query: string; limit?: number }): Promise<unknown>;
+  webSearch(input: {
+    scoutId: string;
+    query: string;
+    limit?: number;
+    recency?: "day" | "week" | "month" | "year";
+    publishedAfter?: string;
+    sortByDate?: boolean;
+    location?: string;
+    compact?: boolean;
+  }): Promise<unknown>;
   xSearch(input: {
     scoutId: string;
     query: string;
@@ -333,6 +342,11 @@ export class LocalApiServer {
         scoutId,
         query: body.query,
         limit: body.limit as number | undefined,
+        recency: body.recency as "day" | "week" | "month" | "year" | undefined,
+        publishedAfter: body.publishedAfter as string | undefined,
+        sortByDate: body.sortByDate as boolean | undefined,
+        location: body.location as string | undefined,
+        compact: body.compact as boolean | undefined,
       });
       return json(res, 200, result);
     } catch (error) {

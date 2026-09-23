@@ -170,8 +170,16 @@ const TOOLS: ToolDef[] = [
   {
     name: "WebSearch",
     description:
-      "Search the public web through OpenRecruit's host-owned Web Search Source (not sure if useful). " +
-      "Results are bounded, attributable evidence; they do not create Leads or Signals automatically.",
+      "Search the public web through OpenRecruit's host-owned Web Search Source. " +
+      "Results are bounded, attributable evidence; they do not create Leads or Signals automatically. " +
+      "For job-board discovery, use a site: restriction for the board, compact: true, limit up to 100, " +
+      "and a date filter (recency or publishedAfter) with sortByDate to reach past the first page of " +
+      "well-known companies. jobBoards lists the deduplicated company boards behind the results. " +
+      "Date filters use the search engine's page date, not the posting's publication time; judge " +
+      "posting age only from AshbyInspectJobs or JobPostingInspect. location sets where the search " +
+      "runs from, which only changes ranking; it does not filter by job location (tested: a " +
+      "Kansas City location changed 20 of 50 Ashby results and returned no Kansas jobs), so keep " +
+      "job locations in the query and check them with the inspect tools.",
     inputSchema: obj(
       {
         query: {
@@ -182,17 +190,49 @@ const TOOLS: ToolDef[] = [
         limit: {
           type: "integer",
           minimum: 1,
-          maximum: 25,
+          maximum: 100,
           default: 10,
-          description: "Maximum number of results to return (1–25; defaults to 10).",
+          description: "Maximum number of results to return (1–100; defaults to 10).",
+        },
+        recency: {
+          type: "string",
+          enum: ["day", "week", "month", "year"],
+          description:
+            "Only pages dated inside the past day, week, month, or year. Not with publishedAfter.",
+        },
+        publishedAfter: {
+          type: "string",
+          description:
+            "Only pages dated on or after this ISO date (for example clock.listingPublishedAfter " +
+            "from read_run_context), rounded up to the past day, week, month, or year because " +
+            "the search engine ignores exact date ranges. Not with recency.",
+        },
+        sortByDate: {
+          type: "boolean",
+          description: "Return the newest pages first.",
+        },
+        location: {
+          type: "string",
+          maxLength: 100,
+          description:
+            "Where the search runs from, such as 'San Francisco,California,United States'. " +
+            "A ranking hint only; never a job-location filter.",
+        },
+        compact: {
+          type: "boolean",
+          description:
+            "Return title, URL, and a short excerpt only. Use for broad discovery searches.",
         },
       },
       ["query"],
     ),
     run: async (a) => {
+      const optional = ["limit", "recency", "publishedAfter", "sortByDate", "location", "compact"];
       const { status, json } = await callHost("POST", "/web-search", {
         query: a.query,
-        ...(a.limit === undefined ? {} : { limit: a.limit }),
+        ...Object.fromEntries(
+          optional.flatMap((key) => (a[key] === undefined ? [] : [[key, a[key]]])),
+        ),
       });
       if (status !== 200) throw new Error(describeError(json));
       return JSON.stringify(json, null, 2);
@@ -295,7 +335,8 @@ const TOOLS: ToolDef[] = [
       "pattern-matched experienceRequirements), " +
       "and opaque references for RecordSignal. The host enforces the pinned listing cutoff even " +
       "when publishedAfter is omitted (see appliedPolicy), and RecordSignal rejects excluded " +
-      "postings. Use harness-native web search to discover job URLs and boards.",
+      "postings. Discover job URLs and boards with OpenRecruit WebSearch when the Web Search " +
+      "Source is selected, otherwise with harness-native web search.",
     inputSchema: {
       ...obj(
         {
@@ -354,7 +395,8 @@ const TOOLS: ToolDef[] = [
       "experienceRequirements), and opaque references for RecordSignal. The host enforces the " +
       "pinned listing cutoff even when publishedAfter is omitted (see appliedPolicy), and " +
       "RecordSignal rejects excluded postings. A job_not_found error means the posting was " +
-      "removed after the search index saw it. Use harness-native web search to discover URLs.",
+      "removed after the search index saw it. Discover URLs with OpenRecruit WebSearch when the " +
+      "Web Search Source is selected, otherwise with harness-native web search.",
     inputSchema: {
       ...obj(
         {

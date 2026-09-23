@@ -10,4 +10,5 @@ test("Ashby source setup explains native discovery and deterministic verificatio
   expect(source).toContain('"AshbyInspectJobs"');
   expect(source).toContain('"RecordSignal"');
   expect(normalized).toContain("Company or board seed lists are optional");
+  expect(normalized).toContain("Also select Web Search to discover through Firecrawl instead");
 });

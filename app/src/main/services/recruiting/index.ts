@@ -291,14 +291,18 @@ export {
 export {
   DeterministicWebSearchProvider,
   FirecrawlWebSearchProvider,
+  normalizeFilters,
   normalizeQuery,
+  WEB_SEARCH_RECENCIES,
   WebSearchApplication,
   type WebSearchApplicationOptions,
+  type WebSearchJobBoard,
   type WebSearchProvider,
   WebSearchProviderError,
   type WebSearchProviderRequest,
   type WebSearchProviderResponse,
   type WebSearchProviderResult,
+  type WebSearchRecency,
   type WebSearchRequest,
   type WebSearchResponse,
 } from "./web-search";

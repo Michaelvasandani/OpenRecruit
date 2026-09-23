@@ -64,7 +64,7 @@ class JourneySearchProvider implements WebSearchProvider {
   readonly requests: WebSearchProviderRequest[] = [];
 
   async search(request: WebSearchProviderRequest): Promise<WebSearchProviderResponse> {
-    this.requests.push({ ...request, includeDomains: [...request.includeDomains] });
+    this.requests.push({ ...request });
     if (request.query === "state:missing") {
       throw new WebSearchProviderError("not_configured", "provider detail must stay host-only");
     }
@@ -93,7 +93,7 @@ class JourneySearchProvider implements WebSearchProvider {
     }
     if (request.query === "state:empty")
       return { requestId: "safe-empty", creditsUsed: 2, results: [] };
-    if (request.query === '"Forward Deployed Engineer"') {
+    if (request.query === 'site:jobs.ashbyhq.com "Forward Deployed Engineer"') {
       return {
         requestId: "safe-ashby",
         creditsUsed: 2,
@@ -403,7 +403,7 @@ describe("Issue #44 agent-facing web discovery journey", () => {
       expect(lists[0]).toEqual(lists[1]);
       expect(lists[0]?.map((tool) => tool.name)).toEqual(["WebSearch", "WebFetch"]);
       expect(lists[0]?.map((tool) => tool.description)).toEqual([
-        expect.stringContaining("(not sure if useful)"),
+        expect.stringContaining("does not filter by job location"),
         expect.stringContaining("(not sure if useful)"),
       ]);
 

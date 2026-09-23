@@ -10,26 +10,92 @@ import {
   sourceAttempts,
   sources,
 } from "../../db/schema";
+import { ASHBY_SOURCE_ID } from "./ashby";
+import { ATS_ADAPTERS, ATS_PROVIDERS, type AtsProvider, routeBoard } from "./ats-boards";
 import { RecruitingError, type RecruitingFailureCategory } from "./errors";
 
 const ACTIVE_RUN_STATUSES = ["queued", "preflight", "running", "finalizing"] as const;
 const DEFAULT_RESULT_LIMIT = 10;
-const MAX_RESULT_LIMIT = 25;
+const MAX_RESULT_LIMIT = 100;
 const MAX_QUERY_LENGTH = 2_000;
 const MAX_TITLE_LENGTH = 500;
 const MAX_EXCERPT_LENGTH = 1_000;
+const COMPACT_EXCERPT_LENGTH = 200;
+const MAX_LOCATION_LENGTH = 100;
 const MAX_REQUEST_ID_LENGTH = 200;
 const FIRECRAWL_SEARCH_URL = "https://api.firecrawl.dev/v2/search";
+const ASHBY_HOST = "jobs.ashbyhq.com";
+const ASHBY_BOARD_PATTERN = /^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/;
+const ISO_DATE_PATTERN =
+  /^\d{4}-\d{2}-\d{2}(?:T\d{2}:\d{2}(?::\d{2}(?:\.\d+)?)?(?:Z|[+-]\d{2}:\d{2}))?$/;
+const LOCATION_PATTERN = /^[\p{L}\p{N}][\p{L}\p{N} ,.'-]*$/u;
+const DAY_MS = 86_400_000;
+
+/** Search hosts of each job-board Source, keyed by Source id. */
+const JOB_BOARD_SEARCH_HOSTS: Record<string, readonly string[]> = {
+  [ASHBY_SOURCE_ID]: [ASHBY_HOST],
+  ...Object.fromEntries(
+    ATS_PROVIDERS.map((provider) => [
+      ATS_ADAPTERS[provider].sourceId,
+      provider === "greenhouse"
+        ? [
+            "job-boards.greenhouse.io",
+            "boards.greenhouse.io",
+            "job-boards.eu.greenhouse.io",
+            "boards.eu.greenhouse.io",
+          ]
+        : [ATS_ADAPTERS[provider].searchSite],
+    ]),
+  ),
+};
+
+/** When a Scout selects Web Search together with job boards, Web Search is
+ * only the search engine for those boards: its searches must stay on these
+ * hosts and it fetches no pages. Empty when no job board is selected. */
+export function selectedJobBoardHosts(sourceIds: readonly string[]): string[] {
+  return [...new Set(sourceIds.flatMap((id) => JOB_BOARD_SEARCH_HOSTS[id] ?? []))];
+}
+
+/** The Source ids pinned to a Run, or the Scout's current selection. */
+export function runSourceIds(db: Db, scoutId: string, overrideSnapshot: string | null): string[] {
+  return (
+    parseSnapshotSourceIds(overrideSnapshot) ??
+    db
+      .select({ sourceId: scoutSources.sourceId })
+      .from(scoutSources)
+      .where(eq(scoutSources.scoutId, scoutId))
+      .all()
+      .map((row) => row.sourceId)
+  );
+}
+
+export const WEB_SEARCH_RECENCIES = ["day", "week", "month", "year"] as const;
+export type WebSearchRecency = (typeof WEB_SEARCH_RECENCIES)[number];
 
 export type WebSearchRequest = {
   query: string;
   limit?: number;
+  /** Only pages the search engine dates inside the past day, week, month, or year. */
+  recency?: WebSearchRecency;
+  /** Only pages the search engine dates on or after this ISO date. */
+  publishedAfter?: string;
+  /** Newest pages first. */
+  sortByDate?: boolean;
+  /** Where the search runs from. A ranking hint, never a job-location filter. */
+  location?: string;
+  /** Title, URL, and a short excerpt only, for broad discovery searches. */
+  compact?: boolean;
 };
 
+/** The query keeps its site: operators. Firecrawl's includeDomains field caps
+ * a search at 10 results whatever the limit, while site: in the query returns
+ * the full limit; the host still filters results by domain afterwards. */
 export type WebSearchProviderRequest = {
   query: string;
   limit: number;
-  includeDomains: string[];
+  /** Google-style time filter, for example "sbd:1,qdr:w". */
+  tbs?: string;
+  location?: string;
 };
 
 export type WebSearchProviderResult = {
@@ -68,15 +134,26 @@ export type WebSearchResult = {
   retrievedAt: number;
 };
 
+/** A company job board a result points at, ready for AshbyInspectJobs or
+ * JobPostingInspect board enumeration. */
+export type WebSearchJobBoard = {
+  source: "ashby" | AtsProvider;
+  board: string;
+  boardUrl: string;
+  resultCount: number;
+};
+
 export type WebSearchResponse = {
   query: string;
   providerQuery: string;
   appliedDomainRestrictions: string[];
   unsupportedOperators: string[];
+  appliedFilters: { tbs: string | null; location: string | null };
   sourceAttemptId: string;
   retrievedAt: number;
   provenance: WebSearchProvenance;
   results: WebSearchResult[];
+  jobBoards: WebSearchJobBoard[];
 };
 
 export type WebSearchApplicationOptions = {
@@ -91,6 +168,12 @@ type NormalizedQuery = {
   unsupportedOperators: string[];
 };
 
+type NormalizedFilters = {
+  tbs: string | null;
+  location: string | null;
+  compact: boolean;
+};
+
 type WebSearchAttemptDetails = {
   operation: "web_search";
   provider: string;
@@ -99,6 +182,9 @@ type WebSearchAttemptDetails = {
   normalizedQuery: string;
   includeDomains: string[];
   unsupportedOperators: string[];
+  limit: number | null;
+  tbs: string | null;
+  location: string | null;
   requestId: string | null;
   creditsUsed: number | null;
   returnedUrls: string[];
@@ -107,6 +193,7 @@ type WebSearchAttemptDetails = {
   retryDisposition: "not_retried" | "recovered" | "exhausted" | "mixed";
   errorCategory: string | null;
   attemptCount: number;
+  emptyResultRetried: boolean;
   startedAt: number;
   completedAt: number | null;
 };
@@ -127,7 +214,7 @@ export class DeterministicWebSearchProvider implements WebSearchProvider {
   }
 
   async search(request: WebSearchProviderRequest): Promise<WebSearchProviderResponse> {
-    this.requests.push({ ...request, includeDomains: [...request.includeDomains] });
+    this.requests.push({ ...request });
     return {
       requestId: `deterministic-${this.requests.length}`,
       creditsUsed: 0,
@@ -170,7 +257,8 @@ export class FirecrawlWebSearchProvider implements WebSearchProvider {
     const body = {
       query: request.query,
       limit: request.limit,
-      ...(request.includeDomains.length > 0 ? { includeDomains: request.includeDomains } : {}),
+      ...(request.tbs ? { tbs: request.tbs } : {}),
+      ...(request.location ? { location: request.location } : {}),
     };
     let response: Response | undefined;
     let retryCount = 0;
@@ -341,16 +429,9 @@ export class WebSearchApplication {
     if (!run) throw new RecruitingError("CONFLICT", `Scout ${scout.id} has no active Scout Run`);
     const source = this.db.select().from(sources).where(eq(sources.id, "source-web-search")).get();
     if (!source) throw new RecruitingError("NOT_FOUND", "Web Search Source was not found");
-    const snapshotSourceIds = parseSnapshotSourceIds(run.overrideSnapshot);
-    const selected = snapshotSourceIds
-      ? snapshotSourceIds.includes(source.id)
-      : Boolean(
-          this.db
-            .select({ sourceId: scoutSources.sourceId })
-            .from(scoutSources)
-            .where(and(eq(scoutSources.scoutId, scout.id), eq(scoutSources.sourceId, source.id)))
-            .get(),
-        );
+    const selectedSourceIds = runSourceIds(this.db, scout.id, run.overrideSnapshot);
+    const selected = selectedSourceIds.includes(source.id);
+    const boardHosts = selectedJobBoardHosts(selectedSourceIds);
     const access = this.db
       .select()
       .from(sourceAccess)
@@ -372,6 +453,9 @@ export class WebSearchApplication {
       normalizedQuery: "",
       includeDomains: [],
       unsupportedOperators: [],
+      limit: null,
+      tbs: null,
+      location: null,
       requestId: null,
       creditsUsed: null,
       returnedUrls: [],
@@ -380,6 +464,7 @@ export class WebSearchApplication {
       retryDisposition: "not_retried",
       errorCategory: null,
       attemptCount: 0,
+      emptyResultRetried: false,
       startedAt,
       completedAt: null,
     };
@@ -398,8 +483,10 @@ export class WebSearchApplication {
       throw new RecruitingError(code, message, category);
     };
     let normalized: ReturnType<typeof normalizeQuery>;
+    let filters: NormalizedFilters;
     try {
       normalized = normalizeQuery(command.query, command.limit);
+      filters = normalizeFilters(command, startedAt);
       initialDetails = {
         ...initialDetails,
         query: auditQuery(normalized.original),
@@ -407,6 +494,9 @@ export class WebSearchApplication {
         normalizedQuery: redactSensitiveQuery(normalized.providerQuery),
         includeDomains: normalized.includeDomains,
         unsupportedOperators: normalized.unsupportedOperators,
+        limit: normalized.limit,
+        tbs: filters.tbs,
+        location: filters.location,
       };
       this.db
         .update(sourceAttempts)
@@ -424,17 +514,38 @@ export class WebSearchApplication {
         "CONFLICT",
         "disabled_source_access",
       );
+    if (boardHosts.length > 0 && !isBoardDiscoveryQuery(normalized.includeDomains, boardHosts))
+      return reject(
+        `This Scout uses Web Search only to find postings on its selected job boards. Restrict the query with site: to one of ${boardHosts.join(", ")}`,
+        "CONFLICT",
+        "disabled_source_access",
+      );
     if (!access)
       return reject("Web Search Source Access was not found", "NOT_FOUND", "missing_source_access");
     if (access.readiness === "candidate_disabled")
       return reject("The Candidate disabled Web Search", "CONFLICT", "disabled_source_access");
+    const providerRequest: WebSearchProviderRequest = {
+      query: normalized.providerQuery,
+      limit: normalized.limit,
+      ...(filters.tbs ? { tbs: filters.tbs } : {}),
+      ...(filters.location ? { location: filters.location } : {}),
+    };
     let response: WebSearchProviderResponse;
     try {
-      response = await this.provider.search({
-        query: normalized.providerQuery,
-        limit: normalized.limit,
-        includeDomains: normalized.includeDomains,
-      });
+      response = await this.provider.search(providerRequest);
+      // Firecrawl's date-filtered search intermittently answers an identical
+      // request with no results, and an empty answer costs no credits.
+      if (response.results.length === 0 && filters.tbs) {
+        initialDetails = { ...initialDetails, emptyResultRetried: true };
+        const retry = await this.provider.search(providerRequest);
+        response = {
+          ...retry,
+          creditsUsed:
+            response.creditsUsed == null && retry.creditsUsed == null
+              ? null
+              : (safeCredits(response.creditsUsed) ?? 0) + (safeCredits(retry.creditsUsed) ?? 0),
+        };
+      }
     } catch (error) {
       const providerError = error instanceof WebSearchProviderError ? error : null;
       const details = {
@@ -467,7 +578,13 @@ export class WebSearchApplication {
     }
     const retrievedAt = this.now();
     const normalizedResults = response.results
-      .map((result) => normalizeResult(result, retrievedAt))
+      .map((result) =>
+        normalizeResult(
+          result,
+          retrievedAt,
+          filters.compact ? COMPACT_EXCERPT_LENGTH : MAX_EXCERPT_LENGTH,
+        ),
+      )
       .filter((result): result is WebSearchResult => result !== null);
     if (response.results.length > 0 && normalizedResults.length === 0) {
       const retryCount = safeRetryCount(response.retryCount);
@@ -512,6 +629,7 @@ export class WebSearchApplication {
       providerQuery: redactSensitiveQuery(normalized.providerQuery),
       appliedDomainRestrictions: normalized.includeDomains,
       unsupportedOperators: normalized.unsupportedOperators,
+      appliedFilters: { tbs: filters.tbs, location: filters.location },
       sourceAttemptId: attemptId,
       retrievedAt,
       provenance: {
@@ -522,6 +640,7 @@ export class WebSearchApplication {
         scoutId: scout.id,
       },
       results,
+      jobBoards: jobBoardsFrom(results),
     };
   }
 
@@ -590,18 +709,132 @@ export function normalizeQuery(query: string, limit?: number): NormalizedQuery &
   if (!Number.isInteger(resultLimit) || resultLimit < 1 || resultLimit > MAX_RESULT_LIMIT) {
     throw new RecruitingError(
       "VALIDATION",
-      "WebSearch result limit must be an integer between 1 and 25",
+      `WebSearch result limit must be an integer between 1 and ${MAX_RESULT_LIMIT}`,
     );
   }
-  const domains: string[] = [];
-  const providerQuery = removePositiveSiteRestrictions(providerInput, domains);
-  const unsupportedOperators = findUnsupportedOperators(providerQuery);
+  const unsupportedOperators = findUnsupportedOperators(providerInput);
   return {
     original,
-    providerQuery,
-    includeDomains: domains,
+    providerQuery: providerInput,
+    includeDomains: collectPositiveSiteRestrictions(providerInput),
     unsupportedOperators: [...new Set(unsupportedOperators)],
     limit: resultLimit,
+  };
+}
+
+/** Turn the typed date, sort, and location inputs into Firecrawl's `tbs` and
+ * `location`. Dates use the host clock, never the harness's. */
+export function normalizeFilters(
+  request: Omit<WebSearchRequest, "query" | "limit">,
+  now: number,
+): NormalizedFilters {
+  const { recency, publishedAfter, sortByDate, location, compact } = request;
+  if (recency !== undefined && !WEB_SEARCH_RECENCIES.includes(recency)) {
+    throw new RecruitingError(
+      "VALIDATION",
+      "WebSearch recency must be one of day, week, month, or year",
+    );
+  }
+  if (recency !== undefined && publishedAfter !== undefined) {
+    throw new RecruitingError(
+      "VALIDATION",
+      "WebSearch accepts recency or publishedAfter, not both",
+    );
+  }
+  if (sortByDate !== undefined && typeof sortByDate !== "boolean") {
+    throw new RecruitingError("VALIDATION", "WebSearch sortByDate must be true or false");
+  }
+  if (compact !== undefined && typeof compact !== "boolean") {
+    throw new RecruitingError("VALIDATION", "WebSearch compact must be true or false");
+  }
+  const tbs: string[] = [];
+  if (sortByDate) tbs.push("sbd:1");
+  if (recency) tbs.push(`qdr:${recency[0]}`);
+  if (publishedAfter !== undefined) {
+    const after =
+      typeof publishedAfter === "string" && ISO_DATE_PATTERN.test(publishedAfter)
+        ? Date.parse(publishedAfter)
+        : Number.NaN;
+    if (!Number.isFinite(after)) {
+      throw new RecruitingError(
+        "VALIDATION",
+        "WebSearch publishedAfter must be an ISO date such as 2026-09-01",
+      );
+    }
+    if (after > now) {
+      throw new RecruitingError("VALIDATION", "WebSearch publishedAfter cannot be in the future");
+    }
+    // Firecrawl ignores custom date ranges (cdr), so round the window up to
+    // the smallest past-day/week/month/year filter that covers it. An hour of
+    // slack keeps a run's 7-day cutoff, read minutes before the search, a week.
+    const days = (now - after) / DAY_MS - 1 / 24;
+    if (days <= 366) tbs.push(`qdr:${days <= 1 ? "d" : days <= 7 ? "w" : days <= 31 ? "m" : "y"}`);
+  }
+  let normalizedLocation: string | null = null;
+  if (location !== undefined) {
+    normalizedLocation = typeof location === "string" ? normalizeText(location, Infinity) : "";
+    if (
+      !normalizedLocation ||
+      normalizedLocation.length > MAX_LOCATION_LENGTH ||
+      !LOCATION_PATTERN.test(normalizedLocation)
+    ) {
+      throw new RecruitingError(
+        "VALIDATION",
+        `WebSearch location must be a place name such as "San Francisco,California,United States" (at most ${MAX_LOCATION_LENGTH} characters)`,
+      );
+    }
+  }
+  return {
+    tbs: tbs.length > 0 ? tbs.join(",") : null,
+    location: normalizedLocation,
+    compact: compact === true,
+  };
+}
+
+function isBoardDiscoveryQuery(domains: string[], boardHosts: string[]): boolean {
+  return (
+    domains.length > 0 &&
+    domains.every((domain) =>
+      boardHosts.some((host) => domain === host || domain.endsWith(`.${host}`)),
+    )
+  );
+}
+
+/** The company boards behind the results, deduplicated, so a discovery search
+ * hands the harness board handles instead of making it parse every URL. */
+function jobBoardsFrom(results: WebSearchResult[]): WebSearchJobBoard[] {
+  const boards = new Map<string, WebSearchJobBoard>();
+  for (const result of results) {
+    const board = jobBoardFromUrl(result.canonicalUrl);
+    if (!board) continue;
+    const key = `${board.source}:${board.boardUrl.toLowerCase()}`;
+    const existing = boards.get(key);
+    if (existing) existing.resultCount += 1;
+    else boards.set(key, { ...board, resultCount: 1 });
+  }
+  return [...boards.values()];
+}
+
+function jobBoardFromUrl(value: string): Omit<WebSearchJobBoard, "resultCount"> | null {
+  let url: URL;
+  try {
+    url = new URL(value);
+  } catch {
+    return null;
+  }
+  if (url.protocol !== "https:") return null;
+  if (url.hostname === ASHBY_HOST) {
+    const handle = url.pathname.split("/").filter(Boolean)[0] ?? "";
+    return ASHBY_BOARD_PATTERN.test(handle)
+      ? { source: "ashby", board: handle, boardUrl: `https://${ASHBY_HOST}/${handle}` }
+      : null;
+  }
+  const routed = routeBoard(url.toString());
+  if (!routed.ok) return null;
+  return {
+    source: routed.adapter.provider,
+    board: routed.board,
+    boardUrl: `https://${url.hostname}/${routed.board}`,
   };
 }
 
@@ -615,9 +848,8 @@ const SUPPORTED_OPERATORS = new Set([
   "related",
 ]);
 
-function removePositiveSiteRestrictions(query: string, domains: string[]): string {
-  let providerQuery = "";
-  let segmentStart = 0;
+function collectPositiveSiteRestrictions(query: string): string[] {
+  const domains: string[] = [];
   let inQuotes = false;
   let index = 0;
 
@@ -640,17 +872,13 @@ function removePositiveSiteRestrictions(query: string, domains: string[]): strin
       validateSiteHostname(value);
       const domain = value.toLowerCase();
       if (!domains.includes(domain)) domains.push(domain);
-
-      providerQuery += query.slice(segmentStart, index);
-      segmentStart = valueEnd < query.length ? valueEnd + 1 : valueEnd;
       index = valueEnd;
       continue;
     }
     index += 1;
   }
 
-  providerQuery += query.slice(segmentStart);
-  return providerQuery.trim();
+  return domains;
 }
 
 function validateSiteHostname(value: string): void {
@@ -707,6 +935,7 @@ function findUnsupportedOperators(query: string): string[] {
 function normalizeResult(
   result: WebSearchProviderResult,
   retrievedAt: number,
+  excerptLength: number,
 ): WebSearchResult | null {
   const canonicalUrl = canonicalizeUrl(result.url);
   if (!canonicalUrl) return null;
@@ -714,7 +943,7 @@ function normalizeResult(
     normalizeText(result.title ?? "Untitled Web Result", MAX_TITLE_LENGTH) || "Untitled Web Result";
   const excerpt = normalizeText(
     result.highlights?.find(Boolean) ?? result.description ?? "",
-    MAX_EXCERPT_LENGTH,
+    excerptLength,
   );
   return {
     title,

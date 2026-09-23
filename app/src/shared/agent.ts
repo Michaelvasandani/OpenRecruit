@@ -85,14 +85,46 @@ const EFFORT_LABELS: Record<ScoutSetup["effort"], string> = {
   thorough: "Use a thorough pass with multiple query variations and careful verification.",
 };
 
+/** Which search a job-board playbook discovers postings with: OpenRecruit
+ * WebSearch (Firecrawl) only when the Candidate selected the Web Search
+ * Source, otherwise the harness's own search. `either` is for instructions
+ * written before the selected Sources are known. */
+export type JobBoardDiscoverySearch = "web_search" | "native" | "either";
+
+export function jobBoardDiscoverySearch(sourceKinds?: readonly string[]): JobBoardDiscoverySearch {
+  if (!sourceKinds?.length) return "either";
+  return sourceKinds.includes("web_search") ? "web_search" : "native";
+}
+
+const NATIVE_SEARCH = "harness-native web search (Claude WebSearch or Codex built-in web search)";
+
+/** How a job-board playbook discovers posting URLs. OpenRecruit WebSearch
+ * reaches past the first page and filters by date; native search does not. */
+function jobBoardSearchLines(what: string, search: JobBoardDiscoverySearch): string[] {
+  const native = `Use ${NATIVE_SEARCH} to discover ${what}.`;
+  if (search === "native") return [native];
+  return [
+    search === "web_search"
+      ? `Discover ${what} with OpenRecruit WebSearch, because the Web Search Source is selected. Do not use ${NATIVE_SEARCH}: it returns only the first page of about ten results and keeps surfacing the same well-known companies. Web Search is only the search engine for the selected job boards here: every query needs a site: operator for a selected board, and the host rejects searches of the wider web and WebFetch.`
+      : `When list_selected_sources includes the Web Search Source, discover ${what} with OpenRecruit WebSearch as below, not ${NATIVE_SEARCH}. Otherwise use ${NATIVE_SEARCH}.`,
+    "Call WebSearch with compact: true, limit: 100, sortByDate: true, and publishedAfter set to clock.listingPublishedAfter from read_run_context (or recency: week). One such search returns up to 100 distinct, recently dated results.",
+    "WebSearch's jobBoards field lists the company boards behind the results, deduplicated; pass them as boards to the inspect tool.",
+    "The date filter uses the search engine's page date, which is only a hint; judge posting age from the inspect tools, never from search results.",
+    "Keep job locations as words in the query. WebSearch's location parameter only changes where the search runs from and does not filter by job location, so leave it unset.",
+  ];
+}
+
 /** Per-Source discovery playbooks, keyed by Source kind. A Scout is only shown
  * the playbooks for the Sources selected for it, so an HN-only Scout never
  * reads Ashby guidance (and vice versa). */
-const SOURCE_DISCOVERY_PLAYBOOKS: Record<string, string[]> = {
-  ashby: [
+const SOURCE_DISCOVERY_PLAYBOOKS: Record<
+  string,
+  string[] | ((search: JobBoardDiscoverySearch) => string[])
+> = {
+  ashby: (search) => [
     "### Ashby",
     "",
-    "Use harness-native web search—Claude WebSearch or Codex built-in web search—to discover public Ashby URLs.",
+    ...jobBoardSearchLines("public Ashby URLs", search),
     "For Ashby, derive a query ladder from the Candidate Profile, Discovery Strategy, target role, location, and preferences. Candidate-provided company or board seeds are optional.",
     "Run multiple simple Ashby searches with one title or seniority phrase per query; avoid large OR expressions. Start with location-constrained queries such as:",
     '- site:jobs.ashbyhq.com "New Grad" "<location>"',
@@ -133,6 +165,7 @@ const SOURCE_DISCOVERY_PLAYBOOKS: Record<string, string[]> = {
     "### Web Search",
     "",
     "Use OpenRecruit WebSearch and WebFetch so Source Attempts are recorded, then promote selected fetched pages with record_source_outcome.",
+    "When a job-board Source is also selected, Web Search is only the search engine for those boards: follow the job-board playbook, keep every query on a selected board with site:, and do not use WebFetch.",
   ],
   x: [
     "### X",
@@ -156,16 +189,21 @@ export function isAtsBoardKind(kind: string): boolean {
   return Object.hasOwn(ATS_BOARDS, kind);
 }
 
+function isJobBoardKind(kind: string): boolean {
+  return kind === "ashby" || isAtsBoardKind(kind);
+}
+
 /** One playbook for every selected board: the boards differ only in the
  * search operator, so the Scout reads the method once. */
-function atsBoardsPlaybook(kinds: readonly string[]): string[] {
+function atsBoardsPlaybook(kinds: readonly string[], search: JobBoardDiscoverySearch): string[] {
   const boards = kinds.map((kind) => ATS_BOARDS[kind]);
   const enumerable = boards.filter((board) => board.enumerable).map((board) => board.label);
   const searchOnly = boards.filter((board) => !board.enumerable).map((board) => board.label);
   return [
     `### Job boards (${boards.map((board) => board.label).join(", ")})`,
     "",
-    "Use harness-native web search—Claude WebSearch or Codex built-in web search—to discover public posting URLs on each selected board, then verify them with JobPostingInspect. Search each board with its own site operator:",
+    ...jobBoardSearchLines("public posting URLs on each selected board", search),
+    "Verify discovered postings with JobPostingInspect. Search each board with its own site operator:",
     ...boards.map((board) => `- ${board.label}: site:${board.site}`),
     ...(kinds.includes("greenhouse")
       ? ["Older Greenhouse boards live on boards.greenhouse.io; search that host too."]
@@ -204,6 +242,9 @@ function atsBoardsPlaybook(kinds: readonly string[]): string[] {
  * Search evidence path, so such a Scout always has a way to record evidence. */
 export function hasDiscoveryPlaybook(kind: string, sourceKinds?: readonly string[]): boolean {
   if (!sourceKinds?.length) return true;
+  // With a job board selected, Web Search only discovers that board's
+  // postings, so its general playbook does not apply.
+  if (kind === "web_search" && sourceKinds.some(isJobBoardKind)) return false;
   if (sourceKinds.includes(kind)) return true;
   return (
     kind === "web_search" &&
@@ -223,6 +264,13 @@ export function discoveryInstructions(sourceKinds?: readonly string[]): string {
   const boardKinds = Object.keys(ATS_BOARDS).filter((kind) =>
     hasDiscoveryPlaybook(kind, sourceKinds),
   );
+  const search = jobBoardDiscoverySearch(sourceKinds);
+  const playbook = (kind: string) => {
+    const entry = SOURCE_DISCOVERY_PLAYBOOKS[kind] as
+      | string[]
+      | ((s: JobBoardDiscoverySearch) => string[]);
+    return typeof entry === "function" ? entry(search) : entry;
+  };
   return [
     "## Source discovery",
     "",
@@ -230,8 +278,8 @@ export function discoveryInstructions(sourceKinds?: readonly string[]): string {
       ? "These are the playbooks for the Sources selected for this Scout. Use only these Sources; do not mention, suggest, or fall back to any other Source unless the Candidate selects it."
       : "Use only the playbooks for Sources that list_selected_sources returns; ignore the others.",
     "Reserve each Source's tools for that explicitly selected Source.",
-    ...kinds.flatMap((kind) => ["", ...(SOURCE_DISCOVERY_PLAYBOOKS[kind] as string[])]),
-    ...(boardKinds.length > 0 ? ["", ...atsBoardsPlaybook(boardKinds)] : []),
+    ...kinds.flatMap((kind) => ["", ...playbook(kind)]),
+    ...(boardKinds.length > 0 ? ["", ...atsBoardsPlaybook(boardKinds, search)] : []),
   ].join("\n");
 }
 
