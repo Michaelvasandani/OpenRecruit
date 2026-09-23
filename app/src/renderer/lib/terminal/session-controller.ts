@@ -1,4 +1,4 @@
-import { TERM_WS_CLOSE } from "@shared/terminal-ws";
+import { TERM_WS_CLOSE, withTerminalPort } from "@shared/terminal-ws";
 import { useTerminalStore } from "../../stores/terminal";
 import { getImperativeClient } from "../trpc";
 import { createRuntime, type TerminalRuntime } from "./runtime";
@@ -111,7 +111,10 @@ class SessionController {
       if (myEpoch !== this.epoch) return;
       const { url } = await client.terminal.wsEndpoint.query({ agentId });
       if (myEpoch !== this.epoch) return;
-      this.openSocket(agentId, url, myEpoch);
+      // Through a remote tunnel the host's own terminal port is on the other machine;
+      // the launcher forwards it to a local one (0 in local mode = use as given).
+      const localPort = window.__opentradeHost?.terminalPort ?? 0;
+      this.openSocket(agentId, withTerminalPort(url, localPort), myEpoch);
     } catch {
       if (myEpoch !== this.epoch) return;
       this.scheduleReconnect(agentId, myEpoch);

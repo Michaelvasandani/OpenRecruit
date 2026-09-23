@@ -136,12 +136,6 @@ export function ConnectionPanel() {
           >
             <span className="text-sm text-muted-foreground">{status.hostVersion ?? "unknown"}</span>
           </SettingsRow>
-          <SettingsRow
-            label="Interactive terminals"
-            hint="Not available on a remote backend yet. Scheduled Scout runs are unaffected."
-          >
-            <span className="text-sm text-muted-foreground">Unavailable</span>
-          </SettingsRow>
         </SettingsSection>
       )}
     </div>

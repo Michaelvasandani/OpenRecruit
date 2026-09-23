@@ -9,7 +9,12 @@ export const trpc = createTRPCReact<AppRouter>();
 declare global {
   interface Window {
     /** Backend endpoint injected by the preload (see preload/index.ts). */
-    __opentradeHost?: { trpcPort: number; token: string };
+    __opentradeHost?: {
+      trpcPort: number;
+      /** Nonzero: reach the terminal WebSocket on this local port (remote tunnel). */
+      terminalPort: number;
+      token: string;
+    };
   }
 }
 

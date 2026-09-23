@@ -4,6 +4,12 @@ import { BrowserWindow, shell } from "electron";
 /** Backend endpoint the renderer connects its tRPC client to (passed via preload). */
 export interface HostEndpoint {
   trpcPort: number;
+  /**
+   * Local port to reach the host's terminal WebSocket on, overriding the one in the
+   * URL the host hands out — nonzero only through a remote tunnel, where the host's
+   * own port exists only on the other machine. 0 = use the URL as given.
+   */
+  terminalPort: number;
   token: string;
 }
 
@@ -23,6 +29,7 @@ export function createMainWindow(host: HostEndpoint): BrowserWindow {
       // The renderer reads these from the preload bridge to build its tRPC client.
       additionalArguments: [
         `--opentrade-trpc-port=${host.trpcPort}`,
+        `--opentrade-terminal-port=${host.terminalPort}`,
         `--opentrade-token=${host.token}`,
       ],
     },

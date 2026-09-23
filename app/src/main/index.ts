@@ -81,7 +81,11 @@ function windowFocused(): boolean {
  * recreated window behaves exactly like the first one.
  */
 function openWindow(host: HostManifest): BrowserWindow {
-  const win = createMainWindow({ trpcPort: host.trpcPort, token: host.token });
+  const win = createMainWindow({
+    trpcPort: host.trpcPort,
+    terminalPort: connectionStatus.config.mode === "remote" ? (host.terminalPort ?? 0) : 0,
+    token: host.token,
+  });
   mainWindow = win;
   win.on("closed", () => {
     if (mainWindow === win) {
@@ -228,7 +232,8 @@ if (!app.requestSingleInstanceLock()) {
 
 /**
  * Reach the configured backend: adopt-or-spawn a local host, or tunnel to a remote
- * one. Either way the result is a manifest whose `trpcPort` is on 127.0.0.1 — the
+ * one. Either way the result is a manifest whose `trpcPort` and `terminalPort` are on
+ * 127.0.0.1 — the
  * renderer never learns which. In remote mode the manifest's pid/faucetPort describe
  * processes on the other machine and are never acted on here.
  */
@@ -239,7 +244,11 @@ async function connectHost(config: ConnectionConfig): Promise<HostManifest> {
   const t = new SshTunnel(config.sshTarget);
   const remote = await t.start();
   tunnel = t;
-  return { ...remote, trpcPort: t.localPort };
+  return {
+    ...remote,
+    trpcPort: t.localPort,
+    terminalPort: remote.terminalPort ? t.terminalLocalPort : undefined,
+  };
 }
 
 /** Can a running host be reached at `sshTarget`? A one-shot read, no tunnel. */

@@ -18,6 +18,12 @@ export interface HostManifest {
   faucetPort: number;
   /** tRPC HTTP/WS port for the GUI (discovered here; need not be stable). */
   trpcPort: number;
+  /**
+   * Terminal WebSocket port (interactive panes stream over it, off the tRPC socket).
+   * A remote launcher reads it to forward this port too. Optional: a host predating
+   * it publishes none, and its terminals are unreachable from a remote launcher.
+   */
+  terminalPort?: number;
   /** Shared bearer token (faucet + tRPC + terminal WS). */
   token: string;
   startedAt: number;

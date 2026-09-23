@@ -88,6 +88,11 @@ export class TerminalService {
     await this.wsServer.listen();
   }
 
+  /** The terminal WebSocket's port on this machine (published in the host manifest). */
+  get port(): number {
+    return this.wsServer.port;
+  }
+
   /**
    * Ensure the agent's persistent session exists (spawn on first run / resume).
    * The renderer attaches separately over its WebSocket (with replay); status is

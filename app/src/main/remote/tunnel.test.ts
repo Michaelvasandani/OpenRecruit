@@ -1,32 +1,45 @@
 import { describe, expect, test } from "bun:test";
 import type { HostManifest } from "../host/manifest";
-import { type ForwardProcess, SshTunnel, type TunnelDeps } from "./tunnel";
+import { type ForwardProcess, type PortForward, SshTunnel, type TunnelDeps } from "./tunnel";
 
-const manifest = (trpcPort: number): HostManifest => ({
+const manifest = (trpcPort: number, terminalPort?: number): HostManifest => ({
   pid: 4242,
   faucetPort: 29000,
   trpcPort,
+  terminalPort,
   token: "tok",
   startedAt: 1,
   version: "0.2.5",
 });
 
 /** A scriptable world: which remote port the host is on, and whether it answers. */
-function world(opts: { remotePort?: number; answers?: boolean } = {}) {
+function world(
+  opts: { remotePort?: number; terminalPort?: number; answers?: boolean; ports?: number[] } = {},
+) {
   const state = {
     remotePort: opts.remotePort ?? 5000,
+    terminalPort: opts.terminalPort,
     answers: opts.answers ?? true,
     manifestError: null as Error | null,
-    forwards: [] as { localPort: number; remotePort: number; killed: boolean; exit(): void }[],
+    forwards: [] as {
+      localPort: number;
+      remotePort: number;
+      all: PortForward[];
+      killed: boolean;
+      exit(): void;
+    }[],
   };
+  const freePorts = [...(opts.ports ?? [61000, 61001])];
   const deps: TunnelDeps = {
     readManifest: async () => {
       if (state.manifestError) throw state.manifestError;
-      return manifest(state.remotePort);
+      return manifest(state.remotePort, state.terminalPort);
     },
-    openForward: (_target, localPort, remotePort) => {
+    // `localPort`/`remotePort` are the first (tRPC) forward; `all` is every -L.
+    openForward: (_target, forwards) => {
       let onExit = () => {};
-      const record = { localPort, remotePort, killed: false, exit: () => onExit() };
+      const { localPort, remotePort } = forwards[0];
+      const record = { localPort, remotePort, all: forwards, killed: false, exit: () => onExit() };
       state.forwards.push(record);
       const proc: ForwardProcess = {
         onExit: (cb) => {
@@ -43,7 +56,7 @@ function world(opts: { remotePort?: number; answers?: boolean } = {}) {
       const live = state.forwards.findLast((f) => !f.killed);
       return state.answers && live?.remotePort === state.remotePort;
     },
-    freePort: async () => 61000,
+    freePort: async () => freePorts.shift() ?? 0,
     // Yield a macrotask so a tight retry loop cannot starve the test timers.
     delay: () => new Promise<void>((r) => setTimeout(r, 0)),
   };
@@ -62,6 +75,41 @@ describe("SshTunnel", () => {
     expect(m.token).toBe("tok");
     expect(tunnel.localPort).toBe(61000);
     expect(state.forwards).toMatchObject([{ localPort: 61000, remotePort: 46221 }]);
+    tunnel.stop();
+  });
+
+  test("also forwards the host's terminal WebSocket port, in the same ssh process", async () => {
+    const { state, deps } = world({ remotePort: 46221, terminalPort: 46300 });
+    const tunnel = new SshTunnel("me@vm", deps);
+
+    const m = await tunnel.start();
+
+    expect(m.terminalPort).toBe(46300);
+    expect(tunnel.terminalLocalPort).toBe(61001);
+    expect(state.forwards).toHaveLength(1);
+    expect(state.forwards[0].all).toEqual([
+      { localPort: 61000, remotePort: 46221 },
+      { localPort: 61001, remotePort: 46300 },
+    ]);
+    tunnel.stop();
+  });
+
+  test("a host without a terminal port gets only the tRPC forward", async () => {
+    const { state, deps } = world({ remotePort: 46221 });
+    const tunnel = new SshTunnel("me@vm", deps);
+    await tunnel.start();
+
+    expect(state.forwards[0].all).toEqual([{ localPort: 61000, remotePort: 46221 }]);
+    tunnel.stop();
+  });
+
+  test("never reuses the tRPC local port for the terminal forward", async () => {
+    const { deps } = world({ ports: [61000, 61000, 61002] });
+    const tunnel = new SshTunnel("me@vm", deps);
+    await tunnel.start();
+
+    expect(tunnel.localPort).toBe(61000);
+    expect(tunnel.terminalLocalPort).toBe(61002);
     tunnel.stop();
   });
 
@@ -93,19 +141,24 @@ describe("SshTunnel", () => {
     tunnel.stop();
   });
 
-  test("a restarted host (new remote port) is picked up after two missed health checks", async () => {
-    const { state, deps } = world({ remotePort: 5000 });
+  test("a restarted host (new remote ports) is picked up after two missed health checks", async () => {
+    const { state, deps } = world({ remotePort: 5000, terminalPort: 6000 });
     const tunnel = new SshTunnel("me@vm", deps);
     await tunnel.start();
 
     state.remotePort = 5001; // host restarted; ssh itself is still up
+    state.terminalPort = 6001;
     await tunnel.checkHealth();
     expect(state.forwards).toHaveLength(1); // one miss is not enough
     await tunnel.checkHealth();
     await settle();
 
     expect(state.forwards[0].killed).toBe(true);
-    expect(state.forwards[1]).toMatchObject({ localPort: 61000, remotePort: 5001 });
+    // Same local ports (baked into the renderer), re-pointed at the new remote ones.
+    expect(state.forwards[1].all).toEqual([
+      { localPort: 61000, remotePort: 5001 },
+      { localPort: 61001, remotePort: 6001 },
+    ]);
     tunnel.stop();
   });
 

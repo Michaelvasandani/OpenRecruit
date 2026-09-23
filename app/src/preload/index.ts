@@ -16,6 +16,7 @@ function arg(name: string): string {
 
 contextBridge.exposeInMainWorld("__opentradeHost", {
   trpcPort: Number(arg("opentrade-trpc-port")) || 0,
+  terminalPort: Number(arg("opentrade-terminal-port")) || 0,
   token: arg("opentrade-token"),
 });
 

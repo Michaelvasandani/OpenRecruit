@@ -7,13 +7,14 @@ import type { HostManifest } from "../host/manifest";
  * SSH reachability for a backend host on another machine.
  *
  * The remote host binds loopback only (its token + open CORS were never meant to
- * face a network), so the launcher reaches it the way `ssh -L` always has: a local
- * port on THIS machine forwards to the host's tRPC port on THAT one. The renderer
- * keeps talking to `127.0.0.1:<port>` and cannot tell the difference.
+ * face a network), so the launcher reaches it the way `ssh -L` always has: local
+ * ports on THIS machine forward to the host's ports on THAT one — the tRPC port, and
+ * the terminal WebSocket port that interactive panes stream over. The renderer keeps
+ * talking to `127.0.0.1:<port>` and cannot tell the difference.
  *
- * The local port is chosen once and kept for the tunnel's lifetime — it is baked
- * into the renderer at window creation — while the remote port is re-read from the
- * remote manifest on every (re)connect, since a restarted host picks a new one.
+ * The local ports are chosen once and kept for the tunnel's lifetime — they are baked
+ * into the renderer at window creation — while the remote ports are re-read from the
+ * remote manifest on every (re)connect, since a restarted host picks new ones.
  */
 
 /** Non-interactive: a GUI app has no tty to answer a passphrase/host-key prompt on. */
@@ -24,9 +25,16 @@ export interface ForwardProcess {
   kill(): void;
 }
 
+/** One `-L` of the forward: `127.0.0.1:localPort` here → `127.0.0.1:remotePort` there. */
+export interface PortForward {
+  localPort: number;
+  remotePort: number;
+}
+
 export interface TunnelDeps {
   readManifest(target: string): Promise<HostManifest>;
-  openForward(target: string, localPort: number, remotePort: number): ForwardProcess;
+  /** One ssh process carrying every forward, so they live and die together. */
+  openForward(target: string, forwards: PortForward[]): ForwardProcess;
   /** Does anything answer HTTP on the local end of the forward? */
   probe(localPort: number): Promise<boolean>;
   freePort(): Promise<number>;
@@ -66,7 +74,7 @@ export function readRemoteManifest(target: string): Promise<HostManifest> {
   });
 }
 
-function openSshForward(target: string, localPort: number, remotePort: number): ForwardProcess {
+function openSshForward(target: string, forwards: PortForward[]): ForwardProcess {
   const child = spawn(
     "ssh",
     [
@@ -80,8 +88,7 @@ function openSshForward(target: string, localPort: number, remotePort: number): 
       "ServerAliveCountMax=3",
       "-o",
       "ExitOnForwardFailure=yes",
-      "-L",
-      `127.0.0.1:${localPort}:127.0.0.1:${remotePort}`,
+      ...forwards.flatMap((f) => ["-L", `127.0.0.1:${f.localPort}:127.0.0.1:${f.remotePort}`]),
       "--",
       target,
     ],
@@ -138,6 +145,7 @@ const RECONNECT_BACKOFF_MS = [1000, 2000, 5000, 10_000];
 
 export class SshTunnel {
   private _localPort = 0;
+  private _terminalLocalPort = 0;
   private forward: ForwardProcess | null = null;
   private stopped = false;
   private reconnecting = false;
@@ -149,14 +157,24 @@ export class SshTunnel {
     private readonly deps: TunnelDeps = REAL_DEPS,
   ) {}
 
+  /** Local end of the tRPC forward. */
   get localPort(): number {
     return this._localPort;
+  }
+
+  /** Local end of the terminal WebSocket forward. Reserved at `start()` even when the
+   *  host does not publish a terminal port, so it stays fixed if a later one does. */
+  get terminalLocalPort(): number {
+    return this._terminalLocalPort;
   }
 
   /** Open the tunnel; resolves with the remote manifest once the host answers through
    *  it. Rejects (leaving nothing running) if the first connection cannot be made. */
   async start(): Promise<HostManifest> {
     this._localPort = await this.deps.freePort();
+    // Each probe binds and releases port 0, so the OS may hand back the same port.
+    do this._terminalLocalPort = await this.deps.freePort();
+    while (this._terminalLocalPort === this._localPort);
     try {
       const manifest = await this.connect();
       this.healthTimer = setInterval(() => void this.checkHealth(), HEALTH_INTERVAL_MS);
@@ -177,7 +195,12 @@ export class SshTunnel {
 
   private async connect(): Promise<HostManifest> {
     const manifest = await this.deps.readManifest(this.target);
-    const forward = this.deps.openForward(this.target, this._localPort, manifest.trpcPort);
+    const forwards: PortForward[] = [{ localPort: this._localPort, remotePort: manifest.trpcPort }];
+    // A host predating the terminal port in its manifest simply gets no terminal forward.
+    if (manifest.terminalPort) {
+      forwards.push({ localPort: this._terminalLocalPort, remotePort: manifest.terminalPort });
+    }
+    const forward = this.deps.openForward(this.target, forwards);
     let exited = false;
     forward.onExit(() => {
       exited = true;
