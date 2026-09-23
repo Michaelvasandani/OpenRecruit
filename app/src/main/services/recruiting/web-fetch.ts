@@ -4,15 +4,9 @@ import { isIP } from "node:net";
 import type { SourceAttemptSummary } from "@shared/recruiting";
 import { and, asc, eq, inArray } from "drizzle-orm";
 import type { Db } from "../../db/client";
-import {
-  scoutRuns,
-  scoutSources,
-  scouts,
-  sourceAccess,
-  sourceAttempts,
-  sources,
-} from "../../db/schema";
+import { scoutRuns, scouts, sourceAccess, sourceAttempts, sources } from "../../db/schema";
 import { RecruitingError, type RecruitingFailureCategory } from "./errors";
+import { runSourceIds, selectedJobBoardHosts } from "./web-search";
 
 const ACTIVE_RUN_STATUSES = ["queued", "preflight", "running", "finalizing"] as const;
 const DEFAULT_CONTENT_LIMIT = 12_000;
@@ -416,6 +410,12 @@ export class WebFetchApplication {
         "CONFLICT",
         "disabled_source_access",
       );
+    if (context.boardOnly)
+      return reject(
+        "This Scout uses Web Search only to find postings on its selected job boards; inspect them with the job-board tools instead of WebFetch",
+        "CONFLICT",
+        "disabled_source_access",
+      );
     if (!context.access)
       return reject("Web Search Source Access was not found", "NOT_FOUND", "missing_source_access");
     if (context.access.readiness === "candidate_disabled")
@@ -709,16 +709,9 @@ function requireWebFetchContext(db: Db, scoutId: string) {
   if (!run) throw new RecruitingError("CONFLICT", `Scout ${scout.id} has no active Scout Run`);
   const source = db.select().from(sources).where(eq(sources.id, WEB_SEARCH_SOURCE_ID)).get();
   if (!source) throw new RecruitingError("NOT_FOUND", "Web Search Source was not found");
-  const snapshotSourceIds = parseSnapshotSourceIds(run.overrideSnapshot);
-  const selected = snapshotSourceIds
-    ? snapshotSourceIds.includes(source.id)
-    : Boolean(
-        db
-          .select({ sourceId: scoutSources.sourceId })
-          .from(scoutSources)
-          .where(and(eq(scoutSources.scoutId, scout.id), eq(scoutSources.sourceId, source.id)))
-          .get(),
-      );
+  const selectedSourceIds = runSourceIds(db, scout.id, run.overrideSnapshot);
+  const selected = selectedSourceIds.includes(source.id);
+  const boardOnly = selectedJobBoardHosts(selectedSourceIds).length > 0;
   const access = db
     .select()
     .from(sourceAccess)
@@ -730,7 +723,7 @@ function requireWebFetchContext(db: Db, scoutId: string) {
       ),
     )
     .get();
-  return { scout, run, source, selected, access };
+  return { scout, run, source, selected, boardOnly, access };
 }
 
 function canonicalizePublicUrl(value: string): string | null {
@@ -953,18 +946,6 @@ function mergeErrorCategory(current: string | null, next: string): string {
 
 function delay(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
-}
-
-function parseSnapshotSourceIds(value: string | null): string[] | null {
-  if (!value) return null;
-  try {
-    const parsed = JSON.parse(value) as { sourceIds?: unknown };
-    return Array.isArray(parsed.sourceIds)
-      ? parsed.sourceIds.filter((id): id is string => typeof id === "string")
-      : null;
-  } catch {
-    return null;
-  }
 }
 
 function asRecord(value: unknown): Record<string, unknown> | null {

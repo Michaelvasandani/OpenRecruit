@@ -5,6 +5,7 @@ import { type Db, schema } from "../../db/client";
 import { SCHEMA_DDL } from "../../db/ddl";
 import { type MigrationDb, migrate } from "../../db/migrate";
 import {
+  DeterministicWebFetchProvider,
   DeterministicWebSearchProvider,
   FirecrawlWebSearchProvider,
   normalizeFilters,
@@ -621,12 +622,18 @@ describe("WebSearch discovery filters", () => {
     expect(normalizeFilters({}, now)).toEqual({ tbs: null, location: null, compact: false });
     expect(normalizeFilters({ recency: "day" }, now).tbs).toBe("qdr:d");
     expect(normalizeFilters({ recency: "year", sortByDate: true }, now).tbs).toBe("sbd:1,qdr:y");
-    expect(normalizeFilters({ publishedAfter: "2026-09-01T00:00:00.000Z" }, now).tbs).toBe(
-      "cdr:1,cd_min:09/01/2026,cd_max:09/22/2026",
+    // Firecrawl ignores custom date ranges, so publishedAfter rounds up to
+    // the smallest past-day/week/month/year window that covers it.
+    expect(normalizeFilters({ publishedAfter: "2026-09-22T00:00:00Z" }, now).tbs).toBe("qdr:d");
+    expect(normalizeFilters({ publishedAfter: "2026-09-16", sortByDate: true }, now).tbs).toBe(
+      "sbd:1,qdr:w",
     );
-    expect(normalizeFilters({ publishedAfter: "2026-09-15", sortByDate: true }, now).tbs).toBe(
-      "sbd:1,cdr:1,cd_min:09/15/2026,cd_max:09/22/2026",
-    );
+    expect(normalizeFilters({ publishedAfter: "2026-09-01T00:00:00.000Z" }, now).tbs).toBe("qdr:m");
+    expect(normalizeFilters({ publishedAfter: "2026-03-01" }, now).tbs).toBe("qdr:y");
+    expect(normalizeFilters({ publishedAfter: "2024-01-01" }, now).tbs).toBeNull();
+    // A run's cutoff read minutes before the search is still a week.
+    const weekAgo = new Date(now - 7 * 86_400_000 - 60_000).toISOString();
+    expect(normalizeFilters({ publishedAfter: weekAgo }, now).tbs).toBe("qdr:w");
     expect(
       normalizeFilters({ location: "  Kansas City,Missouri,United States ", compact: true }, now),
     ).toEqual({ tbs: null, location: "Kansas City,Missouri,United States", compact: true });
@@ -660,17 +667,17 @@ describe("WebSearch discovery filters", () => {
     expect(provider.requests[0]).toEqual({
       query: 'site:jobs.ashbyhq.com "Forward Deployed Engineer"',
       limit: 100,
-      tbs: "sbd:1,cdr:1,cd_min:01/01/1970,cd_max:01/01/1970",
+      tbs: "sbd:1,qdr:d",
       location: "San Francisco,California,United States",
     });
     expect(result.appliedFilters).toEqual({
-      tbs: "sbd:1,cdr:1,cd_min:01/01/1970,cd_max:01/01/1970",
+      tbs: "sbd:1,qdr:d",
       location: "San Francisco,California,United States",
     });
     const scope = JSON.parse(app.getSourceAttempt(result.sourceAttemptId)?.requestedScope ?? "{}");
     expect(scope).toMatchObject({
       limit: 100,
-      tbs: "sbd:1,cdr:1,cd_min:01/01/1970,cd_max:01/01/1970",
+      tbs: "sbd:1,qdr:d",
       location: "San Francisco,California,United States",
     });
 
@@ -806,7 +813,7 @@ describe("WebSearch for job-board Scouts", () => {
     expect(provider.requests).toHaveLength(0);
   });
 
-  test("allows board searches when the Web Search Source is selected alongside a board", async () => {
+  test("with a job board selected, Web Search only searches that board", async () => {
     const { app, provider, scout } = fixture([ASHBY_SOURCE_ID, WEB_SEARCH_SOURCE_ID]);
     const result = await app.webSearch({
       scoutId: scout.id,
@@ -818,6 +825,53 @@ describe("WebSearch for job-board Scouts", () => {
     expect(result.jobBoards).toEqual([
       { source: "ashby", board: "acme", boardUrl: "https://jobs.ashbyhq.com/acme", resultCount: 1 },
     ]);
+    for (const query of [
+      '"Forward Deployed Engineer"',
+      'site:example.com "Forward Deployed Engineer"',
+      'site:jobs.lever.co "Forward Deployed Engineer"',
+    ]) {
+      await expect(app.webSearch({ scoutId: scout.id, query })).rejects.toThrow(
+        /only to find postings on its selected job boards.*jobs\.ashbyhq\.com/,
+      );
+    }
     expect(provider.requests).toHaveLength(1);
+  });
+
+  test("allows subdomains of a selected board host", async () => {
+    const { app, provider, scout } = fixture(["source-workday", WEB_SEARCH_SOURCE_ID]);
+    await app.webSearch({
+      scoutId: scout.id,
+      query: 'site:acme.wd5.myworkdayjobs.com "Software Engineer"',
+    });
+    expect(provider.requests[0]?.query).toBe('site:acme.wd5.myworkdayjobs.com "Software Engineer"');
+  });
+
+  test("keeps WebFetch only for Web Search Scouts without a job board", async () => {
+    const run = async (sourceIds: string[]) => {
+      const app = new RecruitingApplication(makeDb(), () => 10_000, {
+        provider: new DeterministicWebSearchProvider({}),
+        webFetchProvider: new DeterministicWebFetchProvider({
+          "https://example.com/job": { title: "Job", content: "Evidence" },
+        }),
+        webFetchResolveHostname: async () => ["93.184.216.34"],
+        webSearchApiKey: () => "test-key",
+      });
+      const scout = app.createScout({
+        name: "Fetch Scout",
+        harness: "claude",
+        instructionPath: "agents/fetch",
+        defaultProfileId: confirmedProfile(app),
+        sourceIds,
+        idempotencyKey: "fetch-scout",
+      }).value;
+      app.launchScoutRun({ scoutId: scout.id, idempotencyKey: "fetch-run" });
+      return app.webFetch({ scoutId: scout.id, urls: ["https://example.com/job"] });
+    };
+    await expect(run([WEB_SEARCH_SOURCE_ID])).resolves.toMatchObject({
+      outcomes: [expect.objectContaining({ canonicalUrl: "https://example.com/job" })],
+    });
+    await expect(run([ASHBY_SOURCE_ID, WEB_SEARCH_SOURCE_ID])).rejects.toThrow(
+      /only to find postings on its selected job boards/,
+    );
   });
 });

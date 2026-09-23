@@ -204,7 +204,8 @@ const TOOLS: ToolDef[] = [
           type: "string",
           description:
             "Only pages dated on or after this ISO date (for example clock.listingPublishedAfter " +
-            "from read_run_context). Not with recency.",
+            "from read_run_context), rounded up to the past day, week, month, or year because " +
+            "the search engine ignores exact date ranges. Not with recency.",
         },
         sortByDate: {
           type: "boolean",

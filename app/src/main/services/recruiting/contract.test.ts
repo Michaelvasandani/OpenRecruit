@@ -94,6 +94,9 @@ describe("provider-neutral Recruiting contract", () => {
     );
     expect(withWebSearch).toContain("compact: true, limit: 100, sortByDate: true");
     expect(withWebSearch).toMatch(/\n2\. Discover job-board postings with OpenRecruit WebSearch/);
+    // Web Search only searches the boards: no general web playbook or WebFetch step.
+    expect(withWebSearch).not.toContain("### Web Search");
+    expect(withWebSearch).not.toContain("Use OpenRecruit WebSearch and WebFetch");
 
     const withoutWebSearch = recruitingProviderInstructions({
       runId: "run-boards-native",

@@ -10,7 +10,8 @@ import {
   sourceAttempts,
   sources,
 } from "../../db/schema";
-import { type AtsProvider, routeBoard } from "./ats-boards";
+import { ASHBY_SOURCE_ID } from "./ashby";
+import { ATS_ADAPTERS, ATS_PROVIDERS, type AtsProvider, routeBoard } from "./ats-boards";
 import { RecruitingError, type RecruitingFailureCategory } from "./errors";
 
 const ACTIVE_RUN_STATUSES = ["queued", "preflight", "running", "finalizing"] as const;
@@ -28,6 +29,45 @@ const ASHBY_BOARD_PATTERN = /^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/;
 const ISO_DATE_PATTERN =
   /^\d{4}-\d{2}-\d{2}(?:T\d{2}:\d{2}(?::\d{2}(?:\.\d+)?)?(?:Z|[+-]\d{2}:\d{2}))?$/;
 const LOCATION_PATTERN = /^[\p{L}\p{N}][\p{L}\p{N} ,.'-]*$/u;
+const DAY_MS = 86_400_000;
+
+/** Search hosts of each job-board Source, keyed by Source id. */
+const JOB_BOARD_SEARCH_HOSTS: Record<string, readonly string[]> = {
+  [ASHBY_SOURCE_ID]: [ASHBY_HOST],
+  ...Object.fromEntries(
+    ATS_PROVIDERS.map((provider) => [
+      ATS_ADAPTERS[provider].sourceId,
+      provider === "greenhouse"
+        ? [
+            "job-boards.greenhouse.io",
+            "boards.greenhouse.io",
+            "job-boards.eu.greenhouse.io",
+            "boards.eu.greenhouse.io",
+          ]
+        : [ATS_ADAPTERS[provider].searchSite],
+    ]),
+  ),
+};
+
+/** When a Scout selects Web Search together with job boards, Web Search is
+ * only the search engine for those boards: its searches must stay on these
+ * hosts and it fetches no pages. Empty when no job board is selected. */
+export function selectedJobBoardHosts(sourceIds: readonly string[]): string[] {
+  return [...new Set(sourceIds.flatMap((id) => JOB_BOARD_SEARCH_HOSTS[id] ?? []))];
+}
+
+/** The Source ids pinned to a Run, or the Scout's current selection. */
+export function runSourceIds(db: Db, scoutId: string, overrideSnapshot: string | null): string[] {
+  return (
+    parseSnapshotSourceIds(overrideSnapshot) ??
+    db
+      .select({ sourceId: scoutSources.sourceId })
+      .from(scoutSources)
+      .where(eq(scoutSources.scoutId, scoutId))
+      .all()
+      .map((row) => row.sourceId)
+  );
+}
 
 export const WEB_SEARCH_RECENCIES = ["day", "week", "month", "year"] as const;
 export type WebSearchRecency = (typeof WEB_SEARCH_RECENCIES)[number];
@@ -389,16 +429,9 @@ export class WebSearchApplication {
     if (!run) throw new RecruitingError("CONFLICT", `Scout ${scout.id} has no active Scout Run`);
     const source = this.db.select().from(sources).where(eq(sources.id, "source-web-search")).get();
     if (!source) throw new RecruitingError("NOT_FOUND", "Web Search Source was not found");
-    const snapshotSourceIds = parseSnapshotSourceIds(run.overrideSnapshot);
-    const selected = snapshotSourceIds
-      ? snapshotSourceIds.includes(source.id)
-      : Boolean(
-          this.db
-            .select({ sourceId: scoutSources.sourceId })
-            .from(scoutSources)
-            .where(and(eq(scoutSources.scoutId, scout.id), eq(scoutSources.sourceId, source.id)))
-            .get(),
-        );
+    const selectedSourceIds = runSourceIds(this.db, scout.id, run.overrideSnapshot);
+    const selected = selectedSourceIds.includes(source.id);
+    const boardHosts = selectedJobBoardHosts(selectedSourceIds);
     const access = this.db
       .select()
       .from(sourceAccess)
@@ -478,6 +511,12 @@ export class WebSearchApplication {
     if (!selected)
       return reject(
         "Web Search is not enabled for this Scout",
+        "CONFLICT",
+        "disabled_source_access",
+      );
+    if (boardHosts.length > 0 && !isBoardDiscoveryQuery(normalized.includeDomains, boardHosts))
+      return reject(
+        `This Scout uses Web Search only to find postings on its selected job boards. Restrict the query with site: to one of ${boardHosts.join(", ")}`,
         "CONFLICT",
         "disabled_source_access",
       );
@@ -725,7 +764,11 @@ export function normalizeFilters(
     if (after > now) {
       throw new RecruitingError("VALIDATION", "WebSearch publishedAfter cannot be in the future");
     }
-    tbs.push("cdr:1", `cd_min:${searchDate(after)}`, `cd_max:${searchDate(now)}`);
+    // Firecrawl ignores custom date ranges (cdr), so round the window up to
+    // the smallest past-day/week/month/year filter that covers it. An hour of
+    // slack keeps a run's 7-day cutoff, read minutes before the search, a week.
+    const days = (now - after) / DAY_MS - 1 / 24;
+    if (days <= 366) tbs.push(`qdr:${days <= 1 ? "d" : days <= 7 ? "w" : days <= 31 ? "m" : "y"}`);
   }
   let normalizedLocation: string | null = null;
   if (location !== undefined) {
@@ -748,11 +791,13 @@ export function normalizeFilters(
   };
 }
 
-/** MM/DD/YYYY in UTC, the date format Google-style `cdr` ranges expect. */
-function searchDate(at: number): string {
-  const date = new Date(at);
-  const pad = (value: number) => String(value).padStart(2, "0");
-  return `${pad(date.getUTCMonth() + 1)}/${pad(date.getUTCDate())}/${date.getUTCFullYear()}`;
+function isBoardDiscoveryQuery(domains: string[], boardHosts: string[]): boolean {
+  return (
+    domains.length > 0 &&
+    domains.every((domain) =>
+      boardHosts.some((host) => domain === host || domain.endsWith(`.${host}`)),
+    )
+  );
 }
 
 /** The company boards behind the results, deduplicated, so a discovery search
