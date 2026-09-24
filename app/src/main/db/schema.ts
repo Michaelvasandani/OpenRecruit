@@ -4,6 +4,7 @@ import {
   index,
   integer,
   primaryKey,
+  real,
   sqliteTable,
   text,
   uniqueIndex,
@@ -707,5 +708,58 @@ export const commandReceipts = sqliteTable(
       t.commandKind,
       t.idempotencyKey,
     ),
+  ],
+);
+
+/** The Apollo organization the Candidate's people search resolved a Job Board
+ * company to, cached so the lookup runs once per company. */
+export const outreachCompanies = sqliteTable(
+  "outreach_companies",
+  {
+    companyKey: text("company_key").primaryKey(),
+    companyName: text("company_name").notNull(),
+    apolloOrganizationId: text("apollo_organization_id"),
+    domain: text("domain"),
+    employeeCount: integer("employee_count"),
+    linkedinUrl: text("linkedin_url"),
+    resolvedAt: integer("resolved_at").notNull(),
+  },
+  () => [
+    check(
+      "outreach_companies_identity",
+      sql`apollo_organization_id IS NOT NULL OR domain IS NOT NULL`,
+    ),
+  ],
+);
+
+/** A person worth reaching out to about one Job Board Signal. Names and titles
+ * only: no email or phone is ever requested or stored. */
+export const outreachContacts = sqliteTable(
+  "outreach_contacts",
+  {
+    id: text("id").primaryKey(),
+    signalId: text("signal_id")
+      .notNull()
+      .references(() => signals.id),
+    companyKey: text("company_key")
+      .notNull()
+      .references(() => outreachCompanies.companyKey),
+    apolloPersonId: text("apollo_person_id").notNull(),
+    firstName: text("first_name").notNull(),
+    lastName: text("last_name"),
+    lastNameMasked: integer("last_name_masked", { mode: "boolean" }).notNull().default(false),
+    title: text("title"),
+    category: text("category").notNull(),
+    reason: text("reason").notNull(),
+    score: real("score").notNull(),
+    linkedinUrl: text("linkedin_url"),
+    note: text("note"),
+    noteDraftedAt: integer("note_drafted_at"),
+    foundAt: integer("found_at").notNull(),
+  },
+  (t) => [
+    uniqueIndex("outreach_contacts_identity").on(t.signalId, t.apolloPersonId),
+    index("outreach_contacts_signal").on(t.signalId, t.score),
+    check("outreach_contacts_category", sql`category IN ('team', 'recruiting', 'founder')`),
   ],
 );

@@ -22,6 +22,7 @@ import {
   leadSignalLinks,
   leads,
   opportunities,
+  outreachContacts,
   signalAttributions,
   signals,
   sourceItems,
@@ -314,6 +315,10 @@ export class EvidenceApplication {
         tx.delete(signalAttributions)
           .where(inArray(signalAttributions.signalId, deletedSignalIds))
           .run();
+        // People looked up about a deleted Signal go with it.
+        tx.delete(outreachContacts)
+          .where(inArray(outreachContacts.signalId, deletedSignalIds))
+          .run();
         tx.delete(signals).where(inArray(signals.id, deletedSignalIds)).run();
       }
 
@@ -571,6 +576,7 @@ export function purgeUnavailableSignals(
   db.delete(fitEvaluationSignalLinks).where(inArray(fitEvaluationSignalLinks.signalId, ids)).run();
   db.delete(leadSignalLinks).where(inArray(leadSignalLinks.signalId, ids)).run();
   db.delete(signalAttributions).where(inArray(signalAttributions.signalId, ids)).run();
+  db.delete(outreachContacts).where(inArray(outreachContacts.signalId, ids)).run();
   db.delete(signals).where(inArray(signals.id, ids)).run();
 
   for (const leadId of affectedLeadIds) recalculateLead(db, leadId, at);

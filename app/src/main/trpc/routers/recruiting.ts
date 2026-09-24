@@ -1,3 +1,4 @@
+import { FindPeopleInput } from "@shared/outreach";
 import {
   ProfileFactSection,
   ProfileFactSource,
@@ -26,6 +27,21 @@ export const recruitingRouter = router({
     leadPanel: publicProcedure
       .input(z.object({ id: z.string().min(1) }))
       .query(({ ctx, input }) => ctx.recruiting.reviewLeadPanel(input.id)),
+  }),
+
+  /** Candidate-triggered outreach help for one Job Board row. Nothing here
+   * sends a message: it finds people (names and titles only) and drafts a note
+   * the Candidate can copy into LinkedIn. */
+  outreach: router({
+    panel: publicProcedure
+      .input(z.object({ signalId: z.string().min(1) }))
+      .query(({ ctx, input }) => command(() => ctx.outreach.panel(input.signalId))),
+    findPeople: publicProcedure
+      .input(FindPeopleInput)
+      .mutation(({ ctx, input }) => commandAsync(() => ctx.outreach.findPeople(input))),
+    draftNote: publicProcedure
+      .input(z.object({ contactId: z.string().min(1) }))
+      .mutation(({ ctx, input }) => commandAsync(() => ctx.outreach.draftNote(input.contactId))),
   }),
 
   profiles: publicProcedure.query(({ ctx }) => ctx.recruiting.listProfiles()),

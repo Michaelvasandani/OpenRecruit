@@ -30,6 +30,17 @@ export const settingsRouter = router({
 
   clearTypeSafeApiKey: publicProcedure.mutation(({ ctx }) => ctx.settings.clearTypeSafeApiKey()),
 
+  /** Apollo people search on the Job Board uses the same explicit secret lane. */
+  setApolloApiKey: publicProcedure
+    .input(z.object({ apiKey: z.string().trim().min(1).max(512) }))
+    .mutation(({ ctx, input }) => ctx.settings.setApolloApiKey(input.apiKey)),
+
+  testApolloApiKey: publicProcedure
+    .input(z.object({ apiKey: z.string().trim().min(1).max(512).optional() }).optional())
+    .mutation(({ ctx, input }) => ctx.settings.testApolloApiKey(input)),
+
+  clearApolloApiKey: publicProcedure.mutation(({ ctx }) => ctx.settings.clearApolloApiKey()),
+
   /** Bird is a local host-owned executable. These operations expose only safe
    * readiness/consent metadata; executable output and browser-session material
    * never cross the router. Inputs are deliberately path-only. */

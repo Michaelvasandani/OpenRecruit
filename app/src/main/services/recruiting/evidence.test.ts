@@ -5,6 +5,8 @@ import { type Db, schema } from "../../db/client";
 import { SCHEMA_DDL } from "../../db/ddl";
 import { type MigrationDb, migrate } from "../../db/migrate";
 import { DeterministicFeedProvider, RecruitingApplication } from ".";
+import { ApolloClient } from "./apollo";
+import { OutreachService } from "./outreach";
 
 function makeDb(): Db {
   const sqlite = new Database(":memory:");
@@ -89,6 +91,43 @@ describe("Candidate evidence control", () => {
         idempotencyKey: "delete-first",
       }),
     ).toMatchObject({ replayed: true, value: deleted.value });
+  });
+
+  test("deleting a Signal also deletes the people looked up about it", async () => {
+    const db = makeDb();
+    const app = new RecruitingApplication(db, () => 1_000);
+    const { source, run } = fixture(app);
+    await app.readSource({
+      runId: run.id,
+      sourceId: source.id,
+      provider: new DeterministicFeedProvider({
+        "https://example.test/evidence.xml": {
+          status: 200,
+          body: feed("First", "first", "https://example.test/1"),
+        },
+      }),
+    });
+    const [signal] = app.listSignals();
+    const apollo = new ApolloClient(
+      () => "apollo-key",
+      async () =>
+        Response.json({
+          people: [{ id: "p-1", first_name: "Maya", title: "Engineering Manager" }],
+        }),
+    );
+    const outreach = new OutreachService(db, app, apollo, { draft: async () => "Hi" });
+    const found = await outreach.findPeople({
+      signalId: signal.id,
+      company: { kind: "domain", domain: "example.test" },
+    });
+    expect(found.status === "found" && found.panel.contacts.length).toBe(1);
+
+    const deleted = app.deleteEvidence({
+      scope: { kind: "item", sourceItemId: signal.sourceItemId },
+      idempotencyKey: "delete-with-contacts",
+    });
+    expect(deleted.value.deletedSignalIds).toEqual([signal.id]);
+    expect(db.select().from(schema.outreachContacts).all()).toEqual([]);
   });
 
   test("blocks unchanged refresh after deletion and permits material replacement", async () => {

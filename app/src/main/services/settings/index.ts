@@ -1,5 +1,8 @@
 import { isAbsolute } from "node:path";
 import {
+  ApolloReadiness,
+  ApolloSafeFailure,
+  type ApolloSettings,
   type AppSettings,
   type BirdAccountIdentity,
   BirdReadiness,
@@ -37,6 +40,11 @@ const TYPESAFE_READINESS = "typesafe_readiness";
 const TYPESAFE_SAFE_FAILURE = "typesafe_safe_failure";
 const TYPESAFE_MODELS_URL = "https://api.typesafe.ai/v1/models";
 const TYPESAFE_PROBE_TIMEOUT_MS = 10_000;
+const APOLLO_API_KEY = "apollo_api_key";
+const APOLLO_READINESS = "apollo_readiness";
+const APOLLO_SAFE_FAILURE = "apollo_safe_failure";
+const APOLLO_HEALTH_URL = "https://api.apollo.io/api/v1/auth/health";
+const APOLLO_PROBE_TIMEOUT_MS = 10_000;
 const BIRD_PATH = "bird_path";
 const BIRD_TESTED_PATH = "bird_tested_path";
 const BIRD_RESOLVED_PATH = "bird_resolved_path";
@@ -53,6 +61,7 @@ const BIRD_CONSENTED_AT = "bird_consented_at";
 export type FirecrawlProbeResponse = { status: number };
 export type FirecrawlProbe = (apiKey: string) => Promise<FirecrawlProbeResponse>;
 export type TypeSafeProbe = (apiKey: string) => Promise<FirecrawlProbeResponse>;
+export type ApolloProbe = (apiKey: string) => Promise<FirecrawlProbeResponse>;
 export type BirdProbe = (configuredPath: string) => Promise<BirdProbeResult>;
 
 export type BirdConsentBinding = {
@@ -74,6 +83,11 @@ export type SettingsServiceOptions = {
   birdProbe?: BirdProbe;
   /** Injected at the external HTTP boundary for deterministic tests. */
   typesafeProbe?: TypeSafeProbe;
+  /** Injected at the external HTTP boundary for deterministic tests. */
+  apolloProbe?: ApolloProbe;
+  /** The host's `APOLLO_API_KEY`, read per call. Injected so tests never see the
+   * real environment. */
+  apolloEnvironmentKey?: () => string | undefined;
 };
 
 /** kv keys backing each active AppSettings field. Legacy settings rows are deliberately
@@ -102,6 +116,8 @@ export class SettingsService {
   private readonly firecrawlProbe: FirecrawlProbe;
   private readonly birdProbe: BirdProbe;
   private readonly typesafeProbe: TypeSafeProbe;
+  private readonly apolloProbe: ApolloProbe;
+  private readonly apolloEnvironmentKey: () => string | undefined;
 
   constructor(
     private db: Db,
@@ -110,6 +126,9 @@ export class SettingsService {
     this.firecrawlProbe = options.firecrawlProbe ?? probeFirecrawl;
     this.birdProbe = options.birdProbe ?? probeBirdExecutable;
     this.typesafeProbe = options.typesafeProbe ?? probeTypeSafe;
+    this.apolloProbe = options.apolloProbe ?? probeApollo;
+    this.apolloEnvironmentKey =
+      options.apolloEnvironmentKey ?? (() => process.env.APOLLO_API_KEY?.trim() || undefined);
   }
 
   get(): AppSettings {
@@ -143,6 +162,7 @@ export class SettingsService {
       firecrawl: this.getFirecrawlSettings(),
       bird: this.getBirdSettings(),
       typesafe: this.getTypeSafeSettings(),
+      apollo: this.getApolloSettings(),
     };
   }
 
@@ -296,6 +316,62 @@ export class SettingsService {
       this.write(TYPESAFE_READINESS, result.readiness);
       if (result.safeFailure) this.write(TYPESAFE_SAFE_FAILURE, result.safeFailure);
       else this.deleteRaw(TYPESAFE_SAFE_FAILURE);
+      this.broadcastSafeSettings();
+    }
+    return result;
+  }
+
+  /**
+   * Return the effective Apollo key to the host-owned people search: the key
+   * saved in Settings, else the host's `APOLLO_API_KEY` (how a VM or cloud host
+   * is provisioned). Like the other keys it never reaches a router or renderer
+   * projection, and it is read per operation so changes apply immediately.
+   */
+  getApolloApiKey(): string | undefined {
+    return this.readRaw(APOLLO_API_KEY) ?? this.apolloEnvironmentKey();
+  }
+
+  /** Store a Candidate-supplied key and reset any previous failure state. */
+  setApolloApiKey(apiKey: string): ApolloSettings {
+    const normalized = normalizeApiKey(apiKey, "Apollo");
+    this.write(APOLLO_API_KEY, normalized);
+    this.write(APOLLO_READINESS, "ready");
+    this.deleteRaw(APOLLO_SAFE_FAILURE);
+    this.broadcastSafeSettings();
+    return this.getApolloSettings();
+  }
+
+  /** Remove the saved key and its readiness. An environment key, if any, then applies. */
+  clearApolloApiKey(): ApolloSettings {
+    this.deleteRaw(APOLLO_API_KEY);
+    this.deleteRaw(APOLLO_READINESS);
+    this.deleteRaw(APOLLO_SAFE_FAILURE);
+    this.broadcastSafeSettings();
+    return this.getApolloSettings();
+  }
+
+  /** Test either an explicitly supplied (unsaved) key or the effective key. Only
+   * status is returned; response bodies and the credential stay host-only. */
+  async testApolloApiKey(input: { apiKey?: string } = {}): Promise<ApolloSettings> {
+    const supplied =
+      input.apiKey === undefined ? undefined : normalizeApiKey(input.apiKey, "Apollo");
+    const apiKey = supplied ?? this.getApolloApiKey();
+    if (!apiKey) return apolloResult(null, "not_configured", null);
+    const keySource = supplied !== undefined ? "settings" : this.apolloKeySource();
+
+    let result: ApolloSettings;
+    try {
+      const response = await this.apolloProbe(apiKey);
+      result = resultForApolloStatus(keySource, response.status);
+    } catch {
+      result = apolloResult(keySource, "degraded", "Apollo is temporarily unavailable");
+    }
+
+    // Testing an unsaved draft must not mutate the saved credential's status.
+    if (supplied === undefined && this.getApolloApiKey() === apiKey) {
+      this.write(APOLLO_READINESS, result.readiness);
+      if (result.safeFailure) this.write(APOLLO_SAFE_FAILURE, result.safeFailure);
+      else this.deleteRaw(APOLLO_SAFE_FAILURE);
       this.broadcastSafeSettings();
     }
     return result;
@@ -609,6 +685,24 @@ export class SettingsService {
     );
   }
 
+  private apolloKeySource(): ApolloSettings["keySource"] {
+    if (this.readRaw(APOLLO_API_KEY) !== undefined) return "settings";
+    return this.apolloEnvironmentKey() !== undefined ? "environment" : null;
+  }
+
+  private getApolloSettings(): ApolloSettings {
+    const keySource = this.apolloKeySource();
+    if (keySource === null) return apolloResult(null, "not_configured", null);
+
+    const readiness = ApolloReadiness.safeParse(this.readRaw(APOLLO_READINESS));
+    const safeFailure = ApolloSafeFailure.safeParse(this.readRaw(APOLLO_SAFE_FAILURE));
+    return apolloResult(
+      keySource,
+      readiness.success ? readiness.data : "ready",
+      safeFailure.success ? safeFailure.data : null,
+    );
+  }
+
   private broadcastSafeSettings(): void {
     bus.emitEvent("settings:changed", this.get());
   }
@@ -902,6 +996,50 @@ function resultForTypeSafeStatus(status: number): TypeSafeSettings {
     return typesafeResult(true, "degraded", "TypeSafe is temporarily unavailable");
   }
   return typesafeResult(true, "degraded", "TypeSafe could not verify the configured API key");
+}
+
+function apolloResult(
+  keySource: ApolloSettings["keySource"],
+  readiness: ApolloSettings["readiness"],
+  safeFailure: ApolloSettings["safeFailure"],
+): ApolloSettings {
+  return { configured: keySource !== null, keySource, readiness, safeFailure };
+}
+
+function resultForApolloStatus(
+  keySource: ApolloSettings["keySource"],
+  status: number,
+): ApolloSettings {
+  if (status >= 200 && status < 300) return apolloResult(keySource, "ready", null);
+  if (status === 401 || status === 403) {
+    return apolloResult(
+      keySource,
+      "reauthentication_required",
+      "Apollo rejected the configured API key",
+    );
+  }
+  if (status === 429) {
+    return apolloResult(keySource, "rate_limited", "Apollo is temporarily rate limited");
+  }
+  if (status === 408 || status >= 500) {
+    return apolloResult(keySource, "degraded", "Apollo is temporarily unavailable");
+  }
+  return apolloResult(keySource, "degraded", "Apollo could not verify the configured API key");
+}
+
+/** Apollo's health check answers 200 for any key and reports the key's
+ * validity in `is_logged_in`, so a rejected key is mapped to 401 here. */
+async function probeApollo(apiKey: string): Promise<FirecrawlProbeResponse> {
+  const response = await fetch(APOLLO_HEALTH_URL, {
+    method: "GET",
+    headers: { accept: "application/json", "x-api-key": apiKey },
+    signal: AbortSignal.timeout(APOLLO_PROBE_TIMEOUT_MS),
+  });
+  if (response.status >= 200 && response.status < 300) {
+    const body = (await response.json().catch(() => null)) as { is_logged_in?: unknown } | null;
+    if (body?.is_logged_in === false) return { status: 401 };
+  }
+  return { status: response.status };
 }
 
 async function probeTypeSafe(apiKey: string): Promise<FirecrawlProbeResponse> {

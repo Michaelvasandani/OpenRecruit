@@ -1,6 +1,7 @@
 import type { JobBoardRow } from "@shared/recruiting";
 import { ArrowDown, ArrowUp, ExternalLink, Loader2, Search } from "lucide-react";
 import { type CSSProperties, Fragment, useMemo, useState } from "react";
+import { PeoplePanel } from "../components/jobs/PeoplePanel";
 import { dateTime } from "../lib/format";
 import { trpc } from "../lib/trpc";
 import { cn } from "../lib/utils";
@@ -199,6 +200,7 @@ export function JobBoardScreen() {
                   </button>
                 ))}
               </div>
+              <PeoplePanel row={row} />
             </td>
           </tr>
         )}

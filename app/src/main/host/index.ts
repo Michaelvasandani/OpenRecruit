@@ -22,6 +22,8 @@ import { LocalApiServer } from "../services/local-api";
 import { derivePort } from "../services/local-api/endpoint";
 import { RecentNotificationsService } from "../services/notifications/recent";
 import { RecruitingApplication } from "../services/recruiting";
+import { ApolloClient } from "../services/recruiting/apollo";
+import { ClaudeNoteDrafter, OutreachService } from "../services/recruiting/outreach";
 import { Scheduler } from "../services/scheduler";
 import {
   CodexHeadlessStrategy,
@@ -55,6 +57,18 @@ async function main() {
     typesafeApiKey: () => settings.getTypeSafeApiKey(),
     birdAccess: () => settings.getBirdAccess(),
   });
+  const outreach = new OutreachService(
+    db,
+    recruiting,
+    new ApolloClient(() => settings.getApolloApiKey()),
+    // Drafts bill the Claude login like background runs do, unless the Candidate
+    // allowed ANTHROPIC_API_KEY for background work.
+    new ClaudeNoteDrafter(() =>
+      buildAgentEnv("outreach-drafter", undefined, {
+        stripEnvKeys: settings.get().backgroundAllowApiKey ? [] : ["ANTHROPIC_API_KEY"],
+      }),
+    ),
+  );
   // Durable Recent ring buffer for the tray (§12.6). Subscribed HERE, before anything
   // that can emit `notify` — the scheduler's boot catch-up sweep (scheduler.start()
   // below) fires wake notifications synchronously.
@@ -166,6 +180,7 @@ async function main() {
     wake,
     recent,
     recruiting,
+    outreach,
   };
   const trpc = new HostTrpcServer(ctx, token);
   await trpc.listen();

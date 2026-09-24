@@ -2,6 +2,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { listingLookbackDaysFromPolicy, listingPublishedAfter } from "@shared/agent";
 import {
   type FitEvaluationSummary,
+  type JobBoardRow,
   type OpportunitySummary,
   type RecruitingInvalidation,
   type ReviewJobBoardProjection,
@@ -71,7 +72,7 @@ import {
   type RecordInvestigationAttemptCommand,
   type StartInvestigationAttemptCommand,
 } from "./investigations";
-import { toJobBoardRow } from "./job-board";
+import { type JobBoardLookups, toJobBoardRow } from "./job-board";
 import {
   type JobPostingInspectCommand,
   JobPostingInspectionApplication,
@@ -1043,7 +1044,25 @@ export class RecruitingApplication {
   reviewJobBoard(): ReviewJobBoardProjection {
     const signals = this.listSignals();
     const superseded = new Set(signals.flatMap((signal) => signal.supersededSignalId ?? []));
-    const lookups = {
+    const lookups = this.jobBoardLookups();
+    return ReviewJobBoardProjectionSchema.parse({
+      revision: this.revision(),
+      generatedAt: this.now(),
+      rows: signals
+        .filter((signal) => !superseded.has(signal.id))
+        .map((signal) => toJobBoardRow(signal, lookups))
+        .sort((left, right) => right.observedAt - left.observedAt),
+    });
+  }
+
+  /** One Job Board row, shaped exactly as the sheet shows it. */
+  jobBoardRow(signalId: string): JobBoardRow | null {
+    const signal = this.getSignal(signalId);
+    return signal ? toJobBoardRow(signal, this.jobBoardLookups()) : null;
+  }
+
+  private jobBoardLookups(): JobBoardLookups {
+    return {
       sources: new Map(this.listSources().map((source) => [source.id, source])),
       // Read the table directly: archived Scouts still attribute their Signals.
       scouts: new Map(
@@ -1054,14 +1073,6 @@ export class RecruitingApplication {
           .map((scout) => [scout.id, scout.name]),
       ),
     };
-    return ReviewJobBoardProjectionSchema.parse({
-      revision: this.revision(),
-      generatedAt: this.now(),
-      rows: signals
-        .filter((signal) => !superseded.has(signal.id))
-        .map((signal) => toJobBoardRow(signal, lookups))
-        .sort((left, right) => right.observedAt - left.observedAt),
-    });
   }
 
   reviewSidebar(): ReviewSidebarProjection {

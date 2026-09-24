@@ -52,6 +52,35 @@ export const TypeSafeSettings = z.object({
 });
 export type TypeSafeSettings = z.infer<typeof TypeSafeSettings>;
 
+/** Safe readiness for the Candidate-supplied Apollo credential that powers
+ * people search on the Job Board. The credential itself is never part of this value. */
+export const ApolloReadiness = z.enum([
+  "not_configured",
+  "ready",
+  "reauthentication_required",
+  "rate_limited",
+  "degraded",
+]);
+export type ApolloReadiness = z.infer<typeof ApolloReadiness>;
+
+export const ApolloSafeFailure = z.enum([
+  "Apollo rejected the configured API key",
+  "Apollo is temporarily rate limited",
+  "Apollo is temporarily unavailable",
+  "Apollo could not verify the configured API key",
+]);
+export type ApolloSafeFailure = z.infer<typeof ApolloSafeFailure>;
+
+export const ApolloSettings = z.object({
+  configured: z.boolean(),
+  /** Where the effective key comes from: saved in Settings, or the host's
+   * `APOLLO_API_KEY` environment variable. A saved key wins. */
+  keySource: z.enum(["settings", "environment"]).nullable(),
+  readiness: ApolloReadiness,
+  safeFailure: ApolloSafeFailure.nullable(),
+});
+export type ApolloSettings = z.infer<typeof ApolloSettings>;
+
 /** Safe readiness states for the locally installed Bird executable. Raw Bird
  * output, cookies, cookie locations, and authentication material never belong
  * in this projection. */
@@ -149,6 +178,8 @@ export const AppSettings = z.object({
   bird: BirdSettings,
   /** Safe TypeSafe (Jev) readiness. The API key is never part of this value. */
   typesafe: TypeSafeSettings,
+  /** Safe Apollo (people search) readiness. The API key is never part of this value. */
+  apollo: ApolloSettings,
 });
 export type AppSettings = z.infer<typeof AppSettings>;
 
@@ -158,6 +189,7 @@ export const EditableAppSettings = AppSettings.omit({
   firecrawl: true,
   bird: true,
   typesafe: true,
+  apollo: true,
 });
 export type EditableAppSettings = z.infer<typeof EditableAppSettings>;
 
@@ -193,6 +225,12 @@ export const DEFAULT_SETTINGS: AppSettings = {
   },
   typesafe: {
     configured: false,
+    readiness: "not_configured",
+    safeFailure: null,
+  },
+  apollo: {
+    configured: false,
+    keySource: null,
     readiness: "not_configured",
     safeFailure: null,
   },

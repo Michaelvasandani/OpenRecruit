@@ -4,6 +4,7 @@ import type { Db } from "../db/client";
 import type { AgentRegistry } from "../services/agents/registry";
 import type { RecentNotificationsService } from "../services/notifications/recent";
 import type { RecruitingApplication } from "../services/recruiting";
+import type { OutreachService } from "../services/recruiting/outreach";
 import type { Scheduler } from "../services/scheduler";
 import type { WakeTransport } from "../services/scheduler/wake/types";
 import type { SettingsService } from "../services/settings";
@@ -19,6 +20,8 @@ export interface Context {
   /** Durable Recent ring buffer behind `notifications.onRecent` (§12.6). */
   recent: RecentNotificationsService;
   recruiting: RecruitingApplication;
+  /** Candidate-triggered people search and note drafting for Job Board rows. */
+  outreach: OutreachService;
 }
 
 const t = initTRPC.context<Context>().create({ transformer: superjson });

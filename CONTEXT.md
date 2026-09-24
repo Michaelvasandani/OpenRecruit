@@ -99,3 +99,7 @@ _Avoid_: Relisting, refreshed search result
 **Experience Requirement**:
 An evidence-backed statement in a posting about years of experience, including whether the wording is required, preferred, or ambiguous.
 _Avoid_: Seniority guess, experience score
+
+**Outreach Contact**:
+A person the Candidate chose to look up as worth contacting about one job: someone who leads or works on its team, recruits for it, or founded a small company that hires directly. Only a name, title, and public LinkedIn URL are kept. OpenRecruit may draft a note to them but never sends it.
+_Avoid_: Lead, prospect, recipient

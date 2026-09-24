@@ -296,6 +296,66 @@ describe("SettingsService", () => {
     expect(SettingsUpdate.safeParse({ typesafe: { configured: true } }).success).toBe(false);
   });
 
+  test("stores the Apollo key host-side, falls back to the host environment, and exposes only safe readiness", async () => {
+    const db = memDb();
+    const seenKeys: string[] = [];
+    let environmentKey: string | undefined;
+    const s = new SettingsService(db, {
+      apolloProbe: async (apiKey) => {
+        seenKeys.push(apiKey);
+        return { status: seenKeys.length === 1 ? 401 : 200 };
+      },
+      apolloEnvironmentKey: () => environmentKey,
+    });
+
+    expect(s.get().apollo).toEqual({
+      configured: false,
+      keySource: null,
+      readiness: "not_configured",
+      safeFailure: null,
+    });
+    expect(await s.testApolloApiKey()).toMatchObject({ readiness: "not_configured" });
+    expect(seenKeys).toEqual([]);
+
+    environmentKey = "apollo-env-secret";
+    expect(s.getApolloApiKey()).toBe("apollo-env-secret");
+    expect(s.get().apollo).toMatchObject({ configured: true, keySource: "environment" });
+
+    s.setApolloApiKey("  apollo-secret  ");
+    expect(s.getApolloApiKey()).toBe("apollo-secret");
+    expect(s.get().apollo.keySource).toBe("settings");
+    expect(JSON.stringify(s.get())).not.toContain("apollo-secret");
+    expect(JSON.stringify(s.get())).not.toContain("apollo-env-secret");
+
+    const rejected = await s.testApolloApiKey();
+    expect(rejected).toEqual({
+      configured: true,
+      keySource: "settings",
+      readiness: "reauthentication_required",
+      safeFailure: "Apollo rejected the configured API key",
+    });
+    expect(s.get().apollo).toEqual(rejected);
+
+    // A draft key is tested without touching the saved credential's status.
+    expect((await s.testApolloApiKey({ apiKey: "apollo-draft" })).readiness).toBe("ready");
+    expect(seenKeys).toEqual(["apollo-secret", "apollo-draft"]);
+    expect(s.get().apollo.readiness).toBe("reauthentication_required");
+
+    // Clearing the saved key falls back to the environment key with fresh readiness.
+    s.clearApolloApiKey();
+    expect(s.getApolloApiKey()).toBe("apollo-env-secret");
+    expect(s.get().apollo).toEqual({
+      configured: true,
+      keySource: "environment",
+      readiness: "ready",
+      safeFailure: null,
+    });
+    environmentKey = undefined;
+    expect(s.get().apollo.configured).toBe(false);
+    expect(() => s.setApolloApiKey("   ")).toThrow(/Apollo API key/);
+    expect(SettingsUpdate.safeParse({ apollo: { configured: true } }).success).toBe(false);
+  });
+
   test("rejects an empty Firecrawl API key", () => {
     const s = new SettingsService(memDb());
     expect(() => s.setFirecrawlApiKey("   ")).toThrow(/API key/);

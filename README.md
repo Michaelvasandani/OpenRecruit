@@ -20,7 +20,7 @@ Candidate data is stored locally under the OpenRecruit data directory. Existing 
 
 ## Privacy and scope
 
-OpenRecruit does not store provider credentials, cookies, unnecessary personal data, or provider transcripts in recruiting records. Source access is explicit and bounded. The POC never submits applications or sends external messages.
+OpenRecruit does not store provider credentials, cookies, unnecessary personal data, or provider transcripts in recruiting records. Source access is explicit and bounded. The POC never submits applications or sends external messages. The one kind of third-party personal data it keeps is the names and titles of people the Candidate chose to look up for outreach (see below); it never requests or stores their email addresses or phone numbers.
 
 ## Hacker News job postings
 
@@ -33,6 +33,24 @@ Six public applicant-tracking boards are canonical Sources: Greenhouse, Lever, S
 ## Jev posting screening
 
 With a Candidate-supplied TypeSafe key in Settings, every job-posting Source screens what it reads through one shared seam, `PostingScreener` (`app/src/main/services/recruiting/posting-screen.ts`). Jev reads each posting together with the Scout Run's pinned Candidate Profile, Discovery Strategy, and Scout Policy, and answers three questions: the experience the posting really requires, whether it is the kind of job the Scout was asked to find, and whether it is worth keeping for this Candidate. The answers become an `include`, `review`, or `exclude` decision; an excluded posting is still shown to the Scout but the host refuses to promote it to a Signal, and the judgment is stored with every Signal that is kept. A failed judgment asks for review rather than dropping a posting. A new Source gets all of this by handing `PostingScreener` its normalized postings; a new Jev question is added once, in `posting-fit.ts` and `posting-screen.ts`, and reaches Ashby and Hacker News alike.
+
+## People to reach out to
+
+An expanded Job Board row has a **People to reach out to** section. With an Apollo API key saved in Settings → People Search (or `APOLLO_API_KEY` in the host's environment, which is how a VM or cloud host is provisioned), **Find people** does the following:
+
+1. Resolves the row's company to an Apollo organization once, and caches it. If the name matches several organizations or none, the Candidate picks one or enters the company's website.
+2. Runs Apollo's free People API Search three times: the leads of the role's team, its recruiters, and its founders while the company has at most 200 people.
+3. Keeps the best eight, ranked by a deterministic score that shows its reason ("Leads a related team — likely in this role's hiring chain · also works on infrastructure").
+
+Each person has a **Find on LinkedIn** link (their profile when Apollo returns one, otherwise a LinkedIn people search). **Draft note** asks the local `claude` CLI, under the same login the Scouts use, for a connection note of at most 200 characters. The note is grounded in the Scout's Candidate Profile and the posting, and the Candidate can edit and copy it. Nothing is sent from OpenRecruit.
+
+People search spends no Apollo credits and returns names (Apollo masks last names on lower plans), titles, and LinkedIn URLs where available. Enrichment, which reveals emails and costs credits, is deliberately not used. The organization lookup may use a credit on some plans, once per company. The code lives in `app/src/main/services/recruiting/apollo.ts` (host-owned Apollo client) and `outreach.ts` (company resolution, ranking, drafting).
+
+To check a real key without the app, set `APOLLO_API_KEY` and run:
+
+```sh
+cd app && bun test src/main/services/recruiting/apollo-live.test.ts
+```
 
 ## Bird-backed X discovery
 

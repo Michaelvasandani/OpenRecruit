@@ -27,3 +27,14 @@ process.on("exit", () => {
     // best-effort: a leftover temp dir is harmless, and throwing here would fail the run
   }
 });
+
+/**
+ * A host provisioned with `APOLLO_API_KEY` (a VM, a cloud dev container) must not
+ * leak that key into unit tests: SettingsService would read it as the effective
+ * Apollo key and every "empty store" expectation would change. The opt-in live
+ * Apollo test reads it from `OPENRECRUIT_LIVE_APOLLO_API_KEY` instead.
+ */
+if (process.env.APOLLO_API_KEY) {
+  process.env.OPENRECRUIT_LIVE_APOLLO_API_KEY ??= process.env.APOLLO_API_KEY;
+  delete process.env.APOLLO_API_KEY;
+}

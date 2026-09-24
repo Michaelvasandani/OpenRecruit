@@ -115,6 +115,7 @@ function GeneralPanel() {
       <FirecrawlSourcePanel />
       <BirdSourcePanel />
       <TypeSafePanel />
+      <ApolloPanel />
       {window.__opentradeShell && (
         <SettingsSection title="Runtime">
           <SettingsRow
@@ -278,6 +279,90 @@ function TypeSafePanel() {
               Test
             </Button>
             {status.configured && (
+              <Button
+                type="button"
+                variant="outline"
+                disabled={clearKey.isPending}
+                onClick={() => clearKey.mutate()}
+              >
+                Clear
+              </Button>
+            )}
+          </div>
+          {feedback && <p className="text-xs text-muted-foreground">{feedback}</p>}
+        </div>
+      </SettingsRow>
+    </SettingsSection>
+  );
+}
+
+function ApolloPanel() {
+  const settings = useSettings();
+  const status = settings.data?.apollo;
+  const [draft, setDraft] = useState("");
+  const [feedback, setFeedback] = useState<string | null>(null);
+  const setKey = trpc.settings.setApolloApiKey.useMutation({
+    onSuccess: () => {
+      setDraft("");
+      setFeedback("Apollo is configured.");
+    },
+    onError: () => setFeedback("The Apollo API key could not be saved."),
+  });
+  const testKey = trpc.settings.testApolloApiKey.useMutation({
+    onSuccess: (result) => setFeedback(result.safeFailure ?? "Apollo is ready."),
+    onError: () => setFeedback("Apollo could not be tested."),
+  });
+  const clearKey = trpc.settings.clearApolloApiKey.useMutation({
+    onSuccess: () => {
+      setDraft("");
+      setFeedback("The saved Apollo key was cleared.");
+    },
+    onError: () => setFeedback("The Apollo API key could not be cleared."),
+  });
+
+  if (!status) return null;
+  const hasDraft = draft.trim().length > 0;
+  const readiness = status.readiness.replaceAll("_", " ");
+  const source =
+    status.keySource === "environment"
+      ? " Using APOLLO_API_KEY from the host environment; a saved key replaces it."
+      : "";
+  return (
+    <SettingsSection
+      title="People Search"
+      description="Use a Candidate-supplied Apollo key to find people worth contacting about a job on the Job Board: the team's leads, its recruiters, and founders at small companies. Only names and titles are fetched, so searches spend no Apollo credits and no email or phone is ever requested. OpenRecruit drafts a LinkedIn note but never sends anything. The saved key is never shown again."
+    >
+      <SettingsRow
+        label={status.keySource === "settings" ? "Replace Apollo API key" : "Apollo API key"}
+        hint={`Status: ${readiness}.${source} Test a draft key before saving, or test the current key when the field is empty.`}
+      >
+        <div className="flex max-w-sm flex-col items-end gap-2">
+          <Input
+            type="password"
+            autoComplete="off"
+            value={draft}
+            onChange={(event) => setDraft(event.target.value)}
+            placeholder={status.configured ? "Enter a replacement key" : "Paste API key"}
+            aria-label="Apollo API key"
+          />
+          <div className="flex flex-wrap justify-end gap-2">
+            <Button
+              type="button"
+              variant="outline"
+              disabled={!hasDraft || setKey.isPending}
+              onClick={() => setKey.mutate({ apiKey: draft })}
+            >
+              {status.keySource === "settings" ? "Replace" : "Save"}
+            </Button>
+            <Button
+              type="button"
+              variant="outline"
+              disabled={testKey.isPending || (!hasDraft && !status.configured)}
+              onClick={() => testKey.mutate(hasDraft ? { apiKey: draft } : undefined)}
+            >
+              Test
+            </Button>
+            {status.keySource === "settings" && (
               <Button
                 type="button"
                 variant="outline"

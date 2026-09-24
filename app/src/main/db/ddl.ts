@@ -464,6 +464,36 @@ export const SCHEMA_DDL = `
     -- The provider-neutral Web Search Source is a canonical product boundary.
     -- Its readiness is projected from the host-owned Firecrawl settings lane;
     -- no credential is stored in this Source row or its Source Access row.
+    CREATE TABLE IF NOT EXISTS outreach_companies (
+      company_key TEXT PRIMARY KEY,
+      company_name TEXT NOT NULL,
+      apollo_organization_id TEXT,
+      domain TEXT,
+      employee_count INTEGER,
+      linkedin_url TEXT,
+      resolved_at INTEGER NOT NULL,
+      CHECK (apollo_organization_id IS NOT NULL OR domain IS NOT NULL)
+    );
+    CREATE TABLE IF NOT EXISTS outreach_contacts (
+      id TEXT PRIMARY KEY,
+      signal_id TEXT NOT NULL REFERENCES signals(id),
+      company_key TEXT NOT NULL REFERENCES outreach_companies(company_key),
+      apollo_person_id TEXT NOT NULL,
+      first_name TEXT NOT NULL,
+      last_name TEXT,
+      last_name_masked INTEGER NOT NULL DEFAULT 0,
+      title TEXT,
+      category TEXT NOT NULL CHECK (category IN ('team', 'recruiting', 'founder')),
+      reason TEXT NOT NULL,
+      score REAL NOT NULL,
+      linkedin_url TEXT,
+      note TEXT,
+      note_drafted_at INTEGER,
+      found_at INTEGER NOT NULL,
+      UNIQUE (signal_id, apollo_person_id)
+    );
+    CREATE INDEX IF NOT EXISTS outreach_contacts_signal
+      ON outreach_contacts (signal_id, score);
     INSERT OR IGNORE INTO sources (
       id, kind, name, config, readiness, safe_failure, created_at, updated_at
     ) VALUES (
